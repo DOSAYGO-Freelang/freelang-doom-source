@@ -1,0 +1,238 @@
+// Bounded Doom WAD/MUS inspection.
+//
+// A WAD is a 12-byte header plus a directory of 16-byte entries. The parser
+// reads only that directory and the 16-byte headers of D_* music candidates;
+// it never loads the whole game file. Every offset/length is checked against
+// the file before a payload read.
+
+credits: <../games/doom-format.flx> <f/files> <f/bytes> <f/arrays>
+         <f/strings>;
+
+// Doom resolves a global lump name by scanning backward. For music this means
+// a later D_* entry replaces an earlier one with the same exact eight bytes.
+op doom_wad_shadowed [directory, count, index] (
+  let later = index + 1;
+  while (later < count) (
+    if (doom_wad_names_equal[directory, index, later] == 1) ( => 1; )
+    later = later + 1;
+  )
+  => 0;
+)
+
+private op doom_wad_is_music_name [directory, index] (
+  => (doom_wad_name_byte[directory, index, 0] == 68) and
+    (doom_wad_name_byte[directory, index, 1] == 95);
+)
+
+private op doom_wad_is_map_name [directory, index] (
+  let a = doom_wad_name_byte[directory, index, 0];
+  let b = doom_wad_name_byte[directory, index, 1];
+  let c = doom_wad_name_byte[directory, index, 2];
+  let d = doom_wad_name_byte[directory, index, 3];
+  let e = doom_wad_name_byte[directory, index, 4];
+  if ((a == 69) and (b >= 48) and (b <= 57) and
+      (c == 77) and (d >= 48) and (d <= 57) and (e == 0)) ( => 1; )
+  if ((a == 77) and (b == 65) and (c == 80) and
+      (d >= 48) and (d <= 57) and
+      (e >= 48) and (e <= 57) and
+      (doom_wad_name_byte[directory, index, 5] == 0)) ( => 1; )
+  => 0;
+)
+
+private op doom_wad_mus_result [ok, error, score_bytes, score_offset,
+                                primary_channels, secondary_channels,
+                                instruments] (
+  => {
+    ok: ok, error: error, score_bytes: score_bytes,
+    score_offset: score_offset, primary_channels: primary_channels,
+    secondary_channels: secondary_channels, instruments: instruments
+  };
+)
+
+op doom_wad_mus_header [path, lump_offset, lump_size] (
+  if (lump_size < 16) (
+    => doom_wad_mus_result[0, "MUS header shorter than 16 bytes", 0, 0, 0, 0, 0];
+  )
+  let header = read_range[path, lump_offset, 16];
+  if (bytes_len[header] == 16) () else (
+    => doom_wad_mus_result[0, "short MUS header read", 0, 0, 0, 0, 0];
+  )
+  if (doom_wad_magic[header, 77, 85, 83, 26] == 1) () else (
+    => doom_wad_mus_result[0, "bad MUS magic", 0, 0, 0, 0, 0];
+  )
+  let score_bytes = doom_wad_u16le[header, 4];
+  let score_offset = doom_wad_u16le[header, 6];
+  let primary_channels = doom_wad_u16le[header, 8];
+  let secondary_channels = doom_wad_u16le[header, 10];
+  let instruments = doom_wad_u16le[header, 12];
+  if (instruments > 256) (
+    => doom_wad_mus_result[0, "MUS instrument table exceeds 256 entries", 0, 0, 0, 0, 0];
+  )
+  if (score_offset >= 16 + instruments * 2) () else (
+    => doom_wad_mus_result[0, "MUS score overlaps instrument table", 0, 0, 0, 0, 0];
+  )
+  if (score_offset <= lump_size) () else (
+    => doom_wad_mus_result[0, "MUS score offset exceeds lump", 0, 0, 0, 0, 0];
+  )
+  if (score_bytes <= lump_size - score_offset) () else (
+    => doom_wad_mus_result[0, "MUS score length exceeds lump", 0, 0, 0, 0, 0];
+  )
+  => doom_wad_mus_result[
+    1, "", score_bytes, score_offset, primary_channels,
+    secondary_channels, instruments
+  ];
+)
+
+private op doom_wad_result [ok, error, kind, file_bytes, lump_count,
+                            directory_offset, directory_bytes, zero_lumps,
+                            invalid_names, map_count, mus_lumps,
+                            music_overrides, music_tracks] (
+  => {
+    ok: ok, error: error, kind: kind, file_bytes: file_bytes,
+    lump_count: lump_count, directory_offset: directory_offset,
+    directory_bytes: directory_bytes, zero_lumps: zero_lumps,
+    invalid_names: invalid_names, map_count: map_count,
+    mus_lumps: mus_lumps, music_overrides: music_overrides,
+    music_tracks: music_tracks
+  };
+)
+
+private op doom_wad_error [message, file_bytes] (
+  => doom_wad_result[
+    0, message, "", file_bytes, 0, 0, 0, 0, 0, 0, 0, 0, []
+  ];
+)
+
+op doom_wad_inspect [path] (
+  let file_bytes = size[path];
+  if (file_bytes < 12) ( => doom_wad_error["file is shorter than a WAD header", file_bytes]; )
+  let header = read_range[path, 0, 12];
+  if (bytes_len[header] == 12) () else (
+    => doom_wad_error["short WAD header read", file_bytes];
+  )
+  let kind = "";
+  let magic = bytes_new[4];
+  let mi = 0;
+  while (mi < 4) (
+    bytes_set[magic, mi, bytes_get[header, mi]];
+    mi = mi + 1;
+  )
+  if (doom_wad_magic[magic, 73, 87, 65, 68] == 1) (
+    kind = "IWAD";
+  ) else if (doom_wad_magic[magic, 80, 87, 65, 68] == 1) (
+    kind = "PWAD";
+  ) else (
+    => doom_wad_error["magic is neither IWAD nor PWAD", file_bytes];
+  )
+  let lump_count = doom_wad_u32le[header, 4];
+  let directory_offset = doom_wad_u32le[header, 8];
+  if (lump_count <= 65536) () else (
+    => doom_wad_error["directory exceeds 65536 lumps", file_bytes];
+  )
+  let directory_bytes = lump_count * 16;
+  if (directory_offset <= file_bytes) () else (
+    => doom_wad_error["directory offset exceeds file", file_bytes];
+  )
+  if (directory_bytes <= file_bytes - directory_offset) () else (
+    => doom_wad_error["directory length exceeds file", file_bytes];
+  )
+  let directory = read_range[path, directory_offset, directory_bytes];
+  if (bytes_len[directory] == directory_bytes) () else (
+    => doom_wad_error["short WAD directory read", file_bytes];
+  )
+
+  let zero_lumps = 0;
+  let invalid_names = 0;
+  let map_count = 0;
+  let mus_lumps = 0;
+  let music_overrides = 0;
+  let music_tracks = [];
+  let index = 0;
+  while (index < lump_count) (
+    let base = doom_wad_directory_base[index];
+    let lump_offset = doom_wad_u32le[directory, base];
+    let lump_size = doom_wad_u32le[directory, base + 4];
+    if (lump_offset <= file_bytes) () else (
+      => doom_wad_error["lump ^{index} offset exceeds file", file_bytes];
+    )
+    if (lump_size <= file_bytes - lump_offset) () else (
+      => doom_wad_error["lump ^{index} length exceeds file", file_bytes];
+    )
+    if (lump_size == 0) ( zero_lumps = zero_lumps + 1; )
+    if (doom_wad_name_valid[directory, index] == 0) (
+      invalid_names = invalid_names + 1;
+    )
+    if (doom_wad_is_map_name[directory, index] == 1) (
+      map_count = map_count + 1;
+    )
+    if ((doom_wad_is_music_name[directory, index] == 1) and
+        (lump_size >= 4)) (
+      let prefix = read_range[path, lump_offset, 4];
+      if (doom_wad_magic[prefix, 77, 85, 83, 26] == 1) (
+        mus_lumps = mus_lumps + 1;
+        if (doom_wad_shadowed[directory, lump_count, index] == 1) (
+          music_overrides = music_overrides + 1;
+        ) else (
+          let mus = doom_wad_mus_header[path, lump_offset, lump_size];
+          if (mus\ok == 1) () else (
+            => doom_wad_error[
+              "invalid MUS lump ^{doom_wad_name[directory, index]}: ^{mus\error}",
+              file_bytes
+            ];
+          )
+          music_tracks = music_tracks + [{
+            index: index, name: doom_wad_name[directory, index],
+            lump_offset: lump_offset, lump_bytes: lump_size,
+            score_bytes: mus\score_bytes,
+            score_offset: mus\score_offset,
+            primary_channels: mus\primary_channels,
+            secondary_channels: mus\secondary_channels,
+            instruments: mus\instruments
+          }];
+        )
+      )
+    )
+    index = index + 1;
+  )
+
+  => doom_wad_result[
+    1, "", kind, file_bytes, lump_count, directory_offset,
+    directory_bytes, zero_lumps, invalid_names, map_count, mus_lumps,
+    music_overrides, music_tracks
+  ];
+)
+
+// Load one effective global lump through the same checked directory boundary
+// as inspection. Doom name lookup is last-entry-wins, including GENMIDI in a
+// PWAD that intentionally replaces the IWAD bank.
+op doom_wad_load_named [path, wad, name] (
+  if (wad\ok == 1) () else (
+    => { ok: 0, error: "cannot load a lump from an invalid WAD", data: bytes_new[0] };
+  )
+  let directory = read_range[
+    path, wad\directory_offset, wad\directory_bytes
+  ];
+  if (bytes_len[directory] == wad\directory_bytes) () else (
+    => { ok: 0, error: "short WAD directory read", data: bytes_new[0] };
+  )
+  let index = wad\lump_count - 1;
+  while (index >= 0) (
+    if ((doom_wad_name_valid[directory, index] == 1) and
+        (string_eq[doom_wad_name[directory, index], name] == 1)) (
+      let base = doom_wad_directory_base[index];
+      let lump_offset = doom_wad_u32le[directory, base];
+      let lump_size = doom_wad_u32le[directory, base + 4];
+      if ((lump_offset <= wad\file_bytes) and
+          (lump_size <= wad\file_bytes - lump_offset)) () else (
+        => { ok: 0, error: "named lump exceeds the WAD", data: bytes_new[0] };
+      )
+      let data = read_range[path, lump_offset, lump_size];
+      if (bytes_len[data] == lump_size) () else (
+        => { ok: 0, error: "short named lump read", data: bytes_new[0] };
+      )
+      => { ok: 1, error: "", data: data };
+    )
+    index = index - 1;
+  )
+  => { ok: 0, error: "named lump is absent", data: bytes_new[0] };
+)

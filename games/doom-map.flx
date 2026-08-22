@@ -1,0 +1,975 @@
+// Bounded classic Doom map loading and collision geometry. File offsets and
+// record references stop at this boundary: later world/render code receives
+// checked numeric tables and cannot reinterpret an untrusted WAD directory.
+
+credits: <../games/doom-format.flx> <f/arrays> <f/buffers> <f/bytes>
+         <f/files-chaos> <f/strings>;
+
+private op doom_map_read_range [path, offset, count] (
+  => read_range[path, offset, count] with chaos { _ => bytes_new[0] };
+)
+
+private op doom_map_result [ok, error, name, vertices, vertex_count,
+                            lines, line_count, things, thing_angles, thing_count,
+                            player_x, player_y, player_angle,
+                            min_x, max_x, min_y, max_y] (
+  => {
+    ok: ok, error: error, name: name,
+    vertices: vertices, vertex_count: vertex_count,
+    lines: lines, line_count: line_count,
+    things: things, thing_angles: thing_angles, thing_count: thing_count,
+    player_x: player_x, player_y: player_y, player_angle: player_angle,
+    min_x: min_x, max_x: max_x, min_y: min_y, max_y: max_y
+  };
+)
+
+private op doom_map_error [message] (
+  => doom_map_result[
+    0, message, "", %32[], 0, %32[], 0, %32[], %32[], 0,
+    0, 0, 0, 0, 0, 0, 0
+  ];
+)
+
+op doom_map_s16 [b, offset] (
+  let value = doom_wad_u16le[b, offset];
+  if (value >= 32768) ( => value - 65536; )
+  => value;
+)
+
+// The loader confines the byte ranges to their current WAD first. This layer
+// proves record tiling and every cross-record vertex reference.
+op doom_map_parse [name, vertex_bytes, linedef_bytes, thing_bytes] (
+  if (bytes_len[vertex_bytes] % 4 == 0) () else (
+    => doom_map_error["VERTEXES length is not divisible by 4"];
+  )
+  if (bytes_len[linedef_bytes] % 14 == 0) () else (
+    => doom_map_error["LINEDEFS length is not divisible by 14"];
+  )
+  if (bytes_len[thing_bytes] % 10 == 0) () else (
+    => doom_map_error["THINGS length is not divisible by 10"];
+  )
+  let vertex_count = bytes_len[vertex_bytes] / 4;
+  let line_count = bytes_len[linedef_bytes] / 14;
+  let thing_count = bytes_len[thing_bytes] / 10;
+  if ((vertex_count > 0) and (vertex_count <= 65536)) () else (
+    => doom_map_error["VERTEXES count is outside 1..65536"];
+  )
+  if (line_count <= 65536) () else ( => doom_map_error["LINEDEFS exceeds 65536 entries"]; )
+  if (thing_count <= 65536) () else ( => doom_map_error["THINGS exceeds 65536 entries"]; )
+
+  let vertices = buf_new[32, vertex_count * 2];
+  let min_x = doom_map_s16[vertex_bytes, 0];
+  let max_x = min_x;
+  let min_y = doom_map_s16[vertex_bytes, 2];
+  let max_y = min_y;
+  let vi = 0;
+  while (vi < vertex_count) (
+    let x = doom_map_s16[vertex_bytes, vi * 4];
+    let y = doom_map_s16[vertex_bytes, vi * 4 + 2];
+    buf_set[vertices, vi * 2, x];
+    buf_set[vertices, vi * 2 + 1, y];
+    if (x < min_x) ( min_x = x; )
+    if (x > max_x) ( max_x = x; )
+    if (y < min_y) ( min_y = y; )
+    if (y > max_y) ( max_y = y; )
+    vi = vi + 1;
+  )
+  if ((max_x > min_x) and (max_y > min_y)) () else (
+    => doom_map_error["map has a degenerate coordinate extent"];
+  )
+
+  // Four i32s: start vertex, end vertex, solid, original flags.
+  let lines = buf_new[32, line_count * 4];
+  let li = 0;
+  while (li < line_count) (
+    let off = li * 14;
+    let first = doom_wad_u16le[linedef_bytes, off];
+    let second = doom_wad_u16le[linedef_bytes, off + 2];
+    if ((first < vertex_count) and (second < vertex_count)) () else (
+      => doom_map_error["linedef ^{li} references an absent vertex"];
+    )
+    let flags = doom_wad_u16le[linedef_bytes, off + 4];
+    let right = doom_wad_u16le[linedef_bytes, off + 10];
+    let left = doom_wad_u16le[linedef_bytes, off + 12];
+    let solid = flags % 2;
+    if ((right == 65535) or (left == 65535)) ( solid = 1; )
+    buf_set[lines, li * 4, first];
+    buf_set[lines, li * 4 + 1, second];
+    buf_set[lines, li * 4 + 2, solid];
+    buf_set[lines, li * 4 + 3, flags];
+    li = li + 1;
+  )
+
+  // Four i32s: x, y, type, flags, plus a parallel orientation table. Type 1
+  // is the single-player start. Keeping angles separate retains every proven
+  // thing-buffer offset while making sprite rotation explicit.
+  let things = buf_new[32, thing_count * 4];
+  let thing_angles = buf_new[32, thing_count];
+  let has_player = 0;
+  let player_x = 0;
+  let player_y = 0;
+  let player_angle = 0;
+  let ti = 0;
+  while (ti < thing_count) (
+    let off = ti * 10;
+    let x = doom_map_s16[thing_bytes, off];
+    let y = doom_map_s16[thing_bytes, off + 2];
+    let angle = doom_wad_u16le[thing_bytes, off + 4];
+    let kind = doom_wad_u16le[thing_bytes, off + 6];
+    let flags = doom_wad_u16le[thing_bytes, off + 8];
+    buf_set[things, ti * 4, x];
+    buf_set[things, ti * 4 + 1, y];
+    buf_set[things, ti * 4 + 2, kind];
+    buf_set[things, ti * 4 + 3, flags];
+    buf_set[thing_angles, ti, angle];
+    if ((kind == 1) and (has_player == 0)) (
+      has_player = 1;
+      player_x = x;
+      player_y = y;
+      player_angle = angle;
+    )
+    ti = ti + 1;
+  )
+  if (has_player == 1) () else ( => doom_map_error["map has no player-one start"]; )
+
+  => doom_map_result[
+    1, "", name, vertices, vertex_count, lines, line_count,
+    things, thing_angles, thing_count, player_x, player_y, player_angle,
+    min_x, max_x, min_y, max_y
+  ];
+)
+
+private op doom_map_geometry_result [base, ok, error,
+                                     sides, side_count,
+                                     side_names, side_textures,
+                                     line_sides, line_actions,
+                                     sectors, sector_count,
+                                     sector_names, sector_flats,
+                                     segs, seg_offsets, seg_count,
+                                     subsectors, subsector_count,
+                                     nodes, node_count,
+                                     texture_bank] (
+  => base + {
+    ok: ok, error: error, bsp_ready: ok,
+    sides: sides, side_count: side_count,
+    side_names: side_names, side_textures: side_textures,
+    line_sides: line_sides, line_actions: line_actions,
+    sectors: sectors, sector_count: sector_count,
+    sector_names: sector_names, sector_flats: sector_flats,
+    segs: segs, seg_offsets: seg_offsets, seg_count: seg_count,
+    subsectors: subsectors, subsector_count: subsector_count,
+    nodes: nodes, node_count: node_count,
+    texture_bank: texture_bank
+  };
+)
+
+private op doom_map_empty_texture_bank [] (
+  => {
+    ready: 0, error: "", texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[],
+    texture_pixels: bytes_new[0], texture_opaque: bytes_new[0],
+    flat_count: 0, flat_names: bytes_new[0],
+    flat_pixels: bytes_new[0], sky_flat: 0 - 1,
+    sprite_ready: 0, sprite_slots: 0, sprite_loaded: 0,
+    sprite_meta: %32[], sprite_pixels: bytes_new[0],
+    sprite_opaque: bytes_new[0],
+    ui_ready: 0, ui_slots: 0, ui_meta: %32[],
+    ui_pixels: bytes_new[0], ui_opaque: bytes_new[0],
+    palette: bytes_new[0], colormap: bytes_new[0], colours: %32[]
+  };
+)
+
+private op doom_map_geometry_error [base, message] (
+  => doom_map_geometry_result[
+    base, 0, message,
+    %32[], 0, bytes_new[0], %32[], %32[], %32[],
+    %32[], 0, bytes_new[0], %32[],
+    %32[], %32[], 0, %32[], 0, %32[], 0,
+    doom_map_empty_texture_bank[]
+  ];
+)
+
+// Add the classic render geometry to an already validated base map. Storage is
+// deliberately narrow and numeric: texture names remain a later, independently
+// bounded slice. Layouts below mirror the persistent structs in doomdata.h.
+op doom_map_parse_geometry [base, linedef_bytes, sidedef_bytes,
+                            seg_bytes, subsector_bytes, node_bytes,
+                            sector_bytes] (
+  if (base\ok == 1) () else ( => doom_map_geometry_error[base, base\error]; )
+  if (bytes_len[linedef_bytes] == base\line_count * 14) () else (
+    => doom_map_geometry_error[base, "LINEDEFS changed before geometry parsing"];
+  )
+  if (bytes_len[sidedef_bytes] % 30 == 0) () else (
+    => doom_map_geometry_error[base, "SIDEDEFS length is not divisible by 30"];
+  )
+  if (bytes_len[seg_bytes] % 12 == 0) () else (
+    => doom_map_geometry_error[base, "SEGS length is not divisible by 12"];
+  )
+  if (bytes_len[subsector_bytes] % 4 == 0) () else (
+    => doom_map_geometry_error[base, "SSECTORS length is not divisible by 4"];
+  )
+  if (bytes_len[node_bytes] % 28 == 0) () else (
+    => doom_map_geometry_error[base, "NODES length is not divisible by 28"];
+  )
+  if (bytes_len[sector_bytes] % 26 == 0) () else (
+    => doom_map_geometry_error[base, "SECTORS length is not divisible by 26"];
+  )
+
+  let side_count = bytes_len[sidedef_bytes] / 30;
+  let seg_count = bytes_len[seg_bytes] / 12;
+  let subsector_count = bytes_len[subsector_bytes] / 4;
+  let node_count = bytes_len[node_bytes] / 28;
+  let sector_count = bytes_len[sector_bytes] / 26;
+  if ((side_count > 0) and (side_count <= 65536)) () else (
+    => doom_map_geometry_error[base, "SIDEDEFS count is outside 1..65536"];
+  )
+  if ((seg_count > 0) and (seg_count <= 65536)) () else (
+    => doom_map_geometry_error[base, "SEGS count is outside 1..65536"];
+  )
+  if ((subsector_count > 0) and (subsector_count <= 32768)) () else (
+    => doom_map_geometry_error[base, "SSECTORS count is outside 1..32768"];
+  )
+  if (node_count <= 32767) () else (
+    => doom_map_geometry_error[base, "NODES exceeds the 15-bit child domain"];
+  )
+  if ((sector_count > 0) and (sector_count <= 65536)) () else (
+    => doom_map_geometry_error[base, "SECTORS count is outside 1..65536"];
+  )
+  if (node_count == subsector_count - 1) () else (
+    => doom_map_geometry_error[base, "NODES/SSECTORS do not form a full binary tree"];
+  )
+
+  // Five i32s: floor, ceiling, light, special, tag. Flat names remain exact
+  // eight-byte WAD names; texture loading resolves them independently.
+  let sectors = buf_new[32, sector_count * 5];
+  let sector_names = bytes_new[sector_count * 16];
+  let sector_flats = buf_new[32, sector_count * 2];
+  let i = 0;
+  while (i < sector_count) (
+    let off = i * 26;
+    buf_set[sectors, i * 5, doom_map_s16[sector_bytes, off]];
+    buf_set[sectors, i * 5 + 1, doom_map_s16[sector_bytes, off + 2]];
+    buf_set[sectors, i * 5 + 2, doom_map_s16[sector_bytes, off + 20]];
+    buf_set[sectors, i * 5 + 3, doom_map_s16[sector_bytes, off + 22]];
+    buf_set[sectors, i * 5 + 4, doom_map_s16[sector_bytes, off + 24]];
+    let ni = 0;
+    while (ni < 8) (
+      bytes_set[sector_names, i * 16 + ni, bytes_get[sector_bytes, off + 4 + ni]];
+      bytes_set[sector_names, i * 16 + 8 + ni,
+                bytes_get[sector_bytes, off + 12 + ni]];
+      ni = ni + 1;
+    )
+    buf_set[sector_flats, i * 2, 0 - 1];
+    buf_set[sector_flats, i * 2 + 1, 0 - 1];
+    i = i + 1;
+  )
+
+  // Three i32s: horizontal texture offset, row offset, sector index. The
+  // parallel exact-name bytes are upper, lower and middle texture names.
+  let sides = buf_new[32, side_count * 3];
+  let side_names = bytes_new[side_count * 24];
+  let side_textures = buf_new[32, side_count * 3];
+  i = 0;
+  while (i < side_count) (
+    let off = i * 30;
+    let sector = doom_wad_u16le[sidedef_bytes, off + 28];
+    if (sector < sector_count) () else (
+      => doom_map_geometry_error[base, "sidedef ^{i} references an absent sector"];
+    )
+    buf_set[sides, i * 3, doom_map_s16[sidedef_bytes, off]];
+    buf_set[sides, i * 3 + 1, doom_map_s16[sidedef_bytes, off + 2]];
+    buf_set[sides, i * 3 + 2, sector];
+    let ni = 0;
+    while (ni < 8) (
+      bytes_set[side_names, i * 24 + ni,
+                bytes_get[sidedef_bytes, off + 4 + ni]];
+      bytes_set[side_names, i * 24 + 8 + ni,
+                bytes_get[sidedef_bytes, off + 12 + ni]];
+      bytes_set[side_names, i * 24 + 16 + ni,
+                bytes_get[sidedef_bytes, off + 20 + ni]];
+      ni = ni + 1;
+    )
+    buf_set[side_textures, i * 3, 0 - 1];
+    buf_set[side_textures, i * 3 + 1, 0 - 1];
+    buf_set[side_textures, i * 3 + 2, 0 - 1];
+    i = i + 1;
+  )
+
+  // Four i32s per linedef: right/left sidedef and right/left sector. -1 is
+  // retained explicitly for an absent left side.
+  let line_sides = buf_new[32, base\line_count * 4];
+  // Two i32s per linedef retain the classic action special and tag without
+  // widening the established collision-line layout.
+  let line_actions = buf_new[32, base\line_count * 2];
+  i = 0;
+  while (i < base\line_count) (
+    let off = i * 14;
+    let right = doom_wad_u16le[linedef_bytes, off + 10];
+    let left = doom_wad_u16le[linedef_bytes, off + 12];
+    if (right < side_count) () else (
+      => doom_map_geometry_error[base, "linedef ^{i} has no valid right sidedef"];
+    )
+    let right_sector = buf_get[sides, right * 3 + 2];
+    let left_sector = 0 - 1;
+    let left_index = 0 - 1;
+    if (left != 65535) (
+      if (left < side_count) () else (
+        => doom_map_geometry_error[base, "linedef ^{i} references an absent left sidedef"];
+      )
+      left_index = left;
+      left_sector = buf_get[sides, left * 3 + 2];
+    )
+    let flags = buf_get[base\lines, i * 4 + 3];
+    if (((flags / 4) % 2 == 0) or (left_sector >= 0)) () else (
+      => doom_map_geometry_error[base, "two-sided linedef ^{i} has no left side"];
+    )
+    buf_set[line_sides, i * 4, right];
+    buf_set[line_sides, i * 4 + 1, left_index];
+    buf_set[line_sides, i * 4 + 2, right_sector];
+    buf_set[line_sides, i * 4 + 3, left_sector];
+    buf_set[line_actions, i * 2, doom_wad_u16le[linedef_bytes, off + 6]];
+    buf_set[line_actions, i * 2 + 1, doom_wad_u16le[linedef_bytes, off + 8]];
+    i = i + 1;
+  )
+
+  // Six i32s: v1, v2, linedef, side, front sector, back sector.
+  let segs = buf_new[32, seg_count * 6];
+  let seg_offsets = buf_new[32, seg_count];
+  i = 0;
+  while (i < seg_count) (
+    let off = i * 12;
+    let first = doom_wad_u16le[seg_bytes, off];
+    let second = doom_wad_u16le[seg_bytes, off + 2];
+    let line = doom_wad_u16le[seg_bytes, off + 6];
+    let side = doom_wad_u16le[seg_bytes, off + 8];
+    if ((first < base\vertex_count) and (second < base\vertex_count)) () else (
+      => doom_map_geometry_error[base, "seg ^{i} references an absent vertex"];
+    )
+    if (line < base\line_count) () else (
+      => doom_map_geometry_error[base, "seg ^{i} references an absent linedef"];
+    )
+    if ((side == 0) or (side == 1)) () else (
+      => doom_map_geometry_error[base, "seg ^{i} has an invalid side"];
+    )
+    let lb = line * 4;
+    let side_index = buf_get[line_sides, lb + side];
+    if ((side_index >= 0) and (side_index < side_count)) () else (
+      => doom_map_geometry_error[base, "seg ^{i} selects an absent sidedef"];
+    )
+    let front_sector = buf_get[line_sides, lb + 2 + side];
+    let back_sector = 0 - 1;
+    let flags = buf_get[base\lines, line * 4 + 3];
+    if ((flags / 4) % 2 == 1) (
+      back_sector = buf_get[line_sides, lb + 3 - side];
+    )
+    buf_set[segs, i * 6, first];
+    buf_set[segs, i * 6 + 1, second];
+    buf_set[segs, i * 6 + 2, line];
+    buf_set[segs, i * 6 + 3, side];
+    buf_set[segs, i * 6 + 4, front_sector];
+    buf_set[segs, i * 6 + 5, back_sector];
+    buf_set[seg_offsets, i, doom_wad_u16le[seg_bytes, off + 10]];
+    i = i + 1;
+  )
+
+  // Three i32s: first seg, seg count, first-seg front sector. Vanilla Doom
+  // derives subsector ownership from its first seg; official E3M2/E3M8 also
+  // contain historical mixed-front subsectors, so homogeneity is not a WAD
+  // invariant. The ranges still tile validated SEGS exactly once.
+  let subsectors = buf_new[32, subsector_count * 3];
+  let seg_cursor = 0;
+  i = 0;
+  while (i < subsector_count) (
+    let off = i * 4;
+    let count = doom_wad_u16le[subsector_bytes, off];
+    let first = doom_wad_u16le[subsector_bytes, off + 2];
+    if ((count > 0) and (first == seg_cursor) and
+        (count <= seg_count - first)) () else (
+      => doom_map_geometry_error[base, "subsector ^{i} does not tile SEGS"];
+    )
+    let sector = buf_get[segs, first * 6 + 4];
+    buf_set[subsectors, i * 3, first];
+    buf_set[subsectors, i * 3 + 1, count];
+    buf_set[subsectors, i * 3 + 2, sector];
+    seg_cursor = seg_cursor + count;
+    i = i + 1;
+  )
+  if (seg_cursor == seg_count) () else (
+    => doom_map_geometry_error[base, "SSECTORS leave unowned segs"];
+  )
+
+  // Fourteen i32s: partition x/y/dx/dy, two four-value bboxes, two raw
+  // children. Child 0..32767 is an earlier node; high bit denotes a leaf.
+  let nodes = buf_new[32, node_count * 14];
+  let node_parents = bytes_new[node_count];
+  let subsector_parents = bytes_new[subsector_count];
+  i = 0;
+  while (i < node_count) (
+    let off = i * 28;
+    let nb = i * 14;
+    buf_set[nodes, nb, doom_map_s16[node_bytes, off]];
+    buf_set[nodes, nb + 1, doom_map_s16[node_bytes, off + 2]];
+    buf_set[nodes, nb + 2, doom_map_s16[node_bytes, off + 4]];
+    buf_set[nodes, nb + 3, doom_map_s16[node_bytes, off + 6]];
+    let bi = 0;
+    while (bi < 8) (
+      buf_set[nodes, nb + 4 + bi, doom_map_s16[node_bytes, off + 8 + bi * 2]];
+      bi = bi + 1;
+    )
+    let ci = 0;
+    while (ci < 2) (
+      let child = doom_wad_u16le[node_bytes, off + 24 + ci * 2];
+      buf_set[nodes, nb + 12 + ci, child];
+      if (child >= 32768) (
+        let leaf = child - 32768;
+        if (child == 65535) ( leaf = 0; )
+        if (leaf < subsector_count) () else (
+          => doom_map_geometry_error[base, "node ^{i} references an absent subsector"];
+        )
+        let parents = bytes_get[subsector_parents, leaf] + 1;
+        if (parents == 1) () else (
+          => doom_map_geometry_error[base, "subsector ^{leaf} has multiple BSP parents"];
+        )
+        bytes_set[subsector_parents, leaf, parents];
+      ) else (
+        if (child < i) () else (
+          => doom_map_geometry_error[base, "node ^{i} has a cyclic or forward child"];
+        )
+        let parents = bytes_get[node_parents, child] + 1;
+        if (parents == 1) () else (
+          => doom_map_geometry_error[base, "node ^{child} has multiple BSP parents"];
+        )
+        bytes_set[node_parents, child, parents];
+      )
+      ci = ci + 1;
+    )
+    i = i + 1;
+  )
+  if (node_count == 0) (
+    if (subsector_count == 1) () else (
+      => doom_map_geometry_error[base, "a nodeless map must have one subsector"];
+    )
+  ) else (
+    i = 0;
+    while (i < node_count) (
+      let wanted = 1;
+      if (i == node_count - 1) ( wanted = 0; )
+      if (bytes_get[node_parents, i] == wanted) () else (
+        => doom_map_geometry_error[base, "BSP node parent counts do not select one root"];
+      )
+      i = i + 1;
+    )
+    i = 0;
+    while (i < subsector_count) (
+      if (bytes_get[subsector_parents, i] == 1) () else (
+        => doom_map_geometry_error[base, "BSP does not own every subsector exactly once"];
+      )
+      i = i + 1;
+    )
+  )
+
+  => doom_map_geometry_result[
+    base, 1, "", sides, side_count, side_names, side_textures,
+    line_sides, line_actions,
+    sectors, sector_count, sector_names, sector_flats,
+    segs, seg_offsets, seg_count,
+    subsectors, subsector_count, nodes, node_count,
+    doom_map_empty_texture_bank[]
+  ];
+)
+
+private op doom_map_directory_entry [directory, index] (
+  let base = index * 16;
+  => {
+    offset: doom_wad_u32le[directory, base],
+    bytes: doom_wad_u32le[directory, base + 4]
+  };
+)
+
+private op doom_map_expect_name [directory, index, expected] (
+  => string_eq[doom_wad_name[directory, index], expected];
+)
+
+private op doom_map_span_fits [entry, file_bytes] (
+  => (entry\offset <= file_bytes) and
+    (entry\bytes <= file_bytes - entry\offset);
+)
+
+private op doom_map_namespace_complete [directory, lump_count, marker] (
+  if ((marker >= 0) and (marker + 10 < lump_count)) () else ( => 0; )
+  => (doom_map_expect_name[directory, marker + 1, "THINGS"] == 1) and
+    (doom_map_expect_name[directory, marker + 2, "LINEDEFS"] == 1) and
+    (doom_map_expect_name[directory, marker + 3, "SIDEDEFS"] == 1) and
+    (doom_map_expect_name[directory, marker + 4, "VERTEXES"] == 1) and
+    (doom_map_expect_name[directory, marker + 5, "SEGS"] == 1) and
+    (doom_map_expect_name[directory, marker + 6, "SSECTORS"] == 1) and
+    (doom_map_expect_name[directory, marker + 7, "NODES"] == 1) and
+    (doom_map_expect_name[directory, marker + 8, "SECTORS"] == 1) and
+    (doom_map_expect_name[directory, marker + 9, "REJECT"] == 1) and
+    (doom_map_expect_name[directory, marker + 10, "BLOCKMAP"] == 1);
+)
+
+// List complete classic ExMy namespaces through the same bounded, chaos-aware
+// directory boundary used by doom_map_load. Last-marker-wins matching mirrors
+// Doom PWAD override order; numeric order keeps the menu deterministic.
+op doom_map_catalog [path] (
+  let header = doom_map_read_range[path, 0, 12];
+  if (bytes_len[header] == 12) () else (
+    => { ok: 0, error: "short WAD header read", maps: [] };
+  )
+  if (((bytes_get[header, 0] == 73) or (bytes_get[header, 0] == 80)) and
+      (bytes_get[header, 1] == 87) and (bytes_get[header, 2] == 65) and
+      (bytes_get[header, 3] == 68)) () else (
+    => { ok: 0, error: "bad WAD magic", maps: [] };
+  )
+  let file_bytes = size[path] with chaos { _ => 0 - 1 };
+  let lump_count = doom_wad_u32le[header, 4];
+  let directory_offset = doom_wad_u32le[header, 8];
+  if ((file_bytes >= 12) and (lump_count <= 65536)) () else (
+    => { ok: 0, error: "WAD directory count is outside bounds", maps: [] };
+  )
+  let directory_bytes = lump_count * 16;
+  if ((directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => { ok: 0, error: "WAD directory exceeds current file", maps: [] };
+  )
+  let directory = doom_map_read_range[path, directory_offset, directory_bytes];
+  if (bytes_len[directory] == directory_bytes) () else (
+    => { ok: 0, error: "short WAD directory read", maps: [] };
+  )
+
+  let maps = [];
+  let episode = 1;
+  while (episode <= 9) (
+    let map_number = 1;
+    while (map_number <= 9) (
+      let selector = "E^{episode}M^{map_number}";
+      let marker = 0 - 1;
+      let i = 0;
+      while (i < lump_count) (
+        if (string_eq[doom_wad_name[directory, i], selector] == 1) (
+          marker = i;
+        )
+        i = i + 1;
+      )
+      if (doom_map_namespace_complete[directory, lump_count, marker] == 1) (
+        maps = maps + [selector];
+      )
+      map_number = map_number + 1;
+    )
+    episode = episode + 1;
+  )
+  => { ok: 1, error: "", maps: maps };
+)
+
+// Load the last classic map namespace with this marker name.
+op doom_map_load [path, selector] (
+  let header = doom_map_read_range[path, 0, 12];
+  if (bytes_len[header] == 12) () else ( => doom_map_error["short WAD header read"]; )
+  if (((bytes_get[header, 0] == 73) or (bytes_get[header, 0] == 80)) and
+      (bytes_get[header, 1] == 87) and (bytes_get[header, 2] == 65) and
+      (bytes_get[header, 3] == 68)) () else ( => doom_map_error["bad WAD magic"]; )
+  let file_bytes = size[path] with chaos { _ => 0 - 1 };
+  let lump_count = doom_wad_u32le[header, 4];
+  let directory_offset = doom_wad_u32le[header, 8];
+  if (lump_count <= 65536) () else ( => doom_map_error["directory exceeds 65536 lumps"]; )
+  let directory_bytes = lump_count * 16;
+  if ((directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => doom_map_error["WAD changed during map inspection"];
+  )
+  let directory = doom_map_read_range[path, directory_offset, directory_bytes];
+  if (bytes_len[directory] == directory_bytes) () else (
+    => doom_map_error["short WAD directory read"];
+  )
+  let marker = 0 - 1;
+  let i = 0;
+  while (i < lump_count) (
+    if (string_eq[doom_wad_name[directory, i], selector] == 1) ( marker = i; )
+    i = i + 1;
+  )
+  if (marker >= 0) () else ( => doom_map_error["map marker ^{selector} was not found"]; )
+  if (doom_map_namespace_complete[directory, lump_count, marker] == 1) () else (
+    => doom_map_error["map marker is not followed by a classic namespace"];
+  )
+  let things = doom_map_directory_entry[directory, marker + 1];
+  let linedefs = doom_map_directory_entry[directory, marker + 2];
+  let sidedefs = doom_map_directory_entry[directory, marker + 3];
+  let vertices = doom_map_directory_entry[directory, marker + 4];
+  let segs = doom_map_directory_entry[directory, marker + 5];
+  let subsectors = doom_map_directory_entry[directory, marker + 6];
+  let nodes = doom_map_directory_entry[directory, marker + 7];
+  let sectors = doom_map_directory_entry[directory, marker + 8];
+  if (vertices\bytes <= 65536 * 4) () else ( => doom_map_error["VERTEXES exceeds 65536 entries"]; )
+  if (linedefs\bytes <= 65536 * 14) () else ( => doom_map_error["LINEDEFS exceeds 65536 entries"]; )
+  if (things\bytes <= 65536 * 10) () else ( => doom_map_error["THINGS exceeds 65536 entries"]; )
+  if (sidedefs\bytes <= 65536 * 30) () else ( => doom_map_error["SIDEDEFS exceeds 65536 entries"]; )
+  if (segs\bytes <= 65536 * 12) () else ( => doom_map_error["SEGS exceeds 65536 entries"]; )
+  if (subsectors\bytes <= 32768 * 4) () else ( => doom_map_error["SSECTORS exceeds 32768 entries"]; )
+  if (nodes\bytes <= 32767 * 28) () else ( => doom_map_error["NODES exceeds 32767 entries"]; )
+  if (sectors\bytes <= 65536 * 26) () else ( => doom_map_error["SECTORS exceeds 65536 entries"]; )
+  if ((doom_map_span_fits[vertices, file_bytes] == 1) and
+      (doom_map_span_fits[linedefs, file_bytes] == 1) and
+      (doom_map_span_fits[things, file_bytes] == 1) and
+      (doom_map_span_fits[sidedefs, file_bytes] == 1) and
+      (doom_map_span_fits[segs, file_bytes] == 1) and
+      (doom_map_span_fits[subsectors, file_bytes] == 1) and
+      (doom_map_span_fits[nodes, file_bytes] == 1) and
+      (doom_map_span_fits[sectors, file_bytes] == 1)) () else (
+    => doom_map_error["map lump span exceeds current WAD"];
+  )
+  let vertex_data = doom_map_read_range[path, vertices\offset, vertices\bytes];
+  let linedef_data = doom_map_read_range[path, linedefs\offset, linedefs\bytes];
+  let thing_data = doom_map_read_range[path, things\offset, things\bytes];
+  let sidedef_data = doom_map_read_range[path, sidedefs\offset, sidedefs\bytes];
+  let seg_data = doom_map_read_range[path, segs\offset, segs\bytes];
+  let subsector_data = doom_map_read_range[path, subsectors\offset, subsectors\bytes];
+  let node_data = doom_map_read_range[path, nodes\offset, nodes\bytes];
+  let sector_data = doom_map_read_range[path, sectors\offset, sectors\bytes];
+  if ((bytes_len[vertex_data] == vertices\bytes) and
+      (bytes_len[linedef_data] == linedefs\bytes) and
+      (bytes_len[thing_data] == things\bytes) and
+      (bytes_len[sidedef_data] == sidedefs\bytes) and
+      (bytes_len[seg_data] == segs\bytes) and
+      (bytes_len[subsector_data] == subsectors\bytes) and
+      (bytes_len[node_data] == nodes\bytes) and
+      (bytes_len[sector_data] == sectors\bytes)) () else (
+    => doom_map_error["short map lump read"];
+  )
+  let base = doom_map_parse[
+    selector, vertex_data, linedef_data, thing_data
+  ];
+  if (base\ok == 1) () else ( => base; )
+  => doom_map_parse_geometry[
+    base, linedef_data, sidedef_data, seg_data,
+    subsector_data, node_data, sector_data
+  ];
+)
+
+op doom_map_node_side [map, x, y, node_index] (
+  if ((node_index >= 0) and (node_index < map\node_count)) () else (
+    fall "doom_map_node_side: node index outside BSP";
+  )
+  let nb = node_index * 14;
+  let nx = buf_get[map\nodes, nb];
+  let ny = buf_get[map\nodes, nb + 1];
+  let ndx = buf_get[map\nodes, nb + 2];
+  let ndy = buf_get[map\nodes, nb + 3];
+  let left = ndy * (x - nx);
+  let right = (y - ny) * ndx;
+  if (right < left) ( => 0; )
+  => 1;
+)
+
+op doom_map_child_subsector [child] (
+  if (child >= 32768) () else (
+    fall "doom_map_child_subsector: BSP child is not a subsector";
+  )
+  if (child == 65535) ( => 0; )
+  => child - 32768;
+)
+
+op doom_map_point_subsector [map, x, y] (
+  if (map\bsp_ready == 1) () else (
+    fall "doom_map_point_subsector: map has no validated BSP";
+  )
+  if (map\node_count == 0) ( => 0; )
+  let child = map\node_count - 1;
+  let hops = 0;
+  while (child < 32768) (
+    if (hops < map\node_count) () else (
+      fall "doom_map_point_subsector: BSP traversal exceeded node bound";
+    )
+    let side = doom_map_node_side[map, x, y, child];
+    child = buf_get[map\nodes, child * 14 + 12 + side];
+    hops = hops + 1;
+  )
+  let subsector = doom_map_child_subsector[child];
+  if (subsector < map\subsector_count) () else (
+    fall "doom_map_point_subsector: validated child left subsector domain";
+  )
+  => subsector;
+)
+
+op doom_map_point_sector [map, x, y] (
+  let subsector = doom_map_point_subsector[map, x, y];
+  => buf_get[map\subsectors, subsector * 3 + 2];
+)
+
+// Fill `order` with all subsectors nearest-first from this point. The explicit
+// stack makes even a maximally deep valid 15-bit tree bounded by supplied raw
+// storage rather than the process stack.
+op doom_map_bsp_order_into [map, x, y, stack, order] (
+  if (map\bsp_ready == 1) () else (
+    fall "doom_map_bsp_order_into: map has no validated BSP";
+  )
+  if (buf_len[stack] >= map\node_count + map\subsector_count) () else (
+    fall "doom_map_bsp_order_into: stack is smaller than the BSP";
+  )
+  if (buf_len[order] >= map\subsector_count) () else (
+    fall "doom_map_bsp_order_into: output is smaller than SSECTORS";
+  )
+  let root = 32768;
+  if (map\node_count > 0) ( root = map\node_count - 1; )
+  let sp = 1;
+  let count = 0;
+  buf_set[stack, 0, root];
+  while (sp > 0) (
+    sp = sp - 1;
+    let child = buf_get[stack, sp];
+    if (child >= 32768) (
+      let subsector = doom_map_child_subsector[child];
+      if (subsector < map\subsector_count) () else (
+        fall "doom_map_bsp_order_into: child left subsector domain";
+      )
+      buf_set[order, count, subsector];
+      count = count + 1;
+    ) else (
+      if (child < map\node_count) () else (
+        fall "doom_map_bsp_order_into: child left node domain";
+      )
+      let side = doom_map_node_side[map, x, y, child];
+      let nb = child * 14;
+      // LIFO: far first, then near, so near is visited immediately.
+      buf_set[stack, sp, buf_get[map\nodes, nb + 12 + (1 - side)]];
+      sp = sp + 1;
+      buf_set[stack, sp, buf_get[map\nodes, nb + 12 + side]];
+      sp = sp + 1;
+    )
+  )
+  if (count == map\subsector_count) () else (
+    fall "doom_map_bsp_order_into: validated tree did not visit every leaf";
+  )
+  => count;
+)
+
+private op doom_map_orientation [ax, ay, bx, by, px, py] (
+  => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+)
+
+private op doom_map_between [value, a, b] (
+  if (a <= b) ( => (value >= a) and (value <= b); )
+  => (value >= b) and (value <= a);
+)
+
+private op doom_map_point_on_segment [ax, ay, bx, by, px, py] (
+  => (doom_map_orientation[ax, ay, bx, by, px, py] == 0) and
+     (doom_map_between[px, ax, bx] == 1) and
+     (doom_map_between[py, ay, by] == 1);
+)
+
+private op doom_map_segments_cross [ax, ay, bx, by, cx, cy, dx, dy] (
+  let p = doom_map_orientation[ax, ay, bx, by, cx, cy];
+  let q = doom_map_orientation[ax, ay, bx, by, dx, dy];
+  let r = doom_map_orientation[cx, cy, dx, dy, ax, ay];
+  let s = doom_map_orientation[cx, cy, dx, dy, bx, by];
+  let across_first = ((p < 0) and (q > 0)) or ((p > 0) and (q < 0));
+  let across_second = ((r < 0) and (s > 0)) or ((r > 0) and (s < 0));
+  if ((across_first == 1) and (across_second == 1)) ( => 1; )
+  if ((p == 0) and
+      (doom_map_point_on_segment[ax, ay, bx, by, cx, cy] == 1)) ( => 1; )
+  if ((q == 0) and
+      (doom_map_point_on_segment[ax, ay, bx, by, dx, dy] == 1)) ( => 1; )
+  if ((r == 0) and
+      (doom_map_point_on_segment[cx, cy, dx, dy, ax, ay] == 1)) ( => 1; )
+  if ((s == 0) and
+      (doom_map_point_on_segment[cx, cy, dx, dy, bx, by] == 1)) ( => 1; )
+  => 0;
+)
+
+// Movement may ride exactly along a contacted wall. The general path test is
+// deliberately inclusive because use/cross/sight callers care about endpoint
+// contact, but treating a collinear movement span as a new wall crossing makes
+// a player stick once a radius support point reaches an angled linedef.
+private op doom_map_move_segments_cross [ax, ay, bx, by, cx, cy, dx, dy] (
+  if ((doom_map_point_on_segment[ax, ay, bx, by, cx, cy] == 1) and
+      (doom_map_point_on_segment[ax, ay, bx, by, dx, dy] == 1)) ( => 0; )
+  => doom_map_segments_cross[ax, ay, bx, by, cx, cy, dx, dy];
+)
+
+op doom_map_path_crosses_line [map, line, from_x, from_y, to_x, to_y] (
+  if ((line >= 0) and (line < map\line_count)) () else (
+    fall "doom_map_path_crosses_line: line index outside LINEDEFS";
+  )
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  => doom_map_segments_cross[
+    buf_get[map\vertices, va], buf_get[map\vertices, va + 1],
+    buf_get[map\vertices, vb], buf_get[map\vertices, vb + 1],
+    from_x, from_y, to_x, to_y
+  ];
+)
+
+// Zero means clear; a positive result is the blocking linedef plus one. The
+// compact code keeps the hot collision path allocation-free while allowing
+// the world layer to retain exact blocker identity after a live failure.
+op doom_map_move_wall_blocker [map, from_x, from_y, to_x, to_y] (
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    if (buf_get[map\lines, lb + 2] == 1) (
+      let va = buf_get[map\lines, lb] * 2;
+      let vb = buf_get[map\lines, lb + 1] * 2;
+      let ax = buf_get[map\vertices, va];
+      let ay = buf_get[map\vertices, va + 1];
+      let bx = buf_get[map\vertices, vb];
+      let by = buf_get[map\vertices, vb + 1];
+      if (doom_map_move_segments_cross[
+            ax, ay, bx, by, from_x, from_y, to_x, to_y
+          ] == 1) ( => i + 1; )
+    )
+    i = i + 1;
+  )
+  => 0;
+)
+
+op doom_map_move_crosses_wall [map, from_x, from_y, to_x, to_y] (
+  => doom_map_move_wall_blocker[map, from_x, from_y, to_x, to_y] != 0;
+)
+
+op doom_map_move_blocked [map, from_x, from_y, to_x, to_y,
+                          player_height, maximum_step] (
+  let from_sector = doom_map_point_sector[map, from_x, from_y];
+  let feet_z = buf_get[map\sectors, from_sector * 5];
+  => doom_map_move_blocked_at[
+    map, from_x, from_y, to_x, to_y, feet_z,
+    player_height, maximum_step
+  ];
+)
+
+// Horizontal motion with an explicit feet height. A jump can clear a raised
+// lip only when its real vertical state already fits the target portal; the
+// same dynamic sector table remains collision authority for moving doors.
+// Zero is clear, positive is linedef+1, and negative is -(target sector+1).
+op doom_map_move_blocker_at [map, from_x, from_y, to_x, to_y, feet_z,
+                             player_height, maximum_step] (
+  let solid = doom_map_move_wall_blocker[
+    map, from_x, from_y, to_x, to_y
+  ];
+  if (solid != 0) ( => solid; )
+  // A two-sided line is still impassable when its sector pair leaves no
+  // player-height opening (the ordinary closed-door shape).
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    if (buf_get[map\lines, lb + 2] == 0) (
+      let va = buf_get[map\lines, lb] * 2;
+      let vb = buf_get[map\lines, lb + 1] * 2;
+      if (doom_map_move_segments_cross[
+            buf_get[map\vertices, va], buf_get[map\vertices, va + 1],
+            buf_get[map\vertices, vb], buf_get[map\vertices, vb + 1],
+            from_x, from_y, to_x, to_y
+          ] == 1) (
+        let right_sector = buf_get[map\line_sides, lb + 2];
+        let left_sector = buf_get[map\line_sides, lb + 3];
+        if ((right_sector >= 0) and (left_sector >= 0)) () else ( => i + 1; )
+        let opening_floor = buf_get[map\sectors, right_sector * 5];
+        let left_floor = buf_get[map\sectors, left_sector * 5];
+        if (left_floor > opening_floor) ( opening_floor = left_floor; )
+        let opening_ceiling = buf_get[map\sectors, right_sector * 5 + 1];
+        let left_ceiling = buf_get[map\sectors, left_sector * 5 + 1];
+        if (left_ceiling < opening_ceiling) ( opening_ceiling = left_ceiling; )
+        if (opening_floor - feet_z > maximum_step) ( => i + 1; )
+        let body_floor = feet_z;
+        if (opening_floor > body_floor) ( body_floor = opening_floor; )
+        if (opening_ceiling - body_floor < player_height) ( => i + 1; )
+      )
+    )
+    i = i + 1;
+  )
+  let to_sector = doom_map_point_sector[map, to_x, to_y];
+  let to_floor = buf_get[map\sectors, to_sector * 5];
+  let to_ceiling = buf_get[map\sectors, to_sector * 5 + 1];
+  if (to_floor - feet_z > maximum_step) ( => 0 - (to_sector + 1); )
+  let target_body_floor = feet_z;
+  if (to_floor > target_body_floor) ( target_body_floor = to_floor; )
+  if (to_ceiling - target_body_floor < player_height) (
+    => 0 - (to_sector + 1);
+  )
+  => 0;
+)
+
+op doom_map_move_blocked_at [map, from_x, from_y, to_x, to_y, feet_z,
+                             player_height, maximum_step] (
+  => doom_map_move_blocker_at[
+    map, from_x, from_y, to_x, to_y, feet_z,
+    player_height, maximum_step
+  ] != 0;
+)
+
+// Visibility and hitscan need the mutable portal authority too, but do not
+// inherit player step/height policy. A zero-height two-sided opening is a
+// closed door and blocks the ray exactly like a one-sided wall.
+op doom_map_sight_blocked [map, from_x, from_y, to_x, to_y] (
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    if (doom_map_segments_cross[
+          buf_get[map\vertices, va], buf_get[map\vertices, va + 1],
+          buf_get[map\vertices, vb], buf_get[map\vertices, vb + 1],
+          from_x, from_y, to_x, to_y
+        ] == 1) (
+      if (buf_get[map\lines, lb + 2] == 1) ( => 1; )
+      let right_sector = buf_get[map\line_sides, lb + 2];
+      let left_sector = buf_get[map\line_sides, lb + 3];
+      if ((right_sector >= 0) and (left_sector >= 0)) () else ( => 1; )
+      let opening_floor = buf_get[map\sectors, right_sector * 5];
+      let other_floor = buf_get[map\sectors, left_sector * 5];
+      if (other_floor > opening_floor) ( opening_floor = other_floor; )
+      let opening_ceiling = buf_get[map\sectors, right_sector * 5 + 1];
+      let other_ceiling = buf_get[map\sectors, left_sector * 5 + 1];
+      if (other_ceiling < opening_ceiling) ( opening_ceiling = other_ceiling; )
+      if (opening_ceiling <= opening_floor) ( => 1; )
+    )
+    i = i + 1;
+  )
+  => 0;
+)
+
+op doom_map_thing_is_enemy [kind] (
+  if ((kind == 7) or (kind == 9) or (kind == 16) or (kind == 58) or
+      (kind == 65) or (kind == 66) or (kind == 67) or (kind == 68) or
+      (kind == 69) or (kind == 71) or (kind == 84) or
+      ((kind >= 3001) and (kind <= 3006))) ( => 1; )
+  => 0;
+)
+
+// Select the nearest live enemy in a 96-unit-wide cardinal hitscan corridor.
+// A solid linedef cancels visibility. `alive` is one byte per THINGS entry.
+op doom_map_hitscan_target [map, alive, player_x, player_y, facing, maximum] (
+  if (bytes_len[alive] == map\thing_count) () else (
+    fall "doom_map_hitscan_target: alive table does not match THINGS";
+  )
+  let best = 0 - 1;
+  let best_distance = maximum + 1;
+  let i = 0;
+  while (i < map\thing_count) (
+    let tb = i * 4;
+    let kind = buf_get[map\things, tb + 2];
+    if ((bytes_get[alive, i] == 1) and
+        (doom_map_thing_is_enemy[kind] == 1)) (
+      let x = buf_get[map\things, tb];
+      let y = buf_get[map\things, tb + 1];
+      let forward = x - player_x;
+      let sideways = y - player_y;
+      if (facing == 1) ( forward = y - player_y; sideways = x - player_x; )
+      if (facing == 2) ( forward = player_x - x; sideways = y - player_y; )
+      if (facing == 3) ( forward = player_y - y; sideways = x - player_x; )
+      if (sideways < 0) ( sideways = 0 - sideways; )
+      if ((forward > 0) and (forward <= maximum) and
+          (sideways <= 48) and (forward < best_distance)) (
+        if (doom_map_move_crosses_wall[
+              map, player_x, player_y, x, y
+            ] == 0) (
+          best = i;
+          best_distance = forward;
+        )
+      )
+    )
+    i = i + 1;
+  )
+  => best;
+)

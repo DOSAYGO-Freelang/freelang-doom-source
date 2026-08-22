@@ -1,0 +1,149 @@
+// Focused world-action proof: one-shot switch state and a reusable front-side
+// teleport both live in mutable world authority consumed by movement/rendering.
+
+credits: <../games/doom-world.flx> <f/buffers> <f/bytes> <f/trig>;
+
+op doom_actions_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom actions expectation failed";
+  )
+)
+
+let texture_names = bytes_new[16];
+let sw1 = string_to_ascii_bytes["SW1TEST"];
+let sw2 = string_to_ascii_bytes["SW2TEST"];
+let i = 0;
+while (i < 7) (
+  bytes_set[texture_names, i, bytes_get[sw1, i]];
+  bytes_set[texture_names, 8 + i, bytes_get[sw2, i]];
+  i = i + 1;
+)
+
+// Line 0 is a use switch at x=40. Line 1 supplies sector adjacency for its
+// lower-floor target. Line 2 is a front-facing reusable teleport at x=160.
+// Line 3 surrounds its destination at x=-22, as E2M1 return pads do.
+let map = {
+  ok: 1, error: "", name: "ACTIONS",
+  vertices: %32[40, 0, 40, 100, 50, 0, 50, 100,
+                    160, 100, 160, 0, 0 - 22, 100, 0 - 22, 0],
+  vertex_count: 8,
+  lines: %32[0, 1, 0, 0, 2, 3, 0, 4,
+             4, 5, 0, 4, 6, 7, 0, 4],
+  line_count: 4,
+  line_sides: %32[0, 0 - 1, 0, 0 - 1,
+                    0, 0, 0, 1,
+                    0, 0, 0, 0,
+                    0, 0, 0, 0],
+  line_actions: %32[102, 9, 0, 0, 97, 9, 97, 9],
+  side_count: 1, side_textures: %32[0, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 0, 0],
+  texture_bank: { texture_count: 2, texture_names: texture_names },
+  sectors: %32[64, 128, 160, 0, 9, 0, 128, 160, 0, 0],
+  sector_count: 2,
+  things: %32[0, 50, 1, 7, 10, 80, 14, 7,
+               10, 80, 3004, 7],
+  thing_angles: %32[0, 180, 0], thing_count: 3,
+  player_x: 0, player_y: 50, player_angle: 0,
+  min_x: 0 - 100, max_x: 200, min_y: 0 - 100, max_y: 200,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+
+let world = doom_world_new[map];
+let play_map = doom_world_map[map, world];
+doom_actions_expect[
+  (world\unsupported_actions == 0) and
+  (buf_get[play_map\side_textures, 0] == 0),
+  "switch and teleport are admitted"
+];
+doom_actions_expect[
+  doom_world_use[
+    play_map, world, 0, 50, trig_from_degrees[0]
+  ] == 1,
+  "lower-floor switch activates"
+];
+play_map = doom_world_map[map, world];
+doom_actions_expect[
+  (buf_get[play_map\side_textures, 0] == 1) and
+  (bytes_get[world\line_used, 0] == 1) and
+  (world\sound_serial == 1) and (world\sound_kind == 3),
+  "one-shot switch flips, retires and reports its semantic sound"
+];
+i = 0;
+while (i < 8) (
+  world = doom_world_tick[play_map, world, 0, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[world\sectors, 0] == 0) and
+  (world\movers\0\phase == DoomMoverPhase\Done),
+  "switch floor reaches the surrounding height"
+];
+
+let combat = doom_combat_new[play_map];
+// The centre remains west of x=160; only its +X support reaches the line.
+// This is the shape used by original closed teleport pads where collision
+// would reject the centre before it could cross.
+let moved = doom_world_slide_move_combat[
+  play_map, world, combat, 136, 50, 8, 0
+];
+doom_actions_expect[
+  (moved\teleported == 1) and (moved\x == 10) and (moved\y == 80) and
+  (moved\teleport_angle == 180) and (world\teleport_serial == 1) and
+  (world\sound_serial == 2) and (world\sound_kind == 5) and
+  (world\teleport_fog_tick == 70) and
+  (world\teleport_from_x == 136) and (world\teleport_from_y == 50) and
+  (world\teleport_to_x == 0 - 10) and (world\teleport_to_y == 80),
+  "front-side radius contact reaches tagged type-14 destination"
+];
+doom_actions_expect[
+  (combat\actors\0\phase == DoomEnemyPhase\Death) and
+  (combat\kills == 1) and (combat\monster_death_serial == 1),
+  "arrival telefrags an occupied destination instead of trapping movement"
+];
+let escaped = doom_world_slide_move_combat[
+  play_map, world, combat, moved\x, moved\y, 0 - 2, 0
+];
+doom_actions_expect[
+  (escaped\moved == 1) and (escaped\x == 8) and
+  (bytes_get[world\teleport_guard, 3] == 1),
+  "arrival position permits immediate movement away"
+];
+doom_actions_expect[
+  (bytes_get[world\line_used, 2] == 0) and
+  (bytes_get[world\teleport_guard, 3] == 1),
+  "special 97 remains reusable"
+];
+// The destination is 32 units behind line 3. Cross it back-to-front and keep
+// walking while the player's centre remains in that line's guarded horizon.
+// Neither the centre crossing nor a trailing radius support may return us.
+let exit_pad = doom_world_slide_move_combat[
+  play_map, world, combat, escaped\x, escaped\y, 0 - 38, 0
+];
+doom_actions_expect[
+  (exit_pad\moved == 1) and (exit_pad\x == 0 - 30) and
+  (exit_pad\teleported == 0) and (world\teleport_serial == 1) and
+  (bytes_get[world\teleport_guard, 3] == 1),
+  "destination-side teleport stays guarded through its exit crossing"
+];
+let clear_pad = doom_world_slide_move_combat[
+  play_map, world, combat, exit_pad\x, exit_pad\y, 0 - 28, 0
+];
+doom_actions_expect[
+  (clear_pad\moved == 1) and (clear_pad\x == 0 - 58) and
+  (world\teleport_serial == 1) and
+  (bytes_get[world\teleport_guard, 3] == 0),
+  "teleport rearms only after the player leaves its geometric horizon"
+];
+let return_to_pad = doom_world_slide_move_combat[
+  play_map, world, combat, clear_pad\x, clear_pad\y, 40, 0
+];
+doom_actions_expect[
+  (return_to_pad\teleported == 1) and
+  (return_to_pad\x == 10) and (return_to_pad\y == 80) and
+  (world\teleport_serial == 2),
+  "rearmed reusable teleport accepts a later front-side approach"
+];
+
+print "doom actions ok";

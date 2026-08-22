@@ -1,0 +1,375 @@
+// Bounded Doom MUS decoding and a deliberately tiny integer-only renderer.
+//
+// MUS is decoded into a compact raw event buffer first. That pass proves the
+// score ends, bounds its duration, and gives the exact PCM allocation size.
+// Rendering then produces mono unsigned 8-bit WAV at 11025 Hz. It is not an
+// OPL emulator; the four deterministic oscillator colours make the original
+// notes, rhythm, velocity, channel volume, and program changes audible while
+// keeping the first music proof entirely in Freelang.
+
+credits: <../games/doom-format.flx> <f/arrays> <f/buffers> <f/bytes>;
+
+private op doom_mus_decode_result [ok, error, records, record_count,
+                                   ticks, events] (
+  => {
+    ok: ok, error: error, records: records, record_count: record_count,
+    ticks: ticks, events: events
+  };
+)
+
+private op doom_mus_decode_error [message] (
+  => doom_mus_decode_result[0, message, %32[], 0, 0, 0];
+)
+
+private op doom_mus_record [records, count, kind, channel, a, b] (
+  let base = count * 4;
+  buf_set[records, base, kind];
+  buf_set[records, base + 1, channel];
+  buf_set[records, base + 2, a];
+  buf_set[records, base + 3, b];
+  => count + 1;
+)
+
+// Record kinds 0..6 are MUS event kinds. Kind 7 is a decoded group delay.
+// At most one record is emitted per consumed score byte, so score_bytes * 4
+// raw i32 slots is a simple structural capacity proof.
+op doom_mus_decode [mus] (
+  let size = bytes_len[mus];
+  if (size >= 16) () else ( => doom_mus_decode_error["MUS header shorter than 16 bytes"]; )
+  if ((bytes_get[mus, 0] == 77) and (bytes_get[mus, 1] == 85) and
+      (bytes_get[mus, 2] == 83) and (bytes_get[mus, 3] == 26)) () else (
+    => doom_mus_decode_error["bad MUS magic"];
+  )
+  let score_bytes = doom_wad_u16le[mus, 4];
+  let score_offset = doom_wad_u16le[mus, 6];
+  let instruments = doom_wad_u16le[mus, 12];
+  if (instruments <= 256) () else (
+    => doom_mus_decode_error["MUS instrument table exceeds 256 entries"];
+  )
+  if (score_offset >= 16 + instruments * 2) () else (
+    => doom_mus_decode_error["MUS score overlaps instrument table"];
+  )
+  if (score_offset <= size) () else (
+    => doom_mus_decode_error["MUS score offset exceeds lump"];
+  )
+  if (score_bytes <= size - score_offset) () else (
+    => doom_mus_decode_error["MUS score length exceeds lump"];
+  )
+  if (score_bytes <= 1048576) () else (
+    => doom_mus_decode_error["MUS score exceeds 1 MiB render bound"];
+  )
+  if (score_bytes > 0) () else (
+    => doom_mus_decode_error["MUS score is empty"];
+  )
+
+  let records = buf_new[32, score_bytes * 4];
+  let velocities = bytes_new[16];
+  let vi = 0;
+  while (vi < 16) (
+    bytes_set[velocities, vi, 127];
+    vi = vi + 1;
+  )
+
+  let cursor = score_offset;
+  let score_end = score_offset + score_bytes;
+  let record_count = 0;
+  let events = 0;
+  let ticks = 0;
+  let ended = 0;
+  while ((cursor < score_end) and (ended == 0)) (
+    let descriptor = bytes_get[mus, cursor];
+    cursor = cursor + 1;
+    let kind = (descriptor / 16) % 8;
+    let channel = descriptor % 16;
+    let a = 0;
+    let b = 0;
+
+    if (kind == 0) (
+      if (cursor < score_end) () else ( => doom_mus_decode_error["truncated release event"]; )
+      a = bytes_get[mus, cursor];
+      cursor = cursor + 1;
+      if (a <= 127) () else ( => doom_mus_decode_error["release note exceeds 127"]; )
+    ) else if (kind == 1) (
+      if (cursor < score_end) () else ( => doom_mus_decode_error["truncated note event"]; )
+      let key = bytes_get[mus, cursor];
+      cursor = cursor + 1;
+      a = key % 128;
+      if (key >= 128) (
+        if (cursor < score_end) () else ( => doom_mus_decode_error["truncated note velocity"]; )
+        b = bytes_get[mus, cursor];
+        cursor = cursor + 1;
+        if (b <= 127) () else ( => doom_mus_decode_error["note velocity exceeds 127"]; )
+        bytes_set[velocities, channel, b];
+      ) else (
+        b = bytes_get[velocities, channel];
+      )
+    ) else if (kind == 2) (
+      if (cursor < score_end) () else ( => doom_mus_decode_error["truncated pitch event"]; )
+      a = bytes_get[mus, cursor];
+      cursor = cursor + 1;
+    ) else if (kind == 3) (
+      if (cursor < score_end) () else ( => doom_mus_decode_error["truncated system event"]; )
+      a = bytes_get[mus, cursor];
+      cursor = cursor + 1;
+      if ((a >= 10) and (a <= 14)) () else (
+        => doom_mus_decode_error["system event is outside 10..14"];
+      )
+    ) else if (kind == 4) (
+      if (cursor + 1 < score_end) () else ( => doom_mus_decode_error["truncated controller event"]; )
+      a = bytes_get[mus, cursor];
+      b = bytes_get[mus, cursor + 1];
+      cursor = cursor + 2;
+      if (a <= 9) () else ( => doom_mus_decode_error["controller is outside 0..9"]; )
+      if (b <= 127) () else ( => doom_mus_decode_error["controller value exceeds 127"]; )
+    ) else if (kind == 6) (
+      ended = 1;
+    ) else (
+      => doom_mus_decode_error["unknown MUS event kind ^{kind}"];
+    )
+
+    record_count = doom_mus_record[
+      records, record_count, kind, channel, a, b
+    ];
+    events = events + 1;
+
+    if ((descriptor >= 128) and (ended == 0)) (
+      let delay = 0;
+      let more = 1;
+      let delay_bytes = 0;
+      while (more == 1) (
+        if (cursor < score_end) () else ( => doom_mus_decode_error["truncated group delay"]; )
+        let value = bytes_get[mus, cursor];
+        cursor = cursor + 1;
+        delay_bytes = delay_bytes + 1;
+        if (delay_bytes <= 4) () else ( => doom_mus_decode_error["group delay exceeds four bytes"]; )
+        if (delay <= 84000 / 128) () else ( => doom_mus_decode_error["group delay exceeds ten minutes"]; )
+        delay = delay * 128 + value % 128;
+        if (delay <= 84000) () else ( => doom_mus_decode_error["group delay exceeds ten minutes"]; )
+        if (value < 128) ( more = 0; )
+      )
+      if (delay <= 84000 - ticks) () else (
+        => doom_mus_decode_error["MUS duration exceeds ten minutes"];
+      )
+      ticks = ticks + delay;
+      record_count = doom_mus_record[
+        records, record_count, 7, 0, delay, 0
+      ];
+    )
+  )
+  if (ended == 1) () else ( => doom_mus_decode_error["MUS score has no end event"]; )
+  => doom_mus_decode_result[1, "", records, record_count, ticks, events];
+)
+
+private op doom_mus_render_result [ok, error, wav, ticks, samples,
+                                   events, voice_steals] (
+  => {
+    ok: ok, error: error, wav: wav, ticks: ticks, samples: samples,
+    events: events, voice_steals: voice_steals
+  };
+)
+
+private op doom_mus_render_error [message] (
+  => doom_mus_render_result[0, message, bytes_new[0], 0, 0, 0, 0];
+)
+
+private op doom_mus_put_u16 [b, offset, value] (
+  bytes_set[b, offset, value % 256];
+  bytes_set[b, offset + 1, (value / 256) % 256];
+  => 0;
+)
+
+private op doom_mus_put_u32 [b, offset, value] (
+  bytes_set[b, offset, value % 256];
+  bytes_set[b, offset + 1, (value / 256) % 256];
+  bytes_set[b, offset + 2, (value / 65536) % 256];
+  bytes_set[b, offset + 3, (value / 16777216) % 256];
+  => 0;
+)
+
+op doom_mus_wav_header [wav, samples, sample_rate] (
+  bytes_set[wav, 0, 82]; bytes_set[wav, 1, 73];
+  bytes_set[wav, 2, 70]; bytes_set[wav, 3, 70];
+  doom_mus_put_u32[wav, 4, 36 + samples];
+  bytes_set[wav, 8, 87]; bytes_set[wav, 9, 65];
+  bytes_set[wav, 10, 86]; bytes_set[wav, 11, 69];
+  bytes_set[wav, 12, 102]; bytes_set[wav, 13, 109];
+  bytes_set[wav, 14, 116]; bytes_set[wav, 15, 32];
+  doom_mus_put_u32[wav, 16, 16];
+  doom_mus_put_u16[wav, 20, 1];
+  doom_mus_put_u16[wav, 22, 1];
+  doom_mus_put_u32[wav, 24, sample_rate];
+  doom_mus_put_u32[wav, 28, sample_rate];
+  doom_mus_put_u16[wav, 32, 1];
+  doom_mus_put_u16[wav, 34, 8];
+  bytes_set[wav, 36, 100]; bytes_set[wav, 37, 97];
+  bytes_set[wav, 38, 116]; bytes_set[wav, 39, 97];
+  doom_mus_put_u32[wav, 40, samples];
+  => 0;
+)
+
+op doom_mus_note_frequency [note] (
+  let semitone = note % 12;
+  let frequency = 8176;
+  if (semitone == 1) ( frequency = 8662; )
+  if (semitone == 2) ( frequency = 9177; )
+  if (semitone == 3) ( frequency = 9723; )
+  if (semitone == 4) ( frequency = 10301; )
+  if (semitone == 5) ( frequency = 10913; )
+  if (semitone == 6) ( frequency = 11562; )
+  if (semitone == 7) ( frequency = 12250; )
+  if (semitone == 8) ( frequency = 12978; )
+  if (semitone == 9) ( frequency = 13750; )
+  if (semitone == 10) ( frequency = 14568; )
+  if (semitone == 11) ( frequency = 15434; )
+  let octave = note / 12;
+  while (octave > 0) (
+    frequency = frequency * 2;
+    octave = octave - 1;
+  )
+  => frequency;
+)
+
+private op doom_mus_voice_remove [voices, channel, note] (
+  => forall voice in voices (
+    if ((voice\channel == channel) and (voice\note == note)) () else (
+      => voice;
+    )
+  );
+)
+
+private op doom_mus_channel_clear [voices, channel] (
+  => forall voice in voices (
+    if (voice\channel == channel) () else ( => voice; )
+  );
+)
+
+private op doom_mus_note_on [voices, channel, note, velocity, program] (
+  let out = doom_mus_voice_remove[voices, channel, note];
+  let stolen = 0;
+  if (arr_len[out] >= 16) (
+    out = arr_slice[out, 1, arr_len[out] - 1];
+    stolen = 1;
+  )
+  out = out + [{
+    channel: channel, note: note, velocity: velocity,
+    program: program, phase: 0
+  }];
+  => { voices: out, stolen: stolen };
+)
+
+private op doom_mus_voice_wave [voice, sample_index, phase_span] (
+  let phase = voice\phase;
+  let wave = 0;
+  if (voice\channel == 15) (
+    let noise = (sample_index * (voice\note * 17 + 23) + phase / 1000) % 97;
+    if (noise < 48) ( wave = 127; ) else ( wave = 0 - 127; )
+  ) else (
+    let colour = voice\program % 4;
+    if (colour == 0) (
+      if (phase < phase_span / 2) ( wave = 127; ) else ( wave = 0 - 127; )
+    ) else if (colour == 1) (
+      let p = phase * 256 / phase_span;
+      if (p < 64) (
+        wave = p * 2;
+      ) else if (p < 192) (
+        wave = 127 - (p - 64) * 2;
+      ) else (
+        wave = 0 - 127 + (p - 192) * 2;
+      )
+    ) else if (colour == 2) (
+      wave = phase * 254 / phase_span - 127;
+    ) else (
+      if (phase < phase_span / 4) ( wave = 127; ) else ( wave = 0 - 127; )
+    )
+  )
+  phase = phase + doom_mus_note_frequency[voice\note];
+  while (phase >= phase_span) ( phase = phase - phase_span; )
+  voice\phase = phase;
+  => wave;
+)
+
+private op doom_mus_render_samples [wav, from, to, voices, channel_volumes,
+                                    sample_rate] (
+  let phase_span = sample_rate * 1000;
+  let sample_index = from;
+  while (sample_index < to) (
+    let count = arr_len[voices];
+    let mixed = 0;
+    let i = 0;
+    while (i < count) (
+      let voice = voices\@i;
+      let wave = doom_mus_voice_wave[voice, sample_index, phase_span];
+      let channel_volume = bytes_get[channel_volumes, voice\channel];
+      mixed = mixed + wave * voice\velocity * channel_volume / 16129;
+      i = i + 1;
+    )
+    let sample = 128;
+    if (count > 0) ( sample = 128 + mixed * 96 / (127 * count); )
+    if (sample < 0) ( sample = 0; )
+    if (sample > 255) ( sample = 255; )
+    bytes_set[wav, 44 + sample_index, sample];
+    sample_index = sample_index + 1;
+  )
+  => 0;
+)
+
+op doom_mus_render_wav [mus] (
+  let decoded = doom_mus_decode[mus];
+  if (decoded\ok == 1) () else ( => doom_mus_render_error[decoded\error]; )
+  let sample_rate = 11025;
+  let samples = decoded\ticks * sample_rate / 140;
+  if (samples <= sample_rate * 600) () else (
+    => doom_mus_render_error["render exceeds ten minutes"];
+  )
+  let wav = bytes_new[44 + samples];
+  doom_mus_wav_header[wav, samples, sample_rate];
+
+  let channel_volumes = bytes_new[16];
+  let programs = bytes_new[16];
+  let ci = 0;
+  while (ci < 16) (
+    bytes_set[channel_volumes, ci, 127];
+    ci = ci + 1;
+  )
+
+  let voices = [];
+  let elapsed_ticks = 0;
+  let rendered_samples = 0;
+  let voice_steals = 0;
+  let ri = 0;
+  while (ri < decoded\record_count) (
+    let base = ri * 4;
+    let kind = buf_get[decoded\records, base];
+    let channel = buf_get[decoded\records, base + 1];
+    let a = buf_get[decoded\records, base + 2];
+    let b = buf_get[decoded\records, base + 3];
+    if (kind == 0) (
+      voices = doom_mus_voice_remove[voices, channel, a];
+    ) else if (kind == 1) (
+      let started = doom_mus_note_on[
+        voices, channel, a, b, bytes_get[programs, channel]
+      ];
+      voices = started\voices;
+      voice_steals = voice_steals + started\stolen;
+    ) else if (kind == 3) (
+      if ((a == 10) or (a == 11)) (
+        voices = doom_mus_channel_clear[voices, channel];
+      )
+      if (a == 14) ( bytes_set[channel_volumes, channel, 127]; )
+    ) else if (kind == 4) (
+      if (a == 0) ( bytes_set[programs, channel, b]; )
+      if (a == 3) ( bytes_set[channel_volumes, channel, b]; )
+    ) else if (kind == 7) (
+      elapsed_ticks = elapsed_ticks + a;
+      let target = elapsed_ticks * sample_rate / 140;
+      doom_mus_render_samples[
+        wav, rendered_samples, target, voices, channel_volumes, sample_rate
+      ];
+      rendered_samples = target;
+    )
+    ri = ri + 1;
+  )
+  => doom_mus_render_result[
+    1, "", wav, decoded\ticks, samples, decoded\events, voice_steals
+  ];
+)

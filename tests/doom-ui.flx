@@ -1,0 +1,131 @@
+// Pure menu transitions plus a one-pixel-per-slot atlas prove that Doom UI
+// state and WAD patch composition remain deterministic without a window.
+
+credits: <../games/doom-ui.flx> <f/buffers> <f/bytes> <f/gui>;
+
+op doom_ui_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom UI expectation failed";
+  )
+)
+
+op doom_ui_test_event [key] (
+  => { kind: gui_ev_key_down[], a: key, b: 0, mods: 0 };
+)
+
+let ui = doom_ui_new_for_map["E1M1"];
+ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_esc[]]]];
+doom_ui_test_expect[(ui\open == 1) and (ui\cursor == 0), "Escape opens menu"];
+ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_down[]]]];
+ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_return[]]]];
+doom_ui_test_expect[
+  (ui\open == 0) and (ui\selection == 2),
+  "episode menu selects E1M2 without another page"
+];
+doom_ui_test_expect[
+  string_eq[doom_ui_episode_selector[ui\selection], "E1M2"] == 1,
+  "episode selection has one explicit map selector"
+];
+ui = doom_ui_next[ui, []];
+doom_ui_test_expect[ui\selection == 0, "episode request lasts one frame"];
+
+let wrap_ui = doom_ui_new_for_map["E1M2"];
+wrap_ui = doom_ui_next[wrap_ui, [doom_ui_test_event[gui_key_esc[]]]];
+wrap_ui = doom_ui_next[wrap_ui, [doom_ui_test_event[gui_key_down[]]]];
+doom_ui_test_expect[
+  wrap_ui\cursor == 0,
+  "episode-only cursor wraps across exactly two playable maps"
+];
+
+let all_maps = [
+  "E1M1", "E1M2", "E1M3", "E1M4", "E1M5", "E1M6", "E1M7", "E1M8", "E1M9",
+  "E2M1", "E2M2", "E2M3"
+];
+let all_ui = doom_ui_new_for_maps[all_maps, "E1M1"];
+all_ui = doom_ui_next[all_ui, [doom_ui_test_event[gui_key_esc[]]]];
+let step = 0;
+while (step < 8) (
+  all_ui = doom_ui_next[all_ui, [doom_ui_test_event[gui_key_down[]]]];
+  step = step + 1;
+)
+doom_ui_test_expect[
+  (all_ui\cursor == 8) and (all_ui\top == 2),
+  "checked map menu scrolls a seven-row window"
+];
+all_ui = doom_ui_next[all_ui, [doom_ui_test_event[gui_key_return[]]]];
+doom_ui_test_expect[
+  string_eq[doom_ui_map_selector[all_maps, all_ui\selection], "E1M9"] == 1,
+  "checked map menu selects beyond the first episode"
+];
+
+let slots = doom_texture_ui_slots[];
+let meta = buf_new[32, slots * 5];
+let pixels = bytes_new[slots];
+let opaque = bytes_new[slots];
+let colours = buf_new[32, 8192];
+let i = 0;
+while (i < slots) (
+  buf_set[meta, i * 5, 1];
+  buf_set[meta, i * 5 + 1, 1];
+  buf_set[meta, i * 5 + 2, i];
+  bytes_set[pixels, i, i % 256];
+  bytes_set[opaque, i, 1];
+  buf_set[colours, i % 256, 200 * 65536 + 100 * 256 + 50];
+  i = i + 1;
+)
+let bank = {
+  ui_ready: 1, ui_slots: slots, ui_meta: meta,
+  ui_pixels: pixels, ui_opaque: opaque, colours: colours
+};
+let buf = gui_buffer[320, 200];
+let loading = gui_buffer[320, 200];
+doom_ui_test_expect[
+  doom_ui_draw_loading[loading, 320, 200, gui_font[], "E1M9"] == 1,
+  "asset-independent loading frame is drawable before WAD UI assets"
+];
+let background_pixels = 0;
+let heading_pixels = 0;
+let loading_pixels = 0;
+let pi = 0;
+while (pi < 320 * 200) (
+  let po = pi * 4;
+  let r = bytes_get[loading, po];
+  let g = bytes_get[loading, po + 1];
+  let b = bytes_get[loading, po + 2];
+  if ((r == 14) and (g == 10) and (b == 12)) (
+    background_pixels = background_pixels + 1;
+  )
+  if ((r == 190) and (g == 32) and (b == 24)) (
+    heading_pixels = heading_pixels + 1;
+  )
+  if ((r == 218) and (g == 206) and (b == 172)) (
+    loading_pixels = loading_pixels + 1;
+  )
+  pi = pi + 1;
+)
+doom_ui_test_expect[
+  (background_pixels > 60000) and
+  (heading_pixels > 0) and (loading_pixels > 0),
+  "loading frame has bounded background, heading and selected map text"
+];
+doom_ui_test_expect[
+  doom_ui_draw_patch[
+    buf, 320, 200, bank, doom_texture_ui_logo_slot[], 10, 10
+  ] == 1,
+  "bounded WAD UI patch reaches the framebuffer"
+];
+let off = (10 * 320 + 10) * 4;
+doom_ui_test_expect[
+  (bytes_get[buf, off] == 200) and
+  (bytes_get[buf, off + 1] == 100) and
+  (bytes_get[buf, off + 2] == 50),
+  "palette-indexed UI patch uses the shared colour table"
+];
+ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_esc[]]]];
+doom_ui_test_expect[
+  doom_ui_draw_menu[buf, 320, 200, bank, ui] == 1,
+  "open menu composes entirely in Freelang"
+];
+
+print "doom UI state ok";

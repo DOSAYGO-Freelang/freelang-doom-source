@@ -1,0 +1,508 @@
+// Bounded, pure-Freelang approximation of Doom's OPL2 music path.
+//
+// This renderer consumes the WAD's GENMIDI bank instead of assigning an
+// arbitrary oscillator by program number.  It preserves Doom's 128 melodic
+// patches, 47 percussion patches, fixed notes, doubled voices, two-operator
+// FM/additive connection, feedback, multiplier, waveform, level and envelope
+// data.  The oscillator and envelope arithmetic is intentionally small and
+// integer-only: this is an earballable OPL2 model, not a cycle-exact YM3812.
+
+credits: <../games/doom-mus.flx> <../games/doom-format.flx>
+         <f/arrays> <f/bytes>;
+
+private op doom_opl_result [ok, error, wav, ticks, samples,
+                            events, voice_steals] (
+  => {
+    ok: ok, error: error, wav: wav, ticks: ticks, samples: samples,
+    events: events, voice_steals: voice_steals
+  };
+)
+
+private op doom_opl_error [message] (
+  => doom_opl_result[0, message, bytes_new[0], 0, 0, 0, 0];
+)
+
+op doom_opl_bank_validate [bank] (
+  if (bytes_len[bank] >= 6308) () else (
+    => { ok: 0, error: "GENMIDI is shorter than its 175 instruments" };
+  )
+  let header = [35, 79, 80, 76, 95, 73, 73, 35];
+  let i = 0;
+  while (i < 8) (
+    if (bytes_get[bank, i] == header\@i) () else (
+      => { ok: 0, error: "GENMIDI header is not #OPL_II#" };
+    )
+    i = i + 1;
+  )
+  => { ok: 1, error: "" };
+)
+
+private op doom_opl_signed_u16 [bank, offset] (
+  let value = doom_wad_u16le[bank, offset];
+  if (value >= 32768) ( value = value - 65536; )
+  => value;
+)
+
+// One GENMIDI instrument is 36 packed bytes. Each of its two voices is 16:
+// six modulator bytes, feedback/connection, six carrier bytes, one unused
+// byte and a signed base-note offset.
+private op doom_opl_patch [bank, instrument, voice_index] (
+  let instrument_base = 8 + instrument * 36;
+  let voice_base = instrument_base + 4 + voice_index * 16;
+  let carrier = voice_base + 7;
+  => {
+    flags: doom_wad_u16le[bank, instrument_base],
+    fine: bytes_get[bank, instrument_base + 2],
+    fixed_note: bytes_get[bank, instrument_base + 3],
+    feedback: bytes_get[bank, voice_base + 6],
+    base_note: doom_opl_signed_u16[bank, voice_base + 14],
+    mod_control: bytes_get[bank, voice_base],
+    mod_attack_decay: bytes_get[bank, voice_base + 1],
+    mod_sustain_release: bytes_get[bank, voice_base + 2],
+    mod_wave: bytes_get[bank, voice_base + 3] % 4,
+    mod_scale: bytes_get[bank, voice_base + 4],
+    mod_level: bytes_get[bank, voice_base + 5] % 64,
+    car_control: bytes_get[bank, carrier],
+    car_attack_decay: bytes_get[bank, carrier + 1],
+    car_sustain_release: bytes_get[bank, carrier + 2],
+    car_wave: bytes_get[bank, carrier + 3] % 4,
+    car_scale: bytes_get[bank, carrier + 4],
+    car_level: bytes_get[bank, carrier + 5] % 64
+  };
+)
+
+private op doom_opl_multiplier2 [control] (
+  let value = control % 16;
+  if (value == 0) ( => 1; )
+  if (value == 1) ( => 2; )
+  if (value == 2) ( => 4; )
+  if (value == 3) ( => 6; )
+  if (value == 4) ( => 8; )
+  if (value == 5) ( => 10; )
+  if (value == 6) ( => 12; )
+  if (value == 7) ( => 14; )
+  if (value == 8) ( => 16; )
+  if (value == 9) ( => 18; )
+  if ((value == 10) or (value == 11)) ( => 20; )
+  if ((value == 12) or (value == 13)) ( => 24; )
+  => 30;
+)
+
+// GENMIDI and the DMX OPL driver tune in 1/32-semitone steps. Linear
+// interpolation is sufficient over that small interval and avoids adding a
+// floating-point or transcendental boundary to Freelang.
+private op doom_opl_frequency [pitch32] (
+  while (pitch32 < 0) ( pitch32 = pitch32 + 384; )
+  while (pitch32 > 95 * 32 + 31) ( pitch32 = pitch32 - 384; )
+  let note = pitch32 / 32;
+  let fraction = pitch32 % 32;
+  let low = doom_mus_note_frequency[note];
+  let high = doom_mus_note_frequency[note + 1];
+  => low + (high - low) * fraction / 32;
+)
+
+// Parabolic sine approximation over a 16-bit phase turn. It is centred, has
+// exact zero crossings and is cheap enough to run twice per OPL voice.
+private op doom_opl_sine [phase] (
+  while (phase < 0) ( phase = phase + 65536; )
+  while (phase >= 65536) ( phase = phase - 65536; )
+  let p = phase * 256 / 65536;
+  let distance = p;
+  let sign = 1;
+  if (p >= 128) (
+    distance = 256 - p;
+    sign = 0 - 1;
+  )
+  let wave = distance * (128 - distance) / 4;
+  if (sign < 0) ( wave = 0 - wave; )
+  => wave;
+)
+
+private op doom_opl_wave [phase, waveform] (
+  let sine = doom_opl_sine[phase];
+  if (waveform == 0) ( => sine; )
+  if (waveform == 1) (
+    if (sine < 0) ( sine = 0; )
+    => sine - 326;
+  )
+  if (waveform == 2) (
+    if (sine < 0) ( sine = 0 - sine; )
+    => sine - 652;
+  )
+  let p = phase;
+  while (p < 0) ( p = p + 65536; )
+  while (p >= 65536) ( p = p - 65536; )
+  if (p < 16384) ( => sine - 163; )
+  => 0 - 163;
+)
+
+private op doom_opl_rate_period [rate] (
+  if (rate >= 15) ( => 1; )
+  if (rate == 14) ( => 2; )
+  if (rate == 13) ( => 3; )
+  if (rate == 12) ( => 5; )
+  if (rate == 11) ( => 8; )
+  if (rate == 10) ( => 12; )
+  if (rate == 9) ( => 18; )
+  if (rate == 8) ( => 27; )
+  if (rate == 7) ( => 40; )
+  if (rate == 6) ( => 60; )
+  if (rate == 5) ( => 90; )
+  if (rate == 4) ( => 135; )
+  if (rate == 3) ( => 200; )
+  if (rate == 2) ( => 300; )
+  if (rate == 1) ( => 450; )
+  => 0;
+)
+
+// State: 0 attack, 1 decay, 2 sustain, 3 release.
+private op doom_opl_envelope [value, state, attack, decay, sustain,
+                              release, held, sustain_hold, sample_index] (
+  if ((state == 2) and ((held == 0) or (sustain_hold == 0))) ( state = 3; )
+  if ((held == 0) and (state < 3)) ( state = 3; )
+  let rate = attack;
+  if (state == 1) ( rate = decay; )
+  if (state == 3) ( rate = release; )
+  let period = doom_opl_rate_period[rate];
+  if ((state != 2) and (period > 0) and (sample_index % period == 0)) (
+    if (state == 0) (
+      let step = (1024 - value) / 16;
+      if (step < 1) ( step = 1; )
+      value = value + step;
+      if (value >= 1016) ( value = 1024; state = 1; )
+    ) else if (state == 1) (
+      let target = 1024 - sustain * 1024 / 15;
+      let step = (value - target) / 48;
+      if (step < 1) ( step = 1; )
+      value = value - step;
+      if (value <= target) ( value = target; state = 2; )
+    ) else (
+      let step = value / 48;
+      if (step < 1) ( step = 1; )
+      value = value - step;
+      if (value < 0) ( value = 0; )
+    )
+  )
+  => { value: value, state: state };
+)
+
+private op doom_opl_release_key [voices, channel, key] (
+  let i = 0;
+  while (i < arr_len[voices]) (
+    let voice = voices\@i;
+    if ((voice\channel == channel) and (voice\key == key)) (
+      voice\held = 0;
+      voice\mod_state = 3;
+      voice\car_state = 3;
+    )
+    i = i + 1;
+  )
+  => voices;
+)
+
+private op doom_opl_release_channel [voices, channel] (
+  let i = 0;
+  while (i < arr_len[voices]) (
+    let voice = voices\@i;
+    if (voice\channel == channel) (
+      voice\held = 0;
+      voice\mod_state = 3;
+      voice\car_state = 3;
+    )
+    i = i + 1;
+  )
+  => voices;
+)
+
+private op doom_opl_prune [voices] (
+  => forall voice in voices (
+    if ((voice\held == 0) and (voice\mod_env == 0) and
+        (voice\car_env == 0)) () else ( => voice; )
+  );
+)
+
+private op doom_opl_voice_from_patch [patch, channel, key, note, velocity,
+                                      voice_index, bend] (
+  let played_note = note;
+  if (patch\flags % 2 == 1) (
+    played_note = patch\fixed_note;
+  ) else (
+    played_note = played_note + patch\base_note;
+  )
+  while (played_note < 0) ( played_note = played_note + 12; )
+  while (played_note > 95) ( played_note = played_note - 12; )
+  let fine = 0;
+  if (voice_index == 1) ( fine = patch\fine / 2 - 64; )
+  let base_pitch32 = played_note * 32 + fine;
+  => {
+    channel: channel, key: key, velocity: velocity, held: 1,
+    secondary: voice_index,
+    base_pitch32: base_pitch32, pitch32: base_pitch32 + bend,
+    mod_phase: 0, car_phase: 0, previous_mod: 0,
+    feedback: (patch\feedback / 2) % 8,
+    connection: patch\feedback % 2,
+    mod_mult2: doom_opl_multiplier2[patch\mod_control],
+    mod_level: patch\mod_level,
+    mod_attack: patch\mod_attack_decay / 16,
+    mod_decay: patch\mod_attack_decay % 16,
+    mod_sustain: patch\mod_sustain_release / 16,
+    mod_release: patch\mod_sustain_release % 16,
+    mod_hold: (patch\mod_control / 32) % 2,
+    mod_tremolo: (patch\mod_control / 128) % 2,
+    mod_vibrato: (patch\mod_control / 64) % 2,
+    mod_wave: patch\mod_wave, mod_env: 0, mod_state: 0,
+    car_mult2: doom_opl_multiplier2[patch\car_control],
+    car_level: patch\car_level,
+    car_attack: patch\car_attack_decay / 16,
+    car_decay: patch\car_attack_decay % 16,
+    car_sustain: patch\car_sustain_release / 16,
+    car_release: patch\car_sustain_release % 16,
+    car_hold: (patch\car_control / 32) % 2,
+    car_tremolo: (patch\car_control / 128) % 2,
+    car_vibrato: (patch\car_control / 64) % 2,
+    car_wave: patch\car_wave, car_env: 0, car_state: 0
+  };
+)
+
+private op doom_opl_voice_add [voices, voice] (
+  let stolen = 0;
+  if (arr_len[voices] >= 9) (
+    let replace = 0;
+    let found_released = 0;
+    let i = 0;
+    while (i < arr_len[voices]) (
+      let candidate = voices\@i;
+      if ((found_released == 0) and (candidate\held == 0)) (
+        replace = i;
+        found_released = 1;
+      ) else if ((found_released == 0) and
+                 ((candidate\secondary != 0) or
+                  (candidate\channel >= (voices\@replace)\channel))) (
+        replace = i;
+      )
+      i = i + 1;
+    )
+    if ((voices\@replace)\held == 1) ( stolen = 1; )
+    if (replace == 0) (
+      voices = arr_slice[voices, 1, arr_len[voices] - 1];
+    ) else if (replace == arr_len[voices] - 1) (
+      voices = arr_slice[voices, 0, arr_len[voices] - 1];
+    ) else (
+      voices = arr_slice[voices, 0, replace] +
+        arr_slice[voices, replace + 1, arr_len[voices] - replace - 1];
+    )
+  )
+  => { voices: voices + [voice], stolen: stolen };
+)
+
+private op doom_opl_note_on [voices, bank, programs, bends,
+                             channel, key, velocity] (
+  if (velocity == 0) (
+    => { voices: doom_opl_release_key[voices, channel, key], stolen: 0 };
+  )
+  let instrument = bytes_get[programs, channel];
+  let note = key;
+  if (channel == 15) (
+    if ((key >= 35) and (key <= 81)) () else (
+      => { voices: voices, stolen: 0 };
+    )
+    instrument = 128 + key - 35;
+    note = 60;
+  )
+  let patch0 = doom_opl_patch[bank, instrument, 0];
+  let voice0 = doom_opl_voice_from_patch[
+    patch0, channel, key, note, velocity, 0, bytes_get[bends, channel] - 64
+  ];
+  let added = doom_opl_voice_add[voices, voice0];
+  let stolen = added\stolen;
+  voices = added\voices;
+  if ((patch0\flags / 4) % 2 == 1) (
+    let patch1 = doom_opl_patch[bank, instrument, 1];
+    let voice1 = doom_opl_voice_from_patch[
+      patch1, channel, key, note, velocity, 1, bytes_get[bends, channel] - 64
+    ];
+    added = doom_opl_voice_add[voices, voice1];
+    stolen = stolen + added\stolen;
+    voices = added\voices;
+  )
+  => { voices: voices, stolen: stolen };
+)
+
+private op doom_opl_lfo_triangle [sample_index, sample_rate, speed] (
+  let divisor = sample_rate / (speed * 64);
+  if (divisor < 1) ( divisor = 1; )
+  let p = (sample_index / divisor) % 64;
+  if (p >= 32) ( p = 63 - p; )
+  => p;
+)
+
+private op doom_opl_voice_sample [voice, sample_index, sample_rate,
+                                  channel_volume] (
+  let mod_env = doom_opl_envelope[
+    voice\mod_env, voice\mod_state, voice\mod_attack, voice\mod_decay,
+    voice\mod_sustain, voice\mod_release, voice\held, voice\mod_hold,
+    sample_index
+  ];
+  voice\mod_env = mod_env\value;
+  voice\mod_state = mod_env\state;
+  let car_env = doom_opl_envelope[
+    voice\car_env, voice\car_state, voice\car_attack, voice\car_decay,
+    voice\car_sustain, voice\car_release, voice\held, voice\car_hold,
+    sample_index
+  ];
+  voice\car_env = car_env\value;
+  voice\car_state = car_env\state;
+
+  let frequency = doom_opl_frequency[voice\pitch32];
+  let base_increment = frequency * 65536 / (sample_rate * 1000);
+  let vibrato = doom_opl_lfo_triangle[sample_index, sample_rate, 6] - 16;
+  let mod_increment = base_increment * voice\mod_mult2 / 2;
+  let car_increment = base_increment * voice\car_mult2 / 2;
+  if (voice\mod_vibrato == 1) (
+    mod_increment = mod_increment + mod_increment * vibrato / 2048;
+  )
+  if (voice\car_vibrato == 1) (
+    car_increment = car_increment + car_increment * vibrato / 2048;
+  )
+
+  let feedback_phase = voice\previous_mod * voice\feedback * 2;
+  let mod_wave = doom_opl_wave[
+    voice\mod_phase + feedback_phase, voice\mod_wave
+  ];
+  let mod_signal = mod_wave * voice\mod_env * (63 - voice\mod_level) /
+    (1024 * 63);
+  voice\previous_mod = mod_signal;
+  let carrier_phase = voice\car_phase;
+  if (voice\connection == 0) (
+    // OPL operator output perturbs phase, not amplitude. A broad phase swing
+    // is what turns GENMIDI programs 29/30 into Doom's two distinct electric
+    // guitars instead of two soft sine leads.
+    carrier_phase = carrier_phase + mod_signal * (24 + voice\feedback * 8);
+  )
+  let carrier = doom_opl_wave[carrier_phase, voice\car_wave] *
+    voice\car_env / 1024;
+
+  let tremolo = doom_opl_lfo_triangle[sample_index, sample_rate, 4];
+  if (voice\car_tremolo == 1) ( carrier = carrier * (224 + tremolo) / 255; )
+  if (voice\mod_tremolo == 1) ( mod_signal = mod_signal * (224 + tremolo) / 255; )
+  let output = carrier;
+  if (voice\connection == 1) ( output = (carrier + mod_signal) / 2; )
+  output = output * voice\velocity * channel_volume / 16129;
+
+  voice\mod_phase = voice\mod_phase + mod_increment;
+  while (voice\mod_phase >= 65536) ( voice\mod_phase = voice\mod_phase - 65536; )
+  voice\car_phase = voice\car_phase + car_increment;
+  while (voice\car_phase >= 65536) ( voice\car_phase = voice\car_phase - 65536; )
+  => output;
+)
+
+private op doom_opl_render_samples [wav, from, to, voices,
+                                    channel_volumes, sample_rate] (
+  let sample_index = from;
+  while (sample_index < to) (
+    let mixed = 0;
+    let i = 0;
+    while (i < arr_len[voices]) (
+      let voice = voices\@i;
+      mixed = mixed + doom_opl_voice_sample[
+        voice, sample_index, sample_rate,
+        bytes_get[channel_volumes, voice\channel]
+      ];
+      i = i + 1;
+    )
+    let sample = 128 + mixed * 26 / 2048;
+    if (sample < 0) ( sample = 0; )
+    if (sample > 255) ( sample = 255; )
+    bytes_set[wav, 44 + sample_index, sample];
+    sample_index = sample_index + 1;
+  )
+  => 0;
+)
+
+op doom_mus_render_opl2_wav [mus, bank] (
+  let valid_bank = doom_opl_bank_validate[bank];
+  if (valid_bank\ok == 1) () else ( => doom_opl_error[valid_bank\error]; )
+  let decoded = doom_mus_decode[mus];
+  if (decoded\ok == 1) () else ( => doom_opl_error[decoded\error]; )
+  let sample_rate = 22050;
+  let samples = decoded\ticks * sample_rate / 140;
+  if (samples <= sample_rate * 600) () else (
+    => doom_opl_error["render exceeds ten minutes"];
+  )
+  let wav = bytes_new[44 + samples];
+  doom_mus_wav_header[wav, samples, sample_rate];
+
+  let channel_volumes = bytes_new[16];
+  let programs = bytes_new[16];
+  let bends = bytes_new[16];
+  let ci = 0;
+  while (ci < 16) (
+    bytes_set[channel_volumes, ci, 127];
+    bytes_set[bends, ci, 64];
+    ci = ci + 1;
+  )
+
+  // Seed then slice so the empty array retains the OPL voice shape instead of
+  // being inferred as the legacy renderer's smaller oscillator voice.
+  let seed_patch = doom_opl_patch[bank, 0, 0];
+  let seed_voice = doom_opl_voice_from_patch[
+    seed_patch, 0, 0, 60, 0, 0, 0
+  ];
+  let voices = arr_slice[[seed_voice], 0, 0];
+  let elapsed_ticks = 0;
+  let rendered_samples = 0;
+  let voice_steals = 0;
+  let ri = 0;
+  while (ri < decoded\record_count) (
+    let base = ri * 4;
+    let kind = buf_get[decoded\records, base];
+    let channel = buf_get[decoded\records, base + 1];
+    let a = buf_get[decoded\records, base + 2];
+    let b = buf_get[decoded\records, base + 3];
+    if (kind == 0) (
+      voices = doom_opl_release_key[voices, channel, a];
+    ) else if (kind == 1) (
+      let started = doom_opl_note_on[
+        voices, bank, programs, bends, channel, a, b
+      ];
+      voices = started\voices;
+      voice_steals = voice_steals + started\stolen;
+    ) else if (kind == 2) (
+      bytes_set[bends, channel, a / 2];
+      let vi = 0;
+      while (vi < arr_len[voices]) (
+        let voice = voices\@vi;
+        if (voice\channel == channel) (
+          // Existing voices receive the bend delta just as the OPL driver
+          // rewrites their frequency registers.
+          voice\pitch32 = voice\base_pitch32 + bytes_get[bends, channel] - 64;
+        )
+        vi = vi + 1;
+      )
+    ) else if (kind == 3) (
+      if ((a == 10) or (a == 11)) (
+        voices = doom_opl_release_channel[voices, channel];
+      )
+      if (a == 14) (
+        bytes_set[channel_volumes, channel, 127];
+        bytes_set[bends, channel, 64];
+      )
+    ) else if (kind == 4) (
+      if (a == 0) ( bytes_set[programs, channel, b]; )
+      if (a == 2) ( bytes_set[bends, channel, 64]; )
+      if (a == 3) ( bytes_set[channel_volumes, channel, b]; )
+    ) else if (kind == 7) (
+      elapsed_ticks = elapsed_ticks + a;
+      let target = elapsed_ticks * sample_rate / 140;
+      doom_opl_render_samples[
+        wav, rendered_samples, target, voices, channel_volumes, sample_rate
+      ];
+      voices = doom_opl_prune[voices];
+      rendered_samples = target;
+    )
+    ri = ri + 1;
+  )
+  => doom_opl_result[
+    1, "", wav, decoded\ticks, samples, decoded\events, voice_steals
+  ];
+)

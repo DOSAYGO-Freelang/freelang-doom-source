@@ -1,0 +1,251 @@
+// Persistent game input folded from presenter protocol v3 snapshots. Edge
+// events remain a v1/v2 fallback and serve UI/text consumers, but each v3
+// INPUT_STATE atomically replaces retained keys and mouse buttons.
+
+credits: <f/gui> <f/bytes> <f/trig>;
+
+private op doom_input_key_count [] ( => 4111; )
+
+// Presenter printable keys carry the character after Shift has been applied.
+// A physical letter may therefore have an uppercase DOWN edge and lowercase
+// UP edge when Shift changes first. Persistent gameplay state needs one stable
+// slot for both spellings; edge-triggered text/UI consumers retain the raw
+// presenter value through their event batch.
+private op doom_input_key_slot [key] (
+  if ((key >= 65) and (key <= 90)) ( => key + 32; )
+  => key;
+)
+
+op doom_input_new [] (
+  => {
+    held: bytes_new[doom_input_key_count[]],
+    mouse_held: bytes_new[3],
+    focused: 1,
+    captured: 0,
+    input_epoch: 0,
+    mouse_ready: 0,
+    mouse_x: 0,
+    mouse_y: 0,
+    mouse_dx: 0,
+    mouse_dy: 0,
+    scroll_y: 0
+  };
+)
+
+private op doom_input_clear_keys [held] (
+  let i = 0;
+  while (i < bytes_len[held]) (
+    bytes_set[held, i, 0];
+    i = i + 1;
+  )
+  => 0;
+)
+
+private op doom_input_clear_mouse [held] (
+  let i = 0;
+  while (i < bytes_len[held]) (
+    bytes_set[held, i, 0];
+    i = i + 1;
+  )
+  => 0;
+)
+
+// Fold one presenter's event batch. Mouse movement is reported as absolute
+// window coordinates in protocol v1; this exposes the bounded frame delta and
+// deliberately discards the first position after open/refocus.
+op doom_input_next [st, events] (
+  let held = st\held;
+  let mouse_held = st\mouse_held;
+  let focused = st\focused;
+  let captured = st\captured;
+  let input_epoch = st\input_epoch;
+  let ready = st\mouse_ready;
+  let mouse_x = st\mouse_x;
+  let mouse_y = st\mouse_y;
+  let mouse_dx = 0;
+  let mouse_dy = 0;
+  let scroll_y = 0;
+  let i = 0;
+  while (i < arr_len[events]) (
+    let e = events\\i;
+    if (e\kind == gui_ev_focus[]) (
+      if (e\a == 0) (
+        doom_input_clear_keys[held];
+        doom_input_clear_mouse[mouse_held];
+        focused = 0;
+        captured = 0;
+        ready = 0;
+        mouse_dx = 0;
+        mouse_dy = 0;
+      ) else (
+        focused = 1;
+        ready = 0;
+        mouse_dx = 0;
+        mouse_dy = 0;
+      )
+    ) else if (e\kind == gui_ev_key_down[]) (
+      let key = doom_input_key_slot[e\a];
+      if ((key >= 0) and (key < bytes_len[held])) (
+        bytes_set[held, key, 1];
+      )
+    ) else if (e\kind == gui_ev_key_up[]) (
+      let key = doom_input_key_slot[e\a];
+      if ((key >= 0) and (key < bytes_len[held])) (
+        bytes_set[held, key, 0];
+      )
+    ) else if (e\kind == gui_ev_input_state[]) (
+      // Snapshot records are ordered after all transition records. Clear the
+      // inferred state, install its authority flags/buttons, then let the
+      // following KEY_HELD records populate the complete physical set.
+      doom_input_clear_keys[held];
+      doom_input_clear_mouse[mouse_held];
+      input_epoch = e\a;
+      focused = e\b % 2;
+      captured = (e\b / 2) % 2;
+      if (focused == 1) (
+        let button = 0;
+        while (button < bytes_len[mouse_held]) (
+          bytes_set[mouse_held, button, (e\mods / gui_pow2[button]) % 2];
+          button = button + 1;
+        )
+      ) else (
+        ready = 0;
+        mouse_dx = 0;
+        mouse_dy = 0;
+      )
+    ) else if (e\kind == gui_ev_key_held[]) (
+      if (focused == 1) (
+        let key = doom_input_key_slot[e\a];
+        if ((key >= 0) and (key < bytes_len[held])) (
+          bytes_set[held, key, 1];
+        )
+      )
+    ) else if (e\kind == gui_ev_mouse_move[]) (
+      if (focused == 1) (
+        if (ready == 1) (
+          mouse_dx = mouse_dx + e\a - mouse_x;
+          mouse_dy = mouse_dy + e\b - mouse_y;
+        )
+        mouse_x = e\a;
+        mouse_y = e\b;
+        ready = 1;
+      )
+    ) else if ((e\kind == gui_ev_mouse_down[]) or
+               (e\kind == gui_ev_mouse_up[])) (
+      let button = (e\mods / 65536) % 65536;
+      if ((button >= 0) and (button < bytes_len[mouse_held])) (
+        let down = 0;
+        if (e\kind == gui_ev_mouse_down[]) ( down = 1; )
+        bytes_set[mouse_held, button, down];
+      )
+    ) else if (e\kind == gui_ev_mouse_delta[]) (
+      if ((focused == 1) and (captured == 1)) (
+        mouse_dx = mouse_dx + e\a;
+        mouse_dy = mouse_dy + e\b;
+      )
+    ) else if (e\kind == gui_ev_pointer_capture[]) (
+      captured = e\a;
+      if (captured == 0) (
+        // The presenter deliberately gives an uncaptured click back to the
+        // window manager and does not forward its later mouse-up. Capture
+        // loss is therefore the only reliable release edge for buttons that
+        // were already down.
+        doom_input_clear_mouse[mouse_held];
+      )
+      ready = 0;
+      mouse_dx = 0;
+      mouse_dy = 0;
+    ) else if (e\kind == gui_ev_scroll[]) (
+      scroll_y = scroll_y + e\b;
+    )
+    i = i + 1;
+  )
+  // One anomalous coordinate must not spin through many revolutions.
+  if (mouse_dx < 0 - 96) ( mouse_dx = 0 - 96; )
+  if (mouse_dx > 96) ( mouse_dx = 96; )
+  if (mouse_dy < 0 - 96) ( mouse_dy = 0 - 96; )
+  if (mouse_dy > 96) ( mouse_dy = 96; )
+  => {
+    held: held,
+    mouse_held: mouse_held,
+    focused: focused,
+    captured: captured,
+    input_epoch: input_epoch,
+    mouse_ready: ready,
+    mouse_x: mouse_x,
+    mouse_y: mouse_y,
+    mouse_dx: mouse_dx,
+    mouse_dy: mouse_dy,
+    scroll_y: scroll_y
+  };
+)
+
+// Positive protocol Y is mouse-down. Positive pitch moves the projection
+// horizon upward, revealing more floor: looking down. Negative values reveal
+// more ceiling. Both directions share the same explicit, deliberately wide
+// gameplay clamp; the renderer retains only a small raster safety margin.
+op doom_input_pitch [pitch, mouse_dy] (
+  // The 480-wide view uses a 360-pixel focal length. One horizontal mouse
+  // degree therefore moves projected geometry about six raster pixels near
+  // the centre; apply the same measured rate vertically before clamping.
+  let out = pitch + mouse_dy * 6;
+  if (out < 0 - 145) ( => 0 - 145; )
+  if (out > 145) ( => 145; )
+  => out;
+)
+
+op doom_input_held [st, key] (
+  let slot = doom_input_key_slot[key];
+  if ((slot < 0) or (slot >= bytes_len[st\held])) ( => 0; )
+  => bytes_get[st\held, slot];
+)
+
+op doom_input_held_either [st, first, second] (
+  if (doom_input_held[st, first] == 1) ( => 1; )
+  => doom_input_held[st, second];
+)
+
+// One explicit gameplay intent surface lets tests distinguish retained input
+// from collision response. Positive forward/strafe matches W/up and A/Q.
+// Opposite directions cancel: event ordering never grants one key priority.
+op doom_input_forward_axis [st] (
+  let positive = 0;
+  let negative = 0;
+  if ((doom_input_held[st, gui_key_up[]] == 1) or
+      (doom_input_held[st, 119] == 1)) ( positive = 1; )
+  if ((doom_input_held[st, gui_key_down[]] == 1) or
+      (doom_input_held[st, 115] == 1)) ( negative = 1; )
+  => positive - negative;
+)
+
+op doom_input_strafe_axis [st] (
+  let positive = 0;
+  let negative = 0;
+  if ((doom_input_held[st, 97] == 1) or
+      (doom_input_held[st, 113] == 1)) ( positive = 1; )
+  if ((doom_input_held[st, 100] == 1) or
+      (doom_input_held[st, 101] == 1)) ( negative = 1; )
+  => positive - negative;
+)
+
+op doom_input_mouse_held [st, button] (
+  if ((button < 0) or (button >= bytes_len[st\mouse_held])) ( => 0; )
+  => bytes_get[st\mouse_held, button];
+)
+
+op doom_input_fire_held [st] (
+  if (doom_input_mouse_held[st, 0] == 1) ( => 1; )
+  => doom_input_held[st, gui_key_control[]];
+)
+
+// Turn Q31 direction plus local forward/strafe commands into a symmetric
+// integer world step. Exact rounding matters: floor division turns a tiny
+// negative cardinal residue into -1 and makes straight movement drift.
+op doom_input_motion [sine, cosine, forward, strafe] (
+  => {
+    dx: trig_mulshift[cosine, forward * 2, 32] -
+      trig_mulshift[sine, strafe * 2, 32],
+    dy: trig_mulshift[sine, forward * 2, 32] +
+      trig_mulshift[cosine, strafe * 2, 32]
+  };
+)

@@ -1,0 +1,1676 @@
+// Bounded mutable classic-map world state: moving sectors, player vertical
+// motion, collectible resources and one explicit level-complete state. The
+// validated map remains the immutable source; `sectors` and `side_textures`
+// are the copied authorities that rendering, collision and actor sight share
+// during play.
+
+credits: <../games/doom-combat.flx> <f/arrays> <f/buffers> <f/bytes> <f/trig>;
+
+states DoomDoorPhase {
+  Closed
+  Opening
+  Waiting
+  Closing
+}
+
+states DoomMoverPhase {
+  Idle
+  Lowering
+  Waiting
+  Raising
+  Done
+}
+
+private op doom_world_abs [value] (
+  if (value < 0) ( => 0 - value; )
+  => value;
+)
+
+private op doom_world_fill [buffer, value] (
+  let i = 0;
+  while (i < buf_len[buffer]) (
+    buf_set[buffer, i, value];
+    i = i + 1;
+  )
+  => 0;
+)
+
+private op doom_world_copy_sectors [map] (
+  let sectors = buf_new[32, map\sector_count * 5];
+  let i = 0;
+  while (i < map\sector_count * 5) (
+    buf_set[sectors, i, buf_get[map\sectors, i]];
+    i = i + 1;
+  )
+  => sectors;
+)
+
+private op doom_world_copy_side_textures [map] (
+  let textures = buf_new[32, map\side_count * 3];
+  let i = 0;
+  while (i < map\side_count * 3) (
+    buf_set[textures, i, buf_get[map\side_textures, i]];
+    i = i + 1;
+  )
+  => textures;
+)
+
+private op doom_world_other_sector [map, line, sector] (
+  let lb = line * 4;
+  let right = buf_get[map\line_sides, lb + 2];
+  let left = buf_get[map\line_sides, lb + 3];
+  if (right == left) ( => 0 - 1; )
+  if (right == sector) ( => left; )
+  if (left == sector) ( => right; )
+  => 0 - 1;
+)
+
+private op doom_world_door_sector [map, line] (
+  let lb = line * 4;
+  let right = buf_get[map\line_sides, lb + 2];
+  let left = buf_get[map\line_sides, lb + 3];
+  if ((right >= 0) and
+      (buf_get[map\sectors, right * 5 + 1] <=
+       buf_get[map\sectors, right * 5])) ( => right; )
+  if ((left >= 0) and
+      (buf_get[map\sectors, left * 5 + 1] <=
+       buf_get[map\sectors, left * 5])) ( => left; )
+  => 0 - 1;
+)
+
+private op doom_world_door_top [map, sector] (
+  let bottom = buf_get[map\sectors, sector * 5];
+  let top = 2147483647;
+  let i = 0;
+  while (i < map\line_count) (
+    let other = doom_world_other_sector[map, i, sector];
+    if (other >= 0) (
+      let ceiling = buf_get[map\sectors, other * 5 + 1];
+      if ((ceiling > bottom) and (ceiling < top)) ( top = ceiling; )
+    )
+    i = i + 1;
+  )
+  if (top < 2147483647) () else ( => 0 - 1; )
+  top = top - 4;
+  if (top - bottom >= 56) () else ( => 0 - 1; )
+  => top;
+)
+
+private op doom_world_find_door [doors, sector] (
+  let i = 0;
+  while (i < arr_len[doors]) (
+    let door = doors\\i;
+    if (door\sector == sector) ( => i; )
+    i = i + 1;
+  )
+  => 0 - 1;
+)
+
+private op doom_world_tag_sector [map, tag] (
+  let found = 0 - 1;
+  let i = 0;
+  while (i < map\sector_count) (
+    if (buf_get[map\sectors, i * 5 + 4] == tag) (
+      if (found < 0) () else ( => 0 - 1; )
+      found = i;
+    )
+    i = i + 1;
+  )
+  => found;
+)
+
+private op doom_world_floor_target [map, sector, special] (
+  let target = 2147483647;
+  if ((special == 36) or (special == 102)) (
+    target = 0 - 2147483648;
+  )
+  let i = 0;
+  while (i < map\line_count) (
+    let other = doom_world_other_sector[map, i, sector];
+    if (other >= 0) (
+      let floor = buf_get[map\sectors, other * 5];
+      if (((special == 36) or (special == 102)) and
+          (floor > target)) ( target = floor; )
+      if ((special == 37) and (floor < target)) ( target = floor; )
+      if (((special == 62) or (special == 88)) and (floor < target)) (
+        target = floor;
+      )
+    )
+    i = i + 1;
+  )
+  if ((target > 0 - 2147483648) and (target < 2147483647)) () else ( => target; )
+  if (special == 36) ( target = target + 8; )
+  => target;
+)
+
+private op doom_world_find_mover [movers, sector, special] (
+  let i = 0;
+  while (i < arr_len[movers]) (
+    let mover = movers\\i;
+    if ((mover\sector == sector) and (mover\special == special)) ( => i; )
+    i = i + 1;
+  )
+  => 0 - 1;
+)
+
+private op doom_world_stair_next [map, selected, sector, base_floor, flat] (
+  let line = 0;
+  while (line < map\line_count) (
+    let other = doom_world_other_sector[map, line, sector];
+    if ((other >= 0) and (bytes_get[selected, other] == 0) and
+        (buf_get[map\sectors, other * 5] == base_floor) and
+        (buf_get[map\sector_flats, other * 2] == flat)) ( => other; )
+    line = line + 1;
+  )
+  => 0 - 1;
+)
+
+private op doom_world_teleport_destination [map, tag] (
+  let thing = 0;
+  while (thing < map\thing_count) (
+    if (buf_get[map\things, thing * 4 + 2] == 14) (
+      let x = buf_get[map\things, thing * 4];
+      let y = buf_get[map\things, thing * 4 + 1];
+      let sector = doom_map_point_sector[map, x, y];
+      if (buf_get[map\sectors, sector * 5 + 4] == tag) ( => thing; )
+    )
+    thing = thing + 1;
+  )
+  => 0 - 1;
+)
+
+op doom_world_new [map] (
+  if ((map\bsp_ready == 1) and
+      (buf_len[map\line_actions] == map\line_count * 2)) () else (
+    fall "doom_world_new: map has no validated linedef actions";
+  )
+  let sectors = doom_world_copy_sectors[map];
+  let side_textures = doom_world_copy_side_textures[map];
+  let line_doors = buf_new[32, map\line_count];
+  let line_door_masks = buf_new[32, map\line_count];
+  let line_movers = buf_new[32, map\line_count];
+  let line_mover_masks = buf_new[32, map\line_count];
+  let line_teleports = buf_new[32, map\line_count];
+  let teleport_guard = bytes_new[map\line_count];
+  let line_used = bytes_new[map\line_count];
+  doom_world_fill[line_doors, 0 - 1];
+  doom_world_fill[line_door_masks, 0];
+  doom_world_fill[line_movers, 0 - 1];
+  doom_world_fill[line_mover_masks, 0];
+  doom_world_fill[line_teleports, 0 - 1];
+  let doors = [];
+  let movers = [];
+  let unsupported_actions = 0;
+  let i = 0;
+  while (i < map\line_count) (
+    let special = buf_get[map\line_actions, i * 2];
+    let tag = buf_get[map\line_actions, i * 2 + 1];
+    if ((special == 0) or (special == 11)) (
+      // No setup: the exit is use-activated.
+    ) else if ((special == 9) or (special == 48)) (
+      // Donut floors and scrolling walls are retained as explicit inert
+      // actions until their world transitions are admitted.
+      unsupported_actions = unsupported_actions + 1;
+    ) else if ((special == 1) or (special == 26) or (special == 27) or
+               (special == 28) or (special == 31) or (special == 32) or
+               (special == 33) or (special == 34) or (special == 29) or
+               (special == 46) or (special == 63) or (special == 103)) (
+      let tagged = (special == 29) or (special == 46) or
+        (special == 63) or (special == 103);
+      let action_supported = 1;
+      if ((tagged == 1) and (tag <= 0)) ( action_supported = 0; )
+      let direct_sector = 0 - 1;
+      if (tagged == 0) ( direct_sector = doom_world_door_sector[map, i]; )
+      let found = 0;
+      let sector_cursor = 0;
+      while ((action_supported == 1) and
+             (sector_cursor < map\sector_count)) (
+        let selected = 0;
+        if ((tagged == 1) and
+            (buf_get[map\sectors, sector_cursor * 5 + 4] == tag)) (
+          selected = 1;
+        )
+        if ((tagged == 0) and (sector_cursor == direct_sector)) ( selected = 1; )
+        if (selected == 1) (
+          let door = doom_world_find_door[doors, sector_cursor];
+          if (door < 0) (
+            let door_top = doom_world_door_top[map, sector_cursor];
+            if ((arr_len[doors] < 31) and (door_top >= 0)) (
+              door = arr_len[doors];
+              doors = doors + [{
+                sector: sector_cursor,
+                bottom: buf_get[map\sectors, sector_cursor * 5],
+                top: door_top,
+                stay_open: (special == 31) or (special == 32) or
+                  (special == 33) or (special == 34) or
+                  (special == 46) or (special == 103),
+                phase: DoomDoorPhase\Closed, phase_tick: 0
+              }];
+            ) else (
+              action_supported = 0;
+            )
+          )
+          if ((door >= 0) and
+              ((special == 31) or (special == 32) or (special == 33) or
+               (special == 34) or (special == 46) or (special == 103))) (
+            let existing_door = doors\\door;
+            existing_door\stay_open = 1;
+          )
+          if (door >= 0) (
+            if (found == 0) ( buf_set[line_doors, i, door]; )
+            let mask = buf_get[line_door_masks, i] + (1 *< door);
+            buf_set[line_door_masks, i, mask];
+            found = found + 1;
+          )
+        )
+        sector_cursor = sector_cursor + 1;
+      )
+      if ((action_supported == 1) and (found > 0)) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if ((special == 7) and (tag > 0)) (
+      let sector = doom_world_tag_sector[map, tag];
+      let found = 0;
+      if (sector >= 0) (
+        let selected = bytes_new[map\sector_count];
+        let base_floor = buf_get[map\sectors, sector * 5];
+        let flat = buf_get[map\sector_flats, sector * 2];
+        let step = 1;
+        while ((sector >= 0) and (arr_len[movers] < 31)) (
+          bytes_set[selected, sector, 1];
+          let mover = arr_len[movers];
+          movers = movers + [{
+            sector: sector, special: special,
+            top: base_floor + step * 8, bottom: base_floor,
+            direction: 1, one_shot: 1,
+            phase: DoomMoverPhase\Idle, phase_tick: 0
+          }];
+          if (found == 0) ( buf_set[line_movers, i, mover]; )
+          buf_set[line_mover_masks, i,
+            buf_get[line_mover_masks, i] + (1 *< mover)];
+          found = found + 1;
+          sector = doom_world_stair_next[
+            map, selected, sector, base_floor, flat
+          ];
+          step = step + 1;
+        )
+      )
+      if (found > 0) () else ( unsupported_actions = unsupported_actions + 1; )
+    ) else if ((special == 14) or (special == 36) or (special == 37) or
+               (special == 62) or (special == 88) or (special == 102)) (
+      let sector = 0 - 1;
+      if (tag > 0) ( sector = doom_world_tag_sector[map, tag]; )
+      let target = 2147483647;
+      if (sector >= 0) (
+        if (special == 14) (
+          target = buf_get[map\sectors, sector * 5] + 32;
+        ) else (
+          target = doom_world_floor_target[map, sector, special];
+        )
+      )
+      if ((sector >= 0) and (target > 0 - 2147483648) and
+          (target < 2147483647)) (
+        let mover = doom_world_find_mover[movers, sector, special];
+        if ((mover < 0) and (arr_len[movers] < 31)) (
+          let mover_top = buf_get[map\sectors, sector * 5];
+          let mover_bottom = target;
+          let mover_direction = 0 - 1;
+          if (special == 14) (
+            mover_top = target;
+            mover_bottom = buf_get[map\sectors, sector * 5];
+            mover_direction = 1;
+          )
+          mover = arr_len[movers];
+          movers = movers + [{
+            sector: sector, special: special,
+            top: mover_top, bottom: mover_bottom,
+            direction: mover_direction,
+            one_shot: (special == 14) or (special == 36) or
+              (special == 37) or (special == 102),
+            phase: DoomMoverPhase\Idle, phase_tick: 0
+          }];
+        )
+        if (mover >= 0) (
+          buf_set[line_movers, i, mover];
+          buf_set[line_mover_masks, i, 1 *< mover];
+        ) else (
+          unsupported_actions = unsupported_actions + 1;
+        )
+      ) else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if ((special == 39) or (special == 97)) (
+      let destination = 0 - 1;
+      if (tag > 0) ( destination = doom_world_teleport_destination[map, tag]; )
+      if (destination >= 0) (
+        buf_set[line_teleports, i, destination];
+      ) else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else (
+      unsupported_actions = unsupported_actions + 1;
+    )
+    i = i + 1;
+  )
+
+  let pickup_alive = bytes_new[map\thing_count];
+  let pickup_total = 0;
+  i = 0;
+  while (i < map\thing_count) (
+    let kind = buf_get[map\things, i * 4 + 2];
+    if (doom_texture_pickup_family[kind] >= 0) (
+      bytes_set[pickup_alive, i, 1];
+      pickup_total = pickup_total + 1;
+    )
+    i = i + 1;
+  )
+  let player_sector = doom_map_point_sector[map, map\player_x, map\player_y];
+  => {
+    sectors: sectors, side_textures: side_textures,
+    doors: doors, movers: movers, switch_buttons: [],
+    unsupported_actions: unsupported_actions,
+    line_doors: line_doors, line_door_masks: line_door_masks,
+    line_movers: line_movers, line_mover_masks: line_mover_masks,
+    line_teleports: line_teleports, line_used: line_used,
+    teleport_guard: teleport_guard,
+    pickup_alive: pickup_alive, pickup_total: pickup_total, picked: 0,
+    pickup_kind: 0 - 1, pickup_tick: 0, pickup_message: "",
+    hazard_hits: 0, hazard_damage: 0,
+    blue_key: 0, yellow_key: 0, red_key: 0,
+    sound_serial: 0, sound_kind: 0,
+    teleport_serial: 0, teleport_x: 0, teleport_y: 0, teleport_angle: 0,
+    teleport_fog_tick: 0,
+    teleport_from_x: 0, teleport_from_y: 0,
+    teleport_to_x: 0, teleport_to_y: 0,
+    player_z: buf_get[sectors, player_sector * 5], player_vz: 0,
+    grounded: 1, exited: 0, exit_tick: 0, tick: 0
+  };
+)
+
+// World transitions report only a small semantic event. Doom-play owns the
+// effect-bank mapping; the world remains usable without any audio capability.
+private op doom_world_emit_sound [world, kind] (
+  world\sound_kind = kind;
+  world\sound_serial = world\sound_serial + 1;
+  => 0;
+)
+
+private op doom_world_activate_line_doors [world, line] (
+  let mask = buf_get[world\line_door_masks, line];
+  let activated = 0;
+  let i = 0;
+  while (i < arr_len[world\doors]) (
+    if ((mask / (1 *< i)) % 2 == 1) (
+      let door = world\doors\\i;
+      door\phase = DoomDoorPhase\Opening;
+      door\phase_tick = 0;
+      activated = activated + 1;
+    )
+    i = i + 1;
+  )
+  if (activated > 0) ( doom_world_emit_sound[world, 1]; )
+  => activated;
+)
+
+private op doom_world_activate_line_movers [world, line] (
+  let mask = buf_get[world\line_mover_masks, line];
+  let activated = 0;
+  let i = 0;
+  while (i < arr_len[world\movers]) (
+    if ((mask / (1 *< i)) % 2 == 1) (
+      let mover = world\movers\\i;
+      if (mover\phase == DoomMoverPhase\Idle) (
+        doom_world_activate_mover[mover];
+        activated = activated + 1;
+      )
+    )
+    i = i + 1;
+  )
+  => activated;
+)
+
+private op doom_world_flip_switch [map, world, line, use_again] (
+  let side = buf_get[map\line_sides, line * 4];
+  if ((side >= 0) and (side < map\side_count)) () else ( => 0; )
+  let part = 0;
+  while (part < 3) (
+    let side_slot = side * 3 + part;
+    let texture = buf_get[world\side_textures, side_slot];
+    let partner = doom_texture_switch_partner[map\texture_bank, texture];
+    if (partner >= 0) (
+      buf_set[world\side_textures, side_slot, partner];
+      doom_world_emit_sound[world, 3];
+      if ((use_again == 1) and (arr_len[world\switch_buttons] < 16)) (
+        let exists = 0;
+        let bi = 0;
+        while (bi < arr_len[world\switch_buttons]) (
+          let button = world\switch_buttons\\bi;
+          if (button\side_slot == side_slot) ( exists = 1; )
+          bi = bi + 1;
+        )
+        if (exists == 0) (
+          world\switch_buttons = world\switch_buttons + [{
+            side_slot: side_slot, texture: texture, tick: 60
+          }];
+        )
+      ) else if (use_again == 0) (
+        bytes_set[world\line_used, line, 1];
+      )
+      => 1;
+    )
+    part = part + 1;
+  )
+  if (use_again == 0) ( bytes_set[world\line_used, line, 1]; )
+  => 0;
+)
+
+op doom_world_map [map, world] (
+  if ((buf_len[world\sectors] == map\sector_count * 5) and
+      (buf_len[world\side_textures] == map\side_count * 3)) () else (
+    fall "doom_world_map: mutable world authority disagrees with map";
+  )
+  => map + {
+    sectors: world\sectors, side_textures: world\side_textures
+  };
+)
+
+private op doom_world_aim_line [map, player_x, player_y, angle, maximum] (
+  let direction = trig_sincos[angle];
+  let q31 = 2147483648;
+  let best = 0 - 1;
+  let best_distance = maximum + 1;
+  let i = 0;
+  while (i < map\line_count) (
+    let special = buf_get[map\line_actions, i * 2];
+    if ((special == 1) or (special == 7) or (special == 9) or
+        (special == 11) or (special == 14) or (special == 26) or
+        (special == 27) or (special == 28) or (special == 29) or
+        (special == 31) or (special == 32) or (special == 33) or
+        (special == 34) or (special == 46) or (special == 62) or
+        (special == 63) or (special == 102) or (special == 103)) (
+      let lb = i * 4;
+      let va = buf_get[map\lines, lb] * 2;
+      let vb = buf_get[map\lines, lb + 1] * 2;
+      let adx = buf_get[map\vertices, va] - player_x;
+      let ady = buf_get[map\vertices, va + 1] - player_y;
+      let bdx = buf_get[map\vertices, vb] - player_x;
+      let bdy = buf_get[map\vertices, vb + 1] - player_y;
+      let af = (adx * direction\cos + ady * direction\sin) / q31;
+      let bf = (bdx * direction\cos + bdy * direction\sin) / q31;
+      let aside = (ady * direction\cos - adx * direction\sin) / q31;
+      let bside = (bdy * direction\cos - bdx * direction\sin) / q31;
+      if (((aside <= 0) and (bside >= 0)) or
+          ((aside >= 0) and (bside <= 0))) (
+        let aa = doom_world_abs[aside];
+        let ba = doom_world_abs[bside];
+        let denominator = aa + ba;
+        let distance = af;
+        if (denominator > 0) (
+          distance = (af * ba + bf * aa) / denominator;
+        ) else if (bf < distance) ( distance = bf; )
+        if ((distance > 0) and (distance <= maximum) and
+            (distance < best_distance)) (
+          best = i;
+          best_distance = distance;
+        )
+      )
+    )
+    i = i + 1;
+  )
+  => best;
+)
+
+op doom_world_use [map, world, player_x, player_y, angle] (
+  if (world\exited == 1) ( => 0; )
+  let line = doom_world_aim_line[
+    map, player_x, player_y, angle, 96
+  ];
+  if (line < 0) ( => 0; )
+  let special = buf_get[map\line_actions, line * 2];
+  if (bytes_get[world\line_used, line] == 1) ( => 0; )
+  if (special == 11) (
+    doom_world_flip_switch[map, world, line, 0];
+    doom_world_emit_sound[world, 4];
+    world\exited = 1;
+    world\exit_tick = 0;
+    => 1;
+  )
+  if (special == 9) (
+    world\pickup_message = "DONUT SWITCH IS NOT YET ACTIVE";
+    world\pickup_tick = 90;
+    => 0;
+  )
+  if (special == 46) ( => 0; )
+  if ((special == 7) or (special == 14) or (special == 62) or
+      (special == 102)) (
+    if (doom_world_activate_line_movers[world, line] > 0) (
+      doom_world_flip_switch[map, world, line, special == 62];
+      => 1;
+    )
+    => 0;
+  )
+  if (((special == 26) or (special == 32)) and (world\blue_key == 0)) (
+    world\pickup_message = "YOU NEED THE BLUE KEYCARD";
+    world\pickup_tick = 90;
+    => 0;
+  )
+  if (((special == 27) or (special == 34)) and (world\yellow_key == 0)) (
+    world\pickup_message = "YOU NEED THE YELLOW KEYCARD";
+    world\pickup_tick = 90;
+    => 0;
+  )
+  if ((special == 28) and (world\red_key == 0)) (
+    world\pickup_message = "YOU NEED THE RED KEYCARD";
+    world\pickup_tick = 90;
+    => 0;
+  )
+  if ((special == 33) and (world\red_key == 0)) (
+    world\pickup_message = "YOU NEED THE RED KEYCARD";
+    world\pickup_tick = 90;
+    => 0;
+  )
+  if (doom_world_activate_line_doors[world, line] > 0) (
+    if ((special == 29) or (special == 63) or (special == 103)) (
+      doom_world_flip_switch[map, world, line, special == 63];
+    )
+    => 1;
+  )
+  => 0;
+)
+
+op doom_world_shoot [map, world, player_x, player_y, angle] (
+  let line = doom_world_aim_line[
+    map, player_x, player_y, angle, 1024
+  ];
+  if ((line >= 0) and
+      (buf_get[map\line_actions, line * 2] == 46)) () else ( => 0; )
+  if (doom_world_activate_line_doors[world, line] > 0) (
+    doom_world_flip_switch[map, world, line, 1];
+    => 1;
+  )
+  => 0;
+)
+
+private op doom_world_activate_mover [mover] (
+  mover\phase with states DoomMoverPhase {
+    Idle => (
+      if (mover\direction > 0) (
+        mover\phase = DoomMoverPhase\Raising;
+      ) else (
+        mover\phase = DoomMoverPhase\Lowering;
+      )
+      mover\phase_tick = 0;
+    )
+    Lowering => ()
+    Waiting => ()
+    Raising => ()
+    Done => ()
+  };
+  => 0;
+)
+
+private op doom_world_line_side [map, line, x, y] (
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let ax = buf_get[map\vertices, va];
+  let ay = buf_get[map\vertices, va + 1];
+  let dx = buf_get[map\vertices, vb] - ax;
+  let dy = buf_get[map\vertices, vb + 1] - ay;
+  // SIDEDEFS[0] is the linedef's right/front side.
+  => (x - ax) * dy - (y - ay) * dx;
+)
+
+private op doom_world_crosses_front [map, line, x, y] (
+  => doom_world_line_side[map, line, x, y] >= 0;
+)
+
+// This integer closest-point test deliberately uses the same square player
+// cross-section as movement. It bounds the destination-side trigger horizon
+// without a square root or a second notion of player radius.
+private op doom_world_point_near_line [map, line, x, y, radius] (
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let ax = buf_get[map\vertices, va];
+  let ay = buf_get[map\vertices, va + 1];
+  let dx = buf_get[map\vertices, vb] - ax;
+  let dy = buf_get[map\vertices, vb + 1] - ay;
+  let length_squared = dx * dx + dy * dy;
+  if (length_squared > 0) () else ( => 0; )
+  let dot = (x - ax) * dx + (y - ay) * dy;
+  let closest_x = ax;
+  let closest_y = ay;
+  if (dot >= length_squared) (
+    closest_x = buf_get[map\vertices, vb];
+    closest_y = buf_get[map\vertices, vb + 1];
+  ) else if (dot > 0) (
+    closest_x = ax + dot * dx / length_squared;
+    closest_y = ay + dot * dy / length_squared;
+  )
+  => (doom_world_abs[x - closest_x] <= radius) and
+    (doom_world_abs[y - closest_y] <= radius);
+)
+
+// Radius contact is an early form of a front-to-back centre crossing. Requiring
+// the centre itself to approach the line prevents a trailing support point
+// from firing after the centre has already exited back-to-front.
+private op doom_world_teleport_approaching [map, line,
+                                            from_x, from_y, to_x, to_y] (
+  let from_side = doom_world_line_side[map, line, from_x, from_y];
+  let to_side = doom_world_line_side[map, line, to_x, to_y];
+  => (from_side >= 0) and (to_side < from_side);
+)
+
+// Arrival can place the player exactly one diameter from a different reusable
+// teleport line. Guard every such destination-side line until the player's
+// full centre horizon has left all of them; time alone never rearms an action.
+private op doom_world_guard_destination_teleports [map, world, x, y] (
+  let line = 0;
+  while (line < map\line_count) (
+    let special = buf_get[map\line_actions, line * 2];
+    if (((special == 39) or (special == 97)) and
+        (buf_get[world\line_teleports, line] >= 0) and
+        (doom_world_point_near_line[map, line, x, y, 32] == 1)) (
+      bytes_set[world\teleport_guard, line, 1];
+    )
+    line = line + 1;
+  )
+  => 0;
+)
+
+private op doom_world_rearm_destination_teleports [map, world, x, y] (
+  let guarded = 0;
+  let near = 0;
+  let line = 0;
+  while (line < map\line_count) (
+    if (bytes_get[world\teleport_guard, line] == 1) (
+      guarded = 1;
+      if (doom_world_point_near_line[map, line, x, y, 32] == 1) (
+        near = 1;
+      )
+    )
+    line = line + 1;
+  )
+  if ((guarded == 1) and (near == 0)) (
+    line = 0;
+    while (line < map\line_count) (
+      bytes_set[world\teleport_guard, line, 0];
+      line = line + 1;
+    )
+  )
+  => 0;
+)
+
+// Keep teleport placement in one transition. The source and destination fog
+// anchors are ordinary bounded world state; rendering never has to infer an
+// action by rereading the WAD. Doom places the destination fog twenty map
+// units in front of the type-14 marker, which also keeps it visible after the
+// camera is moved to the marker itself.
+private op doom_world_activate_teleport [map, world, line, from_x, from_y] (
+  let destination = buf_get[world\line_teleports, line];
+  if (destination >= 0) () else ( => 0; )
+  world\teleport_x = buf_get[map\things, destination * 4];
+  world\teleport_y = buf_get[map\things, destination * 4 + 1];
+  world\teleport_angle = buf_get[map\thing_angles, destination];
+  world\teleport_serial = world\teleport_serial + 1;
+  world\teleport_fog_tick = 70;
+  world\teleport_from_x = from_x;
+  world\teleport_from_y = from_y;
+  let direction = trig_sincos[trig_from_degrees[world\teleport_angle]];
+  let q31 = 2147483648;
+  world\teleport_to_x = world\teleport_x + direction\cos * 20 / q31;
+  world\teleport_to_y = world\teleport_y + direction\sin * 20 / q31;
+  doom_world_guard_destination_teleports[
+    map, world, world\teleport_x, world\teleport_y
+  ];
+  doom_world_emit_sound[world, 5];
+  let sector = doom_map_point_sector[
+    map, world\teleport_x, world\teleport_y
+  ];
+  world\player_z = buf_get[world\sectors, sector * 5];
+  world\player_vz = 0;
+  world\grounded = 1;
+  if (buf_get[map\line_actions, line * 2] == 39) (
+    bytes_set[world\line_used, line, 1];
+  )
+  => 1;
+)
+
+// A player's 16-unit support radius can reach a teleport line before the
+// centre does. Some original maps intentionally put that line against a
+// zero-height sector, so ordinary collision would otherwise reject the move
+// before the action became observable. Test the same five support sweeps as
+// collision, but retain the centre's front-side authority.
+private op doom_world_teleport_contact [map, world,
+                                        from_x, from_y, to_x, to_y] (
+  let line = 0;
+  while (line < map\line_count) (
+    let special = buf_get[map\line_actions, line * 2];
+    if (((special == 39) or (special == 97)) and
+        (bytes_get[world\line_used, line] == 0) and
+        (bytes_get[world\teleport_guard, line] == 0) and
+        (buf_get[world\line_teleports, line] >= 0) and
+        (doom_world_teleport_approaching[
+           map, line, from_x, from_y, to_x, to_y
+         ] == 1)) (
+      let crossed = doom_map_path_crosses_line[
+        map, line, from_x, from_y, to_x, to_y
+      ];
+      let radius = 16;
+      if (crossed == 0) (
+        crossed = doom_map_path_crosses_line[
+          map, line, from_x + radius, from_y, to_x + radius, to_y
+        ];
+      )
+      if (crossed == 0) (
+        crossed = doom_map_path_crosses_line[
+          map, line, from_x - radius, from_y, to_x - radius, to_y
+        ];
+      )
+      if (crossed == 0) (
+        crossed = doom_map_path_crosses_line[
+          map, line, from_x, from_y + radius, to_x, to_y + radius
+        ];
+      )
+      if (crossed == 0) (
+        crossed = doom_map_path_crosses_line[
+          map, line, from_x, from_y - radius, to_x, to_y - radius
+        ];
+      )
+      if (crossed == 1) (
+        => doom_world_activate_teleport[
+          map, world, line, from_x, from_y
+        ];
+      )
+    )
+    line = line + 1;
+  )
+  => 0;
+)
+
+op doom_world_cross [map, world, from_x, from_y, to_x, to_y] (
+  let activated = 0;
+  let line = 0;
+  while (line < map\line_count) (
+    let mover_index = buf_get[world\line_movers, line];
+    let special = buf_get[map\line_actions, line * 2];
+    let crossed = doom_map_path_crosses_line[
+      map, line, from_x, from_y, to_x, to_y
+    ];
+    if (((special == 36) or (special == 37) or (special == 88)) and
+        (mover_index >= 0) and
+        (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_movers[world, line];
+      if ((special == 36) or (special == 37)) (
+        bytes_set[world\line_used, line, 1];
+      )
+    )
+    if (((special == 39) or (special == 97)) and (crossed == 1) and
+        (bytes_get[world\line_used, line] == 0) and
+        (bytes_get[world\teleport_guard, line] == 0) and
+        (doom_world_teleport_approaching[
+           map, line, from_x, from_y, to_x, to_y
+         ] == 1)) (
+      if (doom_world_activate_teleport[
+            map, world, line, from_x, from_y
+          ] == 1) (
+        => activated + 1;
+      )
+    )
+    line = line + 1;
+  )
+  => activated;
+)
+
+private op doom_world_tick_door [map, world, door, player_x, player_y] (
+  let ceiling_index = door\sector * 5 + 1;
+  door\phase with states DoomDoorPhase {
+    Closed => ()
+    Opening => (
+      let ceiling = buf_get[world\sectors, ceiling_index] + 4;
+      if (ceiling >= door\top) (
+        ceiling = door\top;
+        door\phase = DoomDoorPhase\Waiting;
+        door\phase_tick = 0;
+      )
+      buf_set[world\sectors, ceiling_index, ceiling];
+    )
+    Waiting => (
+      if (door\stay_open == 0) (
+        door\phase_tick = door\phase_tick + 1;
+        if (door\phase_tick >= 120) (
+          door\phase = DoomDoorPhase\Closing;
+          door\phase_tick = 0;
+          doom_world_emit_sound[world, 2];
+        )
+      )
+    )
+    Closing => (
+      if (doom_map_point_sector[map, player_x, player_y] == door\sector) (
+        door\phase = DoomDoorPhase\Opening;
+        door\phase_tick = 0;
+        doom_world_emit_sound[world, 1];
+      ) else (
+        let ceiling = buf_get[world\sectors, ceiling_index] - 4;
+        if (ceiling <= door\bottom) (
+          ceiling = door\bottom;
+          door\phase = DoomDoorPhase\Closed;
+        )
+        buf_set[world\sectors, ceiling_index, ceiling];
+      )
+    )
+  };
+  => 0;
+)
+
+private op doom_world_tick_mover [world, mover] (
+  let floor_index = mover\sector * 5;
+  mover\phase with states DoomMoverPhase {
+    Idle => ()
+    Lowering => (
+      let floor = buf_get[world\sectors, floor_index] - 8;
+      if (floor <= mover\bottom) (
+        floor = mover\bottom;
+        if (mover\one_shot == 1) (
+          mover\phase = DoomMoverPhase\Done;
+        ) else (
+          mover\phase = DoomMoverPhase\Waiting;
+          mover\phase_tick = 0;
+        )
+      )
+      buf_set[world\sectors, floor_index, floor];
+    )
+    Waiting => (
+      mover\phase_tick = mover\phase_tick + 1;
+      if (mover\phase_tick >= 90) (
+        mover\phase = DoomMoverPhase\Raising;
+        mover\phase_tick = 0;
+      )
+    )
+    Raising => (
+      let floor = buf_get[world\sectors, floor_index] + 8;
+      if (floor >= mover\top) (
+        floor = mover\top;
+        if (mover\one_shot == 1) (
+          mover\phase = DoomMoverPhase\Done;
+        ) else (
+          mover\phase = DoomMoverPhase\Idle;
+        )
+      )
+      buf_set[world\sectors, floor_index, floor];
+    )
+    Done => ()
+  };
+  => 0;
+)
+
+private op doom_world_tick_switch_buttons [world] (
+  let active = [];
+  let i = 0;
+  while (i < arr_len[world\switch_buttons]) (
+    let button = world\switch_buttons\\i;
+    button\tick = button\tick - 1;
+    if (button\tick <= 0) (
+      buf_set[world\side_textures, button\side_slot, button\texture];
+    ) else (
+      active = active + [button];
+    )
+    i = i + 1;
+  )
+  world\switch_buttons = active;
+  => 0;
+)
+
+op doom_world_jump [map, world, player_x, player_y] (
+  if ((world\grounded == 1) and (world\exited == 0)) (
+    let sector = doom_map_point_sector[map, player_x, player_y];
+    let floor = buf_get[world\sectors, sector * 5];
+    if (world\player_z < floor) ( world\player_z = floor; )
+    world\player_vz = 8;
+    world\grounded = 0;
+    => 1;
+  )
+  => 0;
+)
+
+// The renderer's bounded near plane is eight map units. A point-sized player
+// could enter that region without crossing the wall itself, making the wall
+// disappear at the camera. Sweep the same explicit 16-unit cross-section used
+// by actors so every accepted camera position remains in front of near clip.
+op doom_world_player_move_blocked [map, world,
+                                   from_x, from_y, to_x, to_y] (
+  => doom_world_player_geometry_blocker[
+    map, world, from_x, from_y, to_x, to_y
+  ] != 0;
+)
+
+// Zero is clear; positive is linedef+1 and negative is -(target sector+1).
+// Each support sweep retains the map layer's exact compact blocker code.
+private op doom_world_player_geometry_blocker [map, world,
+                                                from_x, from_y, to_x, to_y] (
+  let z = world\player_z;
+  let blocker = doom_map_move_blocker_at[
+    map, from_x, from_y, to_x, to_y, z, 56, 24
+  ];
+  if (blocker != 0) ( => blocker; )
+  let radius = 16;
+  blocker = doom_map_move_blocker_at[
+    map, from_x + radius, from_y, to_x + radius, to_y, z, 56, 24
+  ];
+  if (blocker != 0) ( => blocker; )
+  blocker = doom_map_move_blocker_at[
+    map, from_x - radius, from_y, to_x - radius, to_y, z, 56, 24
+  ];
+  if (blocker != 0) ( => blocker; )
+  blocker = doom_map_move_blocker_at[
+    map, from_x, from_y + radius, to_x, to_y + radius, z, 56, 24
+  ];
+  if (blocker != 0) ( => blocker; )
+  blocker = doom_map_move_blocker_at[
+    map, from_x, from_y - radius, to_x, to_y - radius, z, 56, 24
+  ];
+  if (blocker != 0) ( => blocker; )
+  => 0;
+)
+
+// Doom actors are solid while targetable and become non-solid corpses. The
+// axis-aligned radius test matches the movement resolver's explicit 16-unit
+// cross-sections; a blocker also needs real vertical overlap, so an actor or
+// 42-unit barrel below a ledge cannot stop an airborne player above it.
+private op doom_world_contact_escape [from_x, from_y, to_x, to_y,
+                                      blocker_x, blocker_y] (
+  let from_dx = doom_world_abs[from_x - blocker_x];
+  let from_dy = doom_world_abs[from_y - blocker_y];
+  if ((from_dx < 32) and (from_dy < 32)) () else ( => 0; )
+  let to_dx = doom_world_abs[to_x - blocker_x];
+  let to_dy = doom_world_abs[to_y - blocker_y];
+  => to_dx * to_dx + to_dy * to_dy >
+     from_dx * from_dx + from_dy * from_dy;
+)
+
+// Positive is actor+1, negative is -(barrel+1), zero is clear. If two bodies
+// are already touching because another actor advanced on the previous tick,
+// movement that strictly increases separation is an escape, not a new entry.
+private op doom_world_player_actor_blocker [map, world, combat,
+                                             from_x, from_y, to_x, to_y] (
+  let i = 0;
+  while (i < combat\enemy_count) (
+    let actor = combat\actors\\i;
+    if ((doom_combat_actor_targetable[actor] == 1) and
+        (doom_world_abs[to_x - actor\x] < 32) and
+        (doom_world_abs[to_y - actor\y] < 32)) (
+      let sector = doom_map_point_sector[map, actor\x, actor\y];
+      let floor = buf_get[map\sectors, sector * 5];
+      if (doom_combat_vertical_overlap[
+            world\player_z, 56, floor, 56
+          ] == 1) (
+        if (doom_world_contact_escape[
+              from_x, from_y, to_x, to_y, actor\x, actor\y
+            ] == 0) ( => i + 1; )
+      )
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[combat\barrels]) (
+    let barrel = combat\barrels\\i;
+    if ((barrel\state == 1) and
+        (doom_world_abs[to_x - barrel\x] < 32) and
+        (doom_world_abs[to_y - barrel\y] < 32)) (
+      let sector = doom_map_point_sector[map, barrel\x, barrel\y];
+      let floor = buf_get[map\sectors, sector * 5];
+      if (doom_combat_vertical_overlap[
+            world\player_z, 56, floor, 42
+          ] == 1) (
+        if (doom_world_contact_escape[
+              from_x, from_y, to_x, to_y, barrel\x, barrel\y
+            ] == 0) ( => 0 - (i + 1); )
+      )
+    )
+    i = i + 1;
+  )
+  => 0;
+)
+
+op doom_world_player_actor_blocked [map, world, combat, to_x, to_y] (
+  => doom_world_player_actor_blocker[
+    map, world, combat, to_x, to_y, to_x, to_y
+  ] != 0;
+)
+
+private op doom_world_player_move_blocked_mode [
+  map, world, combat, combat_mode, from_x, from_y, to_x, to_y
+] (
+  if (doom_world_player_move_blocked[
+        map, world, from_x, from_y, to_x, to_y
+      ] == 1) ( => 1; )
+  if ((combat_mode == 1) and
+      (doom_world_player_actor_blocker[
+         map, world, combat, from_x, from_y, to_x, to_y
+       ] != 0)) ( => 1; )
+  => 0;
+)
+
+private op doom_world_player_move_blocker_mode [
+  map, world, combat, combat_mode, from_x, from_y, to_x, to_y
+] (
+  let geometry = doom_world_player_geometry_blocker[
+    map, world, from_x, from_y, to_x, to_y
+  ];
+  if (geometry > 0) ( => { kind: 2, index: geometry - 1 }; )
+  if (geometry < 0) ( => { kind: 5, index: 0 - geometry - 1 }; )
+  if (combat_mode == 1) (
+    let body = doom_world_player_actor_blocker[
+      map, world, combat, from_x, from_y, to_x, to_y
+    ];
+    if (body > 0) ( => { kind: 3, index: body - 1 }; )
+    if (body < 0) ( => { kind: 4, index: 0 - body - 1 }; )
+  )
+  => { kind: 0, index: 0 - 1 };
+)
+
+op doom_world_blocker_name [kind] (
+  if (kind == 0) ( => "none"; )
+  if (kind == 1) ( => "bounds"; )
+  if (kind == 2) ( => "linedef"; )
+  if (kind == 3) ( => "actor"; )
+  if (kind == 4) ( => "barrel"; )
+  if (kind == 5) ( => "sector"; )
+  => "unknown";
+)
+
+// Remove the normal component of the requested motion using the exact
+// contacted linedef. Unlike world-X/world-Y decomposition, this preserves a
+// valid tangent at an oblique wall while W remains held.
+private op doom_world_line_slide [map, line, dx, dy] (
+  if ((line >= 0) and (line < map\line_count)) () else (
+    => { dx: 0, dy: 0 };
+  )
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let tx = buf_get[map\vertices, vb] - buf_get[map\vertices, va];
+  let ty = buf_get[map\vertices, vb + 1] - buf_get[map\vertices, va + 1];
+  let denominator = tx * tx + ty * ty;
+  if (denominator > 0) () else ( => { dx: 0, dy: 0 }; )
+  let dot = dx * tx + dy * ty;
+  => { dx: (dot * tx) / denominator, dy: (dot * ty) / denominator };
+)
+
+// Diagnostic-only expansion of the five radius sweeps used by
+// doom_world_player_geometry_blocker. Bits 0..4 mean centre, +X, -X, +Y and
+// -Y respectively. This is called only for an opt-in retained stall record;
+// the ordinary movement path keeps its compact allocation-free blocker code.
+private op doom_world_stall_support_mask [map, world,
+                                          from_x, from_y, to_x, to_y,
+                                          kind, index] (
+  if ((kind == 2) or (kind == 5)) () else ( => 0; )
+  let wanted = index + 1;
+  if (kind == 5) ( wanted = 0 - wanted; )
+  let z = world\player_z;
+  let mask = 0;
+  if (doom_map_move_blocker_at[
+        map, from_x, from_y, to_x, to_y, z, 56, 24
+      ] == wanted) ( mask = mask + 1; )
+  let radius = 16;
+  if (doom_map_move_blocker_at[
+        map, from_x + radius, from_y, to_x + radius, to_y,
+        z, 56, 24
+      ] == wanted) ( mask = mask + 2; )
+  if (doom_map_move_blocker_at[
+        map, from_x - radius, from_y, to_x - radius, to_y,
+        z, 56, 24
+      ] == wanted) ( mask = mask + 4; )
+  if (doom_map_move_blocker_at[
+        map, from_x, from_y + radius, to_x, to_y + radius,
+        z, 56, 24
+      ] == wanted) ( mask = mask + 8; )
+  if (doom_map_move_blocker_at[
+        map, from_x, from_y - radius, to_x, to_y - radius,
+        z, 56, 24
+      ] == wanted) ( mask = mask + 16; )
+  => mask;
+)
+
+private op doom_world_stall_candidate [map, world, combat, combat_mode,
+                                       from_x, from_y, to_x, to_y] (
+  let outside = (to_x < map\min_x) or (to_x > map\max_x) or
+    (to_y < map\min_y) or (to_y > map\max_y);
+  if (outside == 1) (
+    => { kind: 1, index: 0 - 1, support_mask: 0 };
+  )
+  let blocker = doom_world_player_move_blocker_mode[
+    map, world, combat, combat_mode, from_x, from_y, to_x, to_y
+  ];
+  => {
+    kind: blocker\kind,
+    index: blocker\index,
+    support_mask: doom_world_stall_support_mask[
+      map, world, from_x, from_y, to_x, to_y,
+      blocker\kind, blocker\index
+    ]
+  };
+)
+
+// Recompute every candidate considered by the slide resolver after a full
+// stop. The result is deliberately rich and allocation-bearing because only
+// opt-in diagnostic stalls call it; ordinary gameplay retains the small hot
+// path above. `attempted` distinguishes a zero component from a clear one.
+private op doom_world_stall_probe_mode [map, world, combat, combat_mode,
+                                        from_x, from_y, dx, dy] (
+  let full = doom_world_stall_candidate[
+    map, world, combat, combat_mode,
+    from_x, from_y, from_x + dx, from_y + dy
+  ];
+
+  let tangent = { dx: 0, dy: 0 };
+  if (full\kind == 2) (
+    tangent = doom_world_line_slide[map, full\index, dx, dy];
+  )
+  let tangent_attempted = 0;
+  let tangent_blocker = { kind: 0, index: 0 - 1, support_mask: 0 };
+  if ((tangent\dx != 0) or (tangent\dy != 0)) (
+    tangent_attempted = 1;
+    tangent_blocker = doom_world_stall_candidate[
+      map, world, combat, combat_mode, from_x, from_y,
+      from_x + tangent\dx, from_y + tangent\dy
+    ];
+  )
+
+  let x_attempted = 0;
+  let x_blocker = { kind: 0, index: 0 - 1, support_mask: 0 };
+  if (dx != 0) (
+    x_attempted = 1;
+    x_blocker = doom_world_stall_candidate[
+      map, world, combat, combat_mode,
+      from_x, from_y, from_x + dx, from_y
+    ];
+  )
+  let y_attempted = 0;
+  let y_blocker = { kind: 0, index: 0 - 1, support_mask: 0 };
+  if (dy != 0) (
+    y_attempted = 1;
+    y_blocker = doom_world_stall_candidate[
+      map, world, combat, combat_mode,
+      from_x, from_y, from_x, from_y + dy
+    ];
+  )
+
+  let line_ax = 0;
+  let line_ay = 0;
+  let line_bx = 0;
+  let line_by = 0;
+  let line_solid = 0;
+  if ((full\kind == 2) and (full\index >= 0) and
+      (full\index < map\line_count)) (
+    let lb = full\index * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    line_ax = buf_get[map\vertices, va];
+    line_ay = buf_get[map\vertices, va + 1];
+    line_bx = buf_get[map\vertices, vb];
+    line_by = buf_get[map\vertices, vb + 1];
+    line_solid = buf_get[map\lines, lb + 2];
+  )
+
+  => {
+    full_kind: full\kind, full_index: full\index,
+    full_support_mask: full\support_mask,
+    tangent_attempted: tangent_attempted,
+    tangent_dx: tangent\dx, tangent_dy: tangent\dy,
+    tangent_kind: tangent_blocker\kind,
+    tangent_index: tangent_blocker\index,
+    tangent_support_mask: tangent_blocker\support_mask,
+    x_attempted: x_attempted,
+    x_kind: x_blocker\kind, x_index: x_blocker\index,
+    x_support_mask: x_blocker\support_mask,
+    y_attempted: y_attempted,
+    y_kind: y_blocker\kind, y_index: y_blocker\index,
+    y_support_mask: y_blocker\support_mask,
+    line_ax: line_ax, line_ay: line_ay,
+    line_bx: line_bx, line_by: line_by, line_solid: line_solid
+  };
+)
+
+op doom_world_stall_probe [map, world, from_x, from_y, dx, dy] (
+  => doom_world_stall_probe_mode[
+    map, world, world, 0, from_x, from_y, dx, dy
+  ];
+)
+
+op doom_world_stall_probe_combat [map, world, combat,
+                                  from_x, from_y, dx, dy] (
+  => doom_world_stall_probe_mode[
+    map, world, combat, 1, from_x, from_y, dx, dy
+  ];
+)
+
+// Preserve the requested vector when it is clear. On contact, resolve its
+// components independently from the last accepted position so forward motion
+// along an angled wall becomes a slide instead of an all-or-nothing stop.
+// `blocked` records the contact even when one component still advances.
+private op doom_world_move_result [map, world, combat, combat_mode,
+                                   teleport_before,
+                                   x, y, moved, blocked,
+                                   blocker_kind, blocker_index] (
+  if (world\teleport_serial != teleport_before) (
+    if (combat_mode == 1) (
+      doom_combat_telefrag[
+        map, combat, world\teleport_x, world\teleport_y
+      ];
+    )
+    => {
+      x: world\teleport_x, y: world\teleport_y,
+      moved: 1, blocked: blocked,
+      blocker_kind: blocker_kind, blocker_index: blocker_index,
+      teleported: 1, teleport_angle: world\teleport_angle
+    };
+  )
+  if (moved == 1) (
+    doom_world_rearm_destination_teleports[map, world, x, y];
+  )
+  => {
+    x: x, y: y, moved: moved, blocked: blocked,
+    blocker_kind: blocker_kind, blocker_index: blocker_index,
+    teleported: 0, teleport_angle: 0
+  };
+)
+
+private op doom_world_slide_move_mode [map, world, combat, combat_mode,
+                                       from_x, from_y, dx, dy] (
+  let full_x = from_x + dx;
+  let full_y = from_y + dy;
+  let full_outside = (full_x < map\min_x) or (full_x > map\max_x) or
+    (full_y < map\min_y) or (full_y > map\max_y);
+  let teleport_before = world\teleport_serial;
+  if ((full_outside == 0) and
+      (doom_world_teleport_contact[
+         map, world, from_x, from_y, full_x, full_y
+       ] == 1)) (
+    => doom_world_move_result[
+      map, world, combat, combat_mode, teleport_before,
+      full_x, full_y, 1, 0, 0, 0 - 1
+    ];
+  )
+  if ((full_outside == 0) and
+      (doom_world_player_move_blocked_mode[
+         map, world, combat, combat_mode, from_x, from_y, full_x, full_y
+      ] == 0)) (
+    teleport_before = world\teleport_serial;
+    doom_world_cross[map, world, from_x, from_y, full_x, full_y];
+    => doom_world_move_result[
+      map, world, combat, combat_mode, teleport_before,
+      full_x, full_y, 1, 0, 0, 0 - 1
+    ];
+  )
+
+  let primary = { kind: 1, index: 0 - 1 };
+  if (full_outside == 0) (
+    primary = doom_world_player_move_blocker_mode[
+      map, world, combat, combat_mode, from_x, from_y, full_x, full_y
+    ];
+  )
+
+  if (primary\kind == 2) (
+    let tangent = doom_world_line_slide[
+      map, primary\index, dx, dy
+    ];
+    let tangent_x = from_x + tangent\dx;
+    let tangent_y = from_y + tangent\dy;
+    let tangent_outside = (tangent_x < map\min_x) or
+      (tangent_x > map\max_x) or (tangent_y < map\min_y) or
+      (tangent_y > map\max_y);
+    teleport_before = world\teleport_serial;
+    if (((tangent\dx != 0) or (tangent\dy != 0)) and
+        (tangent_outside == 0) and
+        (doom_world_teleport_contact[
+           map, world, from_x, from_y, tangent_x, tangent_y
+         ] == 1)) (
+      => doom_world_move_result[
+        map, world, combat, combat_mode, teleport_before,
+        tangent_x, tangent_y, 1, 1, primary\kind, primary\index
+      ];
+    )
+    if (((tangent\dx != 0) or (tangent\dy != 0)) and
+        (tangent_outside == 0) and
+        (doom_world_player_move_blocked_mode[
+           map, world, combat, combat_mode,
+           from_x, from_y, tangent_x, tangent_y
+         ] == 0)) (
+      teleport_before = world\teleport_serial;
+      doom_world_cross[
+        map, world, from_x, from_y, tangent_x, tangent_y
+      ];
+      => doom_world_move_result[
+        map, world, combat, combat_mode, teleport_before,
+        tangent_x, tangent_y, 1, 1,
+        primary\kind, primary\index
+      ];
+    )
+  )
+
+  let x = from_x;
+  let y = from_y;
+  if (dx != 0) (
+    let next_x = x + dx;
+    let outside = (next_x < map\min_x) or (next_x > map\max_x);
+    teleport_before = world\teleport_serial;
+    if ((outside == 0) and
+        (doom_world_teleport_contact[
+           map, world, x, y, next_x, y
+         ] == 1)) (
+      => doom_world_move_result[
+        map, world, combat, combat_mode, teleport_before,
+        next_x, y, 1, 1, primary\kind, primary\index
+      ];
+    )
+    if ((outside == 0) and
+        (doom_world_player_move_blocked_mode[
+         map, world, combat, combat_mode, x, y, next_x, y
+         ] == 0)) (
+      teleport_before = world\teleport_serial;
+      doom_world_cross[map, world, x, y, next_x, y];
+      if (world\teleport_serial != teleport_before) (
+        => doom_world_move_result[
+          map, world, combat, combat_mode, teleport_before,
+          next_x, y, 1, 1,
+          primary\kind, primary\index
+        ];
+      )
+      x = next_x;
+    )
+  )
+  if (dy != 0) (
+    let next_y = y + dy;
+    let outside = (next_y < map\min_y) or (next_y > map\max_y);
+    teleport_before = world\teleport_serial;
+    if ((outside == 0) and
+        (doom_world_teleport_contact[
+           map, world, x, y, x, next_y
+         ] == 1)) (
+      => doom_world_move_result[
+        map, world, combat, combat_mode, teleport_before,
+        x, next_y, 1, 1, primary\kind, primary\index
+      ];
+    )
+    if ((outside == 0) and
+        (doom_world_player_move_blocked_mode[
+         map, world, combat, combat_mode, x, y, x, next_y
+         ] == 0)) (
+      teleport_before = world\teleport_serial;
+      doom_world_cross[map, world, x, y, x, next_y];
+      if (world\teleport_serial != teleport_before) (
+        => doom_world_move_result[
+          map, world, combat, combat_mode, teleport_before,
+          x, next_y, 1, 1,
+          primary\kind, primary\index
+        ];
+      )
+      y = next_y;
+    )
+  )
+  let moved = 0;
+  if ((x != from_x) or (y != from_y)) ( moved = 1; )
+  => doom_world_move_result[
+    map, world, combat, combat_mode, world\teleport_serial,
+    x, y, moved, 1,
+    primary\kind, primary\index
+  ];
+)
+
+op doom_world_slide_move [map, world, from_x, from_y, dx, dy] (
+  => doom_world_slide_move_mode[
+    map, world, world, 0, from_x, from_y, dx, dy
+  ];
+)
+
+op doom_world_slide_move_combat [map, world, combat,
+                                 from_x, from_y, dx, dy] (
+  => doom_world_slide_move_mode[
+    map, world, combat, 1, from_x, from_y, dx, dy
+  ];
+)
+
+private op doom_world_tick_player [map, world, player_x, player_y] (
+  let sector = doom_map_point_sector[map, player_x, player_y];
+  let floor = buf_get[world\sectors, sector * 5];
+  let ceiling = buf_get[world\sectors, sector * 5 + 1];
+  let z = world\player_z + world\player_vz;
+  let velocity = world\player_vz - 1;
+  if (z <= floor) (
+    z = floor;
+    velocity = 0;
+    world\grounded = 1;
+  ) else (
+    world\grounded = 0;
+  )
+  if (z + 56 > ceiling) (
+    z = ceiling - 56;
+    if (velocity > 0) ( velocity = 0; )
+  )
+  if (z < floor) ( z = floor; velocity = 0; world\grounded = 1; )
+  world\player_z = z;
+  world\player_vz = velocity;
+  => 0;
+)
+
+private op doom_world_take_pickup [world, combat, kind] (
+  if (kind == 5) (
+    if (world\blue_key == 1) ( => 0; )
+    world\blue_key = 1;
+  ) else if (kind == 6) (
+    if (world\yellow_key == 1) ( => 0; )
+    world\yellow_key = 1;
+  ) else if (kind == 13) (
+    if (world\red_key == 1) ( => 0; )
+    world\red_key = 1;
+  ) else if (kind == 2005) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 1];
+    if (fresh == 0) ( => 0; )
+    bytes_set[combat\weapons, 1, 1];
+    doom_combat_select_weapon[combat, 1];
+  ) else if (kind == 2001) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
+    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
+    bytes_set[combat\weapons, 3, 1];
+    combat\shells = combat\shells + 8;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
+  ) else if (kind == 2002) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 4];
+    if ((fresh == 0) and (combat\ammo >= combat\max_ammo)) ( => 0; )
+    bytes_set[combat\weapons, 4, 1];
+    combat\ammo = combat\ammo + 20;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 4]; )
+  ) else if (kind == 2003) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 5];
+    if ((fresh == 0) and (combat\rockets >= combat\max_rockets)) ( => 0; )
+    bytes_set[combat\weapons, 5, 1];
+    combat\rockets = combat\rockets + 2;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 5]; )
+  ) else if (kind == 2007) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 10;
+  ) else if (kind == 2048) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 50;
+  ) else if (kind == 2008) (
+    if (combat\shells >= combat\max_shells) ( => 0; )
+    combat\shells = combat\shells + 4;
+  ) else if (kind == 2049) (
+    if (combat\shells >= combat\max_shells) ( => 0; )
+    combat\shells = combat\shells + 20;
+  ) else if (kind == 2046) (
+    if (combat\rockets >= combat\max_rockets) ( => 0; )
+    combat\rockets = combat\rockets + 5;
+  ) else if (kind == 2011) (
+    if (combat\health >= combat\max_health) ( => 0; )
+    combat\health = combat\health + 10;
+    if (combat\health > combat\max_health) ( combat\health = combat\max_health; )
+  ) else if (kind == 2012) (
+    if (combat\health >= combat\max_health) ( => 0; )
+    combat\health = combat\health + 25;
+    if (combat\health > combat\max_health) ( combat\health = combat\max_health; )
+  ) else if (kind == 2013) (
+    if (combat\health >= combat\health_cap) ( => 0; )
+    combat\health = combat\health + 100;
+    if (combat\health > combat\health_cap) ( combat\health = combat\health_cap; )
+  ) else if (kind == 2014) (
+    if (combat\health >= combat\health_cap) ( => 0; )
+    combat\health = combat\health + 1;
+  ) else if (kind == 2015) (
+    if (combat\armor >= combat\max_armor) ( => 0; )
+    combat\armor = combat\armor + 1;
+  ) else if (kind == 2018) (
+    if (combat\armor >= 100) ( => 0; )
+    combat\armor = 100;
+  ) else if (kind == 2019) (
+    if (combat\armor >= 200) ( => 0; )
+    combat\armor = 200;
+  ) else ( => 0; )
+  if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
+  if (combat\shells > combat\max_shells) ( combat\shells = combat\max_shells; )
+  if (combat\rockets > combat\max_rockets) ( combat\rockets = combat\max_rockets; )
+  => 1;
+)
+
+private op doom_world_take_drop [combat, kind] (
+  if (kind == 2007) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 5;
+    if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
+    => 1;
+  )
+  if (kind == 2001) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
+    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
+    bytes_set[combat\weapons, 3, 1];
+    combat\shells = combat\shells + 4;
+    if (combat\shells > combat\max_shells) (
+      combat\shells = combat\max_shells;
+    )
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
+    => 1;
+  )
+  => 0;
+)
+
+op doom_world_pickup_message [kind] (
+  if (kind == 5) ( => "PICKED UP THE BLUE KEYCARD"; )
+  if (kind == 6) ( => "PICKED UP THE YELLOW KEYCARD"; )
+  if (kind == 13) ( => "PICKED UP THE RED KEYCARD"; )
+  if (kind == 2005) ( => "A CHAINSAW! FIND SOME MEAT"; )
+  if (kind == 2001) ( => "YOU GOT THE SHOTGUN"; )
+  if (kind == 2002) ( => "YOU GOT THE CHAINGUN"; )
+  if (kind == 2003) ( => "YOU GOT THE ROCKET LAUNCHER"; )
+  if ((kind == 2007) or (kind == 2048)) ( => "PICKED UP BULLETS"; )
+  if ((kind == 2008) or (kind == 2049)) ( => "PICKED UP SHELLS"; )
+  if (kind == 2046) ( => "PICKED UP ROCKETS"; )
+  if ((kind == 2011) or (kind == 2012) or (kind == 2013) or
+      (kind == 2014)) (
+    => "PICKED UP HEALTH";
+  )
+  if ((kind == 2015) or (kind == 2018) or (kind == 2019)) (
+    => "PICKED UP ARMOR";
+  )
+  => "PICKED UP ITEM";
+)
+
+op doom_world_pickup_is_weapon [kind] (
+  => (kind == 2001) or (kind == 2002) or (kind == 2003) or (kind == 2005);
+)
+
+op doom_world_collect [map, world, combat, player_x, player_y] (
+  let collected = 0;
+  let i = 0;
+  while (i < map\thing_count) (
+    if (bytes_get[world\pickup_alive, i] == 1) (
+      let tb = i * 4;
+      let x = buf_get[map\things, tb];
+      let y = buf_get[map\things, tb + 1];
+      if ((doom_world_abs[x - player_x] <= 24) and
+          (doom_world_abs[y - player_y] <= 24) and
+          (doom_map_sight_blocked[map, player_x, player_y, x, y] == 0)) (
+        let kind = buf_get[map\things, tb + 2];
+        if (doom_world_take_pickup[world, combat, kind] == 1) (
+          bytes_set[world\pickup_alive, i, 0];
+          world\picked = world\picked + 1;
+          world\pickup_kind = kind;
+          world\pickup_tick = 90;
+          world\pickup_message = doom_world_pickup_message[kind];
+          collected = collected + 1;
+        )
+      )
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[combat\drops]) (
+    let drop = combat\drops\\i;
+    if ((drop\alive == 1) and
+        (doom_world_abs[drop\x - player_x] <= 24) and
+        (doom_world_abs[drop\y - player_y] <= 24) and
+        (doom_map_sight_blocked[
+          map, player_x, player_y, drop\x, drop\y
+        ] == 0) and
+        (doom_world_take_drop[combat, drop\kind] == 1)) (
+      drop\alive = 0;
+      combat\drops_picked = combat\drops_picked + 1;
+      world\picked = world\picked + 1;
+      world\pickup_kind = drop\kind;
+      world\pickup_tick = 90;
+      world\pickup_message = doom_world_pickup_message[drop\kind];
+      collected = collected + 1;
+    )
+    i = i + 1;
+  )
+  if (collected > 0) ( doom_combat_validate[map, combat]; )
+  => collected;
+)
+
+// Classic damaging-floor specials are already part of each validated SECTOR.
+// Damage is applied once per second only while the player's feet touch the
+// authoritative floor; jumping genuinely clears the hazard for that tick.
+op doom_world_apply_hazard [map, world, combat, player_x, player_y] (
+  if ((combat\health == 0) or (world\tick == 0) or
+      (world\tick % 60 != 0)) ( => combat; )
+  let sector = doom_map_point_sector[map, player_x, player_y];
+  let floor = buf_get[world\sectors, sector * 5];
+  if (world\player_z <= floor) () else ( => combat; )
+  let special = buf_get[world\sectors, sector * 5 + 3];
+  let damage = 0;
+  if (special == 7) ( damage = 5; )
+  if (special == 5) ( damage = 10; )
+  if ((special == 4) or (special == 16)) ( damage = 20; )
+  if (damage > 0) (
+    let before = combat\health;
+    combat = doom_combat_hurt_player[map, combat, damage];
+    world\hazard_hits = world\hazard_hits + 1;
+    world\hazard_damage = world\hazard_damage + before - combat\health;
+  )
+  => combat;
+)
+
+op doom_world_tick [map, world, player_x, player_y] (
+  let i = 0;
+  while (i < arr_len[world\doors]) (
+    let door = world\doors\\i;
+    doom_world_tick_door[map, world, door, player_x, player_y];
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[world\movers]) (
+    let mover = world\movers\\i;
+    doom_world_tick_mover[world, mover];
+    i = i + 1;
+  )
+  doom_world_tick_switch_buttons[world];
+  doom_world_tick_player[map, world, player_x, player_y];
+  if (world\teleport_fog_tick > 0) (
+    world\teleport_fog_tick = world\teleport_fog_tick - 1;
+  )
+  if (world\pickup_tick > 0) ( world\pickup_tick = world\pickup_tick - 1; )
+  if (world\exited == 1) ( world\exit_tick = world\exit_tick + 1; )
+  world\tick = world\tick + 1;
+  => world;
+)

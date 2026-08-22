@@ -1,0 +1,300 @@
+// Pure bounded world-state proof: shared moving-sector authority, use/cross
+// actions, jump physics, resource retirement and explicit completion.
+
+credits: <../games/doom-world.flx> <f/buffers> <f/bytes> <f/trig>;
+
+op doom_world_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom world expectation failed";
+  )
+)
+
+let line_count = 7;
+let vertices = %32[
+  40, 0, 40, 100,
+  50, 0, 50, 100,
+  80, 0, 80, 100,
+  100, 0, 100, 100,
+  120, 0, 120, 100,
+  140, 0, 140, 100,
+  160, 0, 160, 100
+];
+let lines = buf_new[32, line_count * 4];
+let i = 0;
+while (i < line_count) (
+  buf_set[lines, i * 4, i * 2];
+  buf_set[lines, i * 4 + 1, i * 2 + 1];
+  buf_set[lines, i * 4 + 2, 0];
+  buf_set[lines, i * 4 + 3, 4];
+  i = i + 1;
+)
+buf_set[lines, 2 * 4 + 2, 1];
+
+let line_sides = buf_new[32, line_count * 4];
+// Door sector 1 touches sector 0 and sector 2, whose lower surrounding
+// ceiling makes the open target 92.
+buf_set[line_sides, 0 * 4 + 2, 0]; buf_set[line_sides, 0 * 4 + 3, 1];
+buf_set[line_sides, 1 * 4 + 2, 2]; buf_set[line_sides, 1 * 4 + 3, 1];
+buf_set[line_sides, 2 * 4 + 2, 0]; buf_set[line_sides, 2 * 4 + 3, 0 - 1];
+buf_set[line_sides, 3 * 4 + 2, 0]; buf_set[line_sides, 3 * 4 + 3, 0];
+buf_set[line_sides, 4 * 4 + 2, 0]; buf_set[line_sides, 4 * 4 + 3, 0];
+buf_set[line_sides, 5 * 4 + 2, 3]; buf_set[line_sides, 5 * 4 + 3, 0];
+buf_set[line_sides, 6 * 4 + 2, 4]; buf_set[line_sides, 6 * 4 + 3, 0];
+
+let line_actions = buf_new[32, line_count * 2];
+buf_set[line_actions, 0, 1];
+buf_set[line_actions, 2 * 2, 11];
+buf_set[line_actions, 3 * 2, 36]; buf_set[line_actions, 3 * 2 + 1, 1];
+buf_set[line_actions, 4 * 2, 88]; buf_set[line_actions, 4 * 2 + 1, 2];
+buf_set[line_actions, 6 * 2, 2];
+
+let sectors = %32[
+  0, 128, 160, 0, 0,
+  0, 0, 160, 0, 0,
+  0, 96, 160, 0, 0,
+  64, 128, 160, 0, 1,
+  64, 128, 160, 0, 2
+];
+let things = %32[
+  0, 50, 1, 7,
+  10, 50, 2007, 7,
+  12, 50, 2011, 7,
+  50, 50, 2001, 7,
+  39, 80, 3004, 7
+];
+let map = {
+  ok: 1, error: "", name: "WORLD",
+  vertices: vertices, vertex_count: 14,
+  lines: lines, line_count: line_count,
+  line_sides: line_sides, line_actions: line_actions,
+  side_count: 1, side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  texture_bank: { texture_count: 0, texture_names: bytes_new[0] },
+  sectors: sectors, sector_count: 5,
+  things: things, thing_angles: %32[0, 0, 0, 0, 180], thing_count: 5,
+  player_x: 0, player_y: 50, player_angle: 0,
+  min_x: 0, max_x: 200, min_y: 0, max_y: 100,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+
+let world = doom_world_new[map];
+let play_map = doom_world_map[map, world];
+doom_world_test_expect[
+  (arr_len[world\doors] == 1) and (arr_len[world\movers] == 2) and
+  (world\pickup_total == 3) and (world\unsupported_actions == 1) and
+  (buf_get[world\sectors, 6] == 0),
+  "bounded world inventory and closed copied door"
+];
+doom_world_test_expect[
+  doom_map_move_blocked[play_map, 30, 50, 45, 50, 56, 24] == 1,
+  "closed copied sector blocks motion"
+];
+doom_world_test_expect[
+  doom_world_use[play_map, world, 0, 50, trig_from_degrees[0]] == 1,
+  "use ray activates the nearest door"
+];
+i = 0;
+while (i < 23) (
+  world = doom_world_tick[play_map, world, 0, 50];
+  i = i + 1;
+)
+doom_world_test_expect[
+  (buf_get[world\sectors, 6] == 92) and
+  (doom_map_move_blocked[play_map, 30, 50, 45, 50, 56, 24] == 0),
+  "door opens collision and rendering authority together"
+];
+doom_world_test_expect[
+  doom_world_player_move_blocked[
+    play_map, world, 60, 50, 70, 50
+  ] == 1,
+  "player radius stops the camera before the eight-unit near plane"
+];
+let slide = doom_world_slide_move[play_map, world, 63, 40, 8, 8];
+doom_world_test_expect[
+  (slide\x == 63) and (slide\y == 48) and
+  (slide\moved == 1) and (slide\blocked == 1),
+  "wall contact rejects the normal component but preserves the slide"
+];
+
+// At x+y=84 the player's +X/+Y support points touch this descending wall.
+// Requested (8,4) has a valid (2,-2) tangent, but both old world-axis
+// components enter the wall independently and used to reject the whole frame.
+let diagonal_map = {
+  ok: 1, error: "", name: "DIAGONAL",
+  vertices: %32[0, 100, 100, 0], vertex_count: 2,
+  lines: %32[0, 1, 1, 0], line_count: 1,
+  line_sides: %32[0, 0, 0, 0 - 1], line_actions: %32[0, 0],
+  side_count: 1, side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0],
+  texture_bank: { texture_count: 0, texture_names: bytes_new[0] },
+  sectors: %32[0, 128, 160, 0, 0], sector_count: 1,
+  things: %32[42, 42, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 42, player_y: 42, player_angle: 0,
+  min_x: 0 - 100, max_x: 200, min_y: 0 - 100, max_y: 200,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+let diagonal_world = doom_world_new[diagonal_map];
+let diagonal_play_map = doom_world_map[diagonal_map, diagonal_world];
+let diagonal_slide = doom_world_slide_move[
+  diagonal_play_map, diagonal_world, 42, 42, 8, 4
+];
+doom_world_test_expect[
+  (diagonal_slide\x == 44) and (diagonal_slide\y == 40) and
+  (diagonal_slide\moved == 1) and (diagonal_slide\blocked == 1) and
+  (diagonal_slide\blocker_kind == 2) and
+  (diagonal_slide\blocker_index == 0),
+  "oblique contact projects motion onto the exact linedef tangent"
+];
+
+doom_world_test_expect[
+  doom_world_jump[play_map, world, 0, 50] == 1,
+  "grounded jump activates once"
+];
+world = doom_world_tick[play_map, world, 0, 50];
+doom_world_test_expect[
+  (world\player_z == 8) and (world\player_vz == 7) and
+  (world\grounded == 0) and
+  (doom_world_jump[play_map, world, 0, 50] == 0),
+  "jump owns bounded airborne position and velocity"
+];
+i = 0;
+while (i < 20) (
+  world = doom_world_tick[play_map, world, 0, 50];
+  i = i + 1;
+)
+doom_world_test_expect[
+  (world\player_z == 0) and (world\player_vz == 0) and
+  (world\grounded == 1),
+  "gravity lands exactly on the authoritative floor"
+];
+
+let combat = doom_combat_new[play_map];
+let hazard_combat = doom_combat_new[play_map];
+buf_set[world\sectors, 3, 7];
+world\tick = 59;
+world = doom_world_tick[play_map, world, 0, 50];
+hazard_combat = doom_world_apply_hazard[
+  play_map, world, hazard_combat, 0, 50
+];
+doom_world_test_expect[
+  (hazard_combat\health == 95) and (world\hazard_hits == 1) and
+  (world\hazard_damage == 5),
+  "sector special 7 applies grounded nukage damage on its bounded cadence"
+];
+buf_set[world\sectors, 3, 0];
+let actor_slide = doom_world_slide_move_combat[
+  play_map, world, combat, 0, 80, 8, 0
+];
+doom_world_test_expect[
+  (actor_slide\x == 0) and (actor_slide\moved == 0) and
+  (actor_slide\blocked == 1),
+  "live monsters are solid to the player"
+];
+let actor_escape = doom_world_slide_move_combat[
+  play_map, world, combat, 10, 80, 0 - 2, 0
+];
+doom_world_test_expect[
+  (actor_escape\x == 8) and (actor_escape\y == 80) and
+  (actor_escape\moved == 1) and (actor_escape\blocked == 0),
+  "an existing actor overlap cannot trap movement that increases separation"
+];
+let blocking_actor = combat\actors\\0;
+blocking_actor\phase = DoomEnemyPhase\Death;
+blocking_actor\health = 0;
+bytes_set[combat\alive, blocking_actor\thing, 0];
+combat\kills = 1;
+actor_slide = doom_world_slide_move_combat[
+  play_map, world, combat, 0, 80, 8, 0
+];
+doom_world_test_expect[
+  (actor_slide\x == 8) and (actor_slide\moved == 1),
+  "dead monsters leave collision while retaining corpse state"
+];
+let corpse_combat = doom_combat_new[play_map];
+corpse_combat = doom_combat_fire[
+  play_map, corpse_combat, 0, 80, trig_from_degrees[0]
+];
+corpse_combat\shot_cooldown = 0;
+corpse_combat = doom_combat_fire[
+  play_map, corpse_combat, 0, 80, trig_from_degrees[0]
+];
+let corpse_move = doom_world_slide_move_combat[
+  play_map, world, corpse_combat, 0, 80, 8, 0
+];
+doom_world_test_expect[
+  (corpse_combat\actors\0\phase == DoomEnemyPhase\Death) and
+  (corpse_move\x == 8) and (corpse_move\moved == 1),
+  "the lethal-shot frame retires corpse collision before forward movement"
+];
+doom_world_test_expect[
+  (doom_world_collect[play_map, world, combat, 0, 50] == 1) and
+  (combat\ammo == 60) and (world\picked == 1),
+  "ammo pickup retires once and updates bounded resources"
+];
+combat\health = 90;
+doom_world_test_expect[
+  (doom_world_collect[play_map, world, combat, 0, 50] == 1) and
+  (combat\health == 100) and (world\picked == 2),
+  "health pickup waits until it can benefit the player"
+];
+doom_world_test_expect[
+  (doom_world_collect[play_map, world, combat, 50, 50] == 1) and
+  (doom_combat_weapon_owned[combat, 3] == 1) and
+  (combat\selected_weapon == 3) and (combat\shells == 8) and
+  (world\picked == 3) and (world\pickup_kind == 2001) and
+  (world\pickup_tick == 90),
+  "weapon pickup owns, equips, supplies and reports one explicit transition"
+];
+combat\drops = [{ x: 70, y: 50, kind: 2007, alive: 1 }];
+combat\drops_spawned = 1;
+doom_world_test_expect[
+  (doom_world_collect[play_map, world, combat, 70, 50] == 1) and
+  (combat\ammo == 65) and (combat\drops\0\alive == 0) and
+  (combat\drops_picked == 1),
+  "former-human drop is a visible one-shot five-bullet world item"
+];
+
+doom_world_test_expect[
+  doom_world_cross[play_map, world, 90, 50, 110, 50] == 1,
+  "one-shot floor trigger observes accepted path crossing"
+];
+i = 0;
+while (i < 7) (
+  world = doom_world_tick[play_map, world, 0, 50];
+  i = i + 1;
+)
+doom_world_test_expect[
+  (buf_get[world\sectors, 15] == 8) and
+  (world\movers\0\phase == DoomMoverPhase\Done),
+  "tagged floor lowers to eight above its highest neighbor"
+];
+
+doom_world_test_expect[
+  doom_world_cross[play_map, world, 110, 50, 130, 50] == 1,
+  "reusable lift trigger observes accepted path crossing"
+];
+i = 0;
+while (i < 8) (
+  world = doom_world_tick[play_map, world, 0, 50];
+  i = i + 1;
+)
+doom_world_test_expect[
+  (buf_get[world\sectors, 20] == 0) and
+  (world\movers\1\phase == DoomMoverPhase\Waiting),
+  "lift reaches its lowest adjacent floor and waits"
+];
+
+doom_world_test_expect[
+  doom_world_use[play_map, world, 50, 50, trig_from_degrees[0]] == 1,
+  "use ray activates the exit switch"
+];
+doom_world_test_expect[
+  (world\exited == 1) and
+  (doom_world_jump[play_map, world, 50, 50] == 0),
+  "completion is explicit and freezes new jumps"
+];
+
+print "doom world state ok";

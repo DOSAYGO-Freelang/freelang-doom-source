@@ -1,0 +1,70 @@
+// Checked classic-map discovery is filesystem-backed but window-independent.
+// Directory order is deliberately scrambled and a truncated marker proves
+// that the menu advertises only complete last-wins namespaces.
+
+credits: <../games/doom-map.flx> <f/files-chaos> <f/bytes> <f/strings>;
+
+op doom_catalog_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom map catalog expectation failed";
+  )
+)
+
+op doom_catalog_put_u32 [b, offset, value] (
+  bytes_set[b, offset, value % 256];
+  bytes_set[b, offset + 1, (value / 256) % 256];
+  bytes_set[b, offset + 2, (value / 65536) % 256];
+  bytes_set[b, offset + 3, (value / 16777216) % 256];
+  => 0;
+)
+
+op doom_catalog_put_name [b, entry, name] (
+  let i = 0;
+  while (i < 8) (
+    let value = 0;
+    if (i < str_len[name]) ( value = name\@i; )
+    bytes_set[b, 12 + entry * 16 + 8 + i, value];
+    i = i + 1;
+  )
+  => 0;
+)
+
+op doom_catalog_put_namespace [b, entry, selector] (
+  let names = [
+    selector, "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS",
+    "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP"
+  ];
+  let i = 0;
+  while (i < arr_len[names]) (
+    doom_catalog_put_name[b, entry + i, names\@i];
+    i = i + 1;
+  )
+  => 0;
+)
+
+let path = "doom-map-catalog.tmp";
+let entries = 24;
+let wad = bytes_new[12 + entries * 16];
+bytes_set[wad, 0, 80]; bytes_set[wad, 1, 87];
+bytes_set[wad, 2, 65]; bytes_set[wad, 3, 68];
+doom_catalog_put_u32[wad, 4, entries];
+doom_catalog_put_u32[wad, 8, 12];
+doom_catalog_put_namespace[wad, 0, "E2M3"];
+doom_catalog_put_namespace[wad, 11, "E1M1"];
+doom_catalog_put_name[wad, 22, "E1M2"];
+doom_catalog_put_name[wad, 23, "THINGS"];
+let wrote = write_bytes[path, wad] with chaos { _ => 1 };
+doom_catalog_expect[wrote == 0, "fixture write"];
+
+let catalog = doom_map_catalog[path];
+remove[path] with chaos { _ => 0 };
+doom_catalog_expect[catalog\ok == 1, "checked WAD directory"];
+doom_catalog_expect[arr_len[catalog\maps] == 2, "complete namespaces only"];
+doom_catalog_expect[
+  (string_eq[catalog\maps\0, "E1M1"] == 1) and
+  (string_eq[catalog\maps\1, "E2M3"] == 1),
+  "numeric ExMy menu order"
+];
+
+print "doom map catalog ok";

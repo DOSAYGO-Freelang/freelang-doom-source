@@ -1,0 +1,107 @@
+// Raw input batches and held-table transitions survive as a bounded UTF-8 log
+// that can be inspected after a live stuck-key reproduction.
+
+credits: <../games/doom-input-trace.flx> <f/files-chaos> <f/strings>;
+
+op doom_trace_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom input trace expectation failed";
+  )
+)
+
+let path = "doom-input-trace.tmp";
+doom_trace_expect[doom_input_trace_reset[path] == 1, "trace reset"];
+let trace = doom_input_trace_new[path, "E2M3"];
+let controls = doom_input_new[];
+let before = doom_input_trace_snapshot[controls];
+let events = [
+  { kind: gui_ev_key_down[], a: 119, b: 0, mods: 0 },
+  { kind: gui_ev_key_down[], a: 97, b: 0, mods: 0 }
+];
+controls = doom_input_next[controls, events];
+trace = doom_input_trace_frame[trace, 17, events, before, controls, 0];
+trace = doom_input_trace_movement[
+  trace, 18, 320, 448, 24, 8, 4,
+  {
+    x: 320, y: 448, moved: 0, blocked: 1,
+    blocker_kind: 3, blocker_index: 7
+  },
+  1, 1
+];
+let probe = {
+  full_kind: 2, full_index: 9, full_support_mask: 2,
+  tangent_attempted: 1, tangent_dx: 0, tangent_dy: 4,
+  tangent_kind: 2, tangent_index: 10, tangent_support_mask: 8,
+  x_attempted: 1, x_kind: 2, x_index: 9, x_support_mask: 2,
+  y_attempted: 1, y_kind: 0, y_index: 0 - 1, y_support_mask: 0,
+  line_ax: 336, line_ay: 400, line_bx: 336, line_by: 512,
+  line_solid: 1
+};
+trace = doom_input_trace_stall[
+  trace, 18, 320, 448, 24, 8, 4, 1234, controls, probe, 1
+];
+trace = doom_input_trace_resume[
+  trace, 19, 320, 448, 24, 0 - 8, 0, 1234, controls,
+  {
+    x: 312, y: 448, moved: 1, blocked: 0,
+    blocker_kind: 0, blocker_index: 0 - 1
+  },
+  1
+];
+trace = doom_input_trace_movement[
+  trace, 20, 320, 448, 24, 8, 4,
+  {
+    x: 324, y: 448, moved: 1, blocked: 1,
+    blocker_kind: 2, blocker_index: 9
+  },
+  0, 1
+];
+trace = doom_input_trace_contact[
+  trace, 20, 320, 448, 24, 8, 4, 1234, controls,
+  {
+    x: 324, y: 448, moved: 1, blocked: 1,
+    blocker_kind: 2, blocker_index: 9
+  },
+  probe, 1
+];
+trace = doom_input_trace_resume[
+  trace, 21, 324, 448, 24, 8, 4, 1234, controls,
+  {
+    x: 332, y: 452, moved: 1, blocked: 0,
+    blocker_kind: 0, blocker_index: 0 - 1
+  },
+  1
+];
+doom_input_trace_finish[trace, 21];
+let evidence = read[path] with chaos { _ => "" };
+remove[path] with chaos { _ => 0 };
+
+doom_trace_expect[trace\records == 7, "full and partial collision records"];
+doom_trace_expect[
+  (string_index_of[evidence, "freelang-doom-input/3", 0] >= 0) and
+  (string_index_of[evidence, "session map=E2M3", 0] >= 0) and
+  (string_index_of[evidence, "raw=1,119,0,0", 0] >= 0) and
+  (string_index_of[evidence, "before{focus=1 capture=0 w=0", 0] >= 0) and
+  (string_index_of[evidence, "after{focus=1 capture=0 w=1", 0] >= 0) and
+  (string_index_of[evidence, "a=1", 0] >= 0) and
+  (string_index_of[evidence, "move frame=18", 0] >= 0) and
+  (string_index_of[evidence, "from=320,448,24 motion=8,4", 0] >= 0) and
+  (string_index_of[evidence, "moved=0 blocked=1", 0] >= 0) and
+  (string_index_of[evidence, "actual=0,0", 0] >= 0) and
+  (string_index_of[evidence, "blocker=3,7 streak=1 contact_streak=1", 0] >= 0) and
+  (string_index_of[evidence, "stall frame=18", 0] >= 0) and
+  (string_index_of[evidence, "full=2,9,2", 0] >= 0) and
+  (string_index_of[evidence, "tangent=1,0,4,2,10,8", 0] >= 0) and
+  (string_index_of[evidence, "line=336,400,336,512,1", 0] >= 0) and
+  (string_index_of[evidence, "resume frame=19", 0] >= 0) and
+  (string_index_of[evidence, "motion=-8,0 angle=1234", 0] >= 0) and
+  (string_index_of[evidence, "previous_streak=1", 0] >= 0) and
+  (string_index_of[evidence, "contact frame=20", 0] >= 0) and
+  (string_index_of[evidence, "motion=8,4 actual=4,0", 0] >= 0) and
+  (string_index_of[evidence, "forward_dot=32 request_sq=80 actual_sq=16", 0] >= 0) and
+  (string_index_of[evidence, "resume frame=21", 0] >= 0),
+  "raw held state is adjacent to exact persisted movement rejection"
+];
+
+print "doom input trace ok";

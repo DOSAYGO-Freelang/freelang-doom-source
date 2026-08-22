@@ -1,0 +1,221 @@
+credits: <../games/doom-texture.flx> <f/buffers> <f/bytes>;
+
+op doom_texture_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom texture expectation failed";
+  )
+)
+
+op doom_texture_test_u16 [b, offset, value] (
+  let stored = value;
+  if (stored < 0) ( stored = stored + 65536; )
+  bytes_set[b, offset, stored % 256];
+  bytes_set[b, offset + 1, (stored / 256) % 256];
+  => 0;
+)
+
+op doom_texture_test_u32 [b, offset, value] (
+  bytes_set[b, offset, value % 256];
+  bytes_set[b, offset + 1, (value / 256) % 256];
+  bytes_set[b, offset + 2, (value / 65536) % 256];
+  bytes_set[b, offset + 3, (value / 16777216) % 256];
+  => 0;
+)
+
+op doom_texture_test_name [b, offset, name] (
+  let i = 0;
+  while (i < 8) (
+    let c = 0;
+    if (i < str_len[name]) ( c = name\\i; )
+    bytes_set[b, offset + i, c];
+    i = i + 1;
+  )
+  => 0;
+)
+
+let pnames = bytes_new[12];
+doom_texture_test_u32[pnames, 0, 1];
+doom_texture_test_name[pnames, 4, "PATCHA"];
+let pn = doom_texture_parse_pnames[pnames];
+doom_texture_test_expect[pn\ok == 1, "PNAMES parse"];
+doom_texture_test_expect[pn\count == 1, "PNAMES count"];
+
+let texture = bytes_new[40];
+doom_texture_test_u32[texture, 0, 1];
+doom_texture_test_u32[texture, 4, 8];
+doom_texture_test_name[texture, 8, "TESTTEX"];
+doom_texture_test_u16[texture, 20, 2];
+doom_texture_test_u16[texture, 22, 2];
+doom_texture_test_u16[texture, 28, 1];
+doom_texture_test_u16[texture, 30, 0];
+doom_texture_test_u16[texture, 32, 0];
+doom_texture_test_u16[texture, 34, 0];
+let td = doom_texture_validate_definitions["TEXTURE1", texture, 1];
+doom_texture_test_expect[td\ok == 1, "TEXTURE1 definition"];
+doom_texture_test_expect[td\count == 1, "TEXTURE1 count"];
+
+let patch = bytes_new[30];
+doom_texture_test_u16[patch, 0, 2];
+doom_texture_test_u16[patch, 2, 2];
+doom_texture_test_u32[patch, 8, 16];
+doom_texture_test_u32[patch, 12, 23];
+bytes_set[patch, 16, 0]; bytes_set[patch, 17, 2];
+bytes_set[patch, 18, 0]; bytes_set[patch, 19, 10];
+bytes_set[patch, 20, 20]; bytes_set[patch, 21, 0];
+bytes_set[patch, 22, 255];
+bytes_set[patch, 23, 0]; bytes_set[patch, 24, 2];
+bytes_set[patch, 25, 0]; bytes_set[patch, 26, 30];
+bytes_set[patch, 27, 40]; bytes_set[patch, 28, 0];
+bytes_set[patch, 29, 255];
+let pv = doom_texture_validate_patch[patch];
+doom_texture_test_expect[pv\ok == 1, "patch columns"];
+
+let pixels = bytes_new[6];
+let opaque = bytes_new[6];
+let zi = 0;
+while (zi < 6) (
+  bytes_set[pixels, zi, 0];
+  bytes_set[opaque, zi, 0];
+  zi = zi + 1;
+)
+let composed = doom_texture_compose_patch[
+  pixels, opaque, 1, 2, 2, patch, 0, 0
+];
+doom_texture_test_expect[composed\ok == 1, "patch composition"];
+doom_texture_test_expect[
+  (bytes_get[pixels, 1] == 10) and (bytes_get[pixels, 2] == 30) and
+  (bytes_get[pixels, 3] == 20) and (bytes_get[pixels, 4] == 40),
+  "column posts compose row-major"
+];
+doom_texture_test_expect[
+  (bytes_get[opaque, 0] == 0) and (bytes_get[opaque, 1] == 1) and
+  (bytes_get[opaque, 4] == 1) and (bytes_get[opaque, 5] == 0),
+  "composition clips to its atlas span"
+];
+
+doom_texture_test_expect[
+  doom_texture_name_valid_at[pnames, 4] == 1,
+  "canonical name"
+];
+let folded = bytes_new[8];
+doom_texture_test_name[folded, 0, "patcha"];
+doom_texture_test_expect[
+  doom_texture_name_equal[pnames, 4, folded, 0] == 1,
+  "Doom WAD names fold ASCII case"
+];
+bytes_set[pnames, 11, 65];
+bytes_set[pnames, 10, 0];
+doom_texture_test_expect[
+  doom_texture_name_valid_at[pnames, 4] == 0,
+  "nonzero byte after terminator rejected"
+];
+bytes_set[pnames, 10, 0]; bytes_set[pnames, 11, 0];
+
+let sprite_name = bytes_new[8];
+doom_texture_test_name[sprite_name, 0, "POSSA1"];
+doom_texture_test_expect[
+  doom_texture_sprite_name_valid_at[sprite_name, 0] == 1,
+  "single sprite frame/rotation spelling"
+];
+doom_texture_test_name[sprite_name, 0, "SPIDA1D1"];
+doom_texture_test_expect[
+  doom_texture_sprite_name_valid_at[sprite_name, 0] == 1,
+  "two frames may share one sprite rotation"
+];
+doom_texture_test_name[sprite_name, 0, "POSSA0"];
+doom_texture_test_expect[
+  doom_texture_sprite_name_valid_at[sprite_name, 0] == 1,
+  "rotation-zero sprite spelling"
+];
+doom_texture_test_name[sprite_name, 0, "POSSA0B0"];
+doom_texture_test_expect[
+  doom_texture_sprite_name_valid_at[sprite_name, 0] == 1,
+  "one lump may install two rotation-zero frames"
+];
+doom_texture_test_name[sprite_name, 0, "POSSA9"];
+doom_texture_test_expect[
+  doom_texture_sprite_name_valid_at[sprite_name, 0] == 0,
+  "sprite rotation outside zero through eight rejected"
+];
+doom_texture_test_expect[
+  (doom_texture_sprite_family[3004] == 0) and
+  (doom_texture_sprite_family[9] == 1) and
+  (doom_texture_sprite_family[3001] == 2) and
+  (doom_texture_sprite_family[3002] == 0 - 1),
+  "Episode One enemy families stay explicit"
+];
+doom_texture_test_expect[
+  (doom_texture_pickup_family[2007] == 0) and
+  (doom_texture_pickup_family[2019] == 7) and
+  (doom_texture_pickup_family[2001] == 8) and
+  (doom_texture_pickup_family[2046] == 13) and
+  (doom_texture_pickup_family[13] == 14) and
+  (doom_texture_pickup_family[2013] == 15) and
+  (doom_texture_pickup_family[2005] == 16) and
+  (doom_texture_pickup_family[2004] == 0 - 1),
+  "Episode One resource and weapon pickup families stay explicit"
+];
+doom_texture_test_expect[
+  (doom_texture_sprite_slots[] == 260) and
+  (doom_texture_sprite_directional_slot[0, 0, 5] == 4) and
+  (doom_texture_sprite_directional_slot[1, 0, 1] == 69) and
+  (doom_texture_sprite_directional_slot[2, 7, 8] == 201) and
+  (doom_texture_sprite_death_slot[0, 0] == 64) and
+  (doom_texture_sprite_death_slot[2, 4] == 206) and
+  (doom_texture_weapon_slot[4] == 215) and
+  (doom_texture_weapon_slot_for[3, 0] == 216) and
+  (doom_texture_weapon_slot_for[5, 1] == 223) and
+  (doom_texture_pickup_slot[2007] == 224) and
+  (doom_texture_pickup_slot[2019] == 231) and
+  (doom_texture_pickup_slot[5] == 241) and
+  (doom_texture_pickup_slot[6] == 242) and
+  (doom_texture_prop_slot[2035] == 243) and
+  (doom_texture_prop_slot_for[2035, 2] == 245) and
+  (doom_texture_prop_slot_for[2035, 6] == 249) and
+  (doom_texture_teleport_slot[0] == 250) and
+  (doom_texture_teleport_slot[9] == 259),
+  "animated sprite atlas ranges are fixed and nonoverlapping"
+];
+doom_texture_test_expect[
+  (doom_texture_ui_slots[] == 100) and
+  (doom_texture_ui_status_slot[] == 0) and
+  (doom_texture_ui_big_number_slot[9] == 11) and
+  (doom_texture_ui_font_slot[65] == 66) and
+  (doom_texture_ui_logo_slot[] == 97) and
+  (doom_texture_ui_skull2_slot[] == 99),
+  "WAD UI atlas ranges are fixed and nonoverlapping"
+];
+
+let sprite_directory = bytes_new[64];
+doom_texture_test_name[sprite_directory, 8, "S_START"];
+doom_texture_test_name[sprite_directory, 24, "POSSA1"];
+doom_texture_test_name[sprite_directory, 40, "PISGA0"];
+doom_texture_test_name[sprite_directory, 56, "S_END"];
+let sprite_namespace = doom_texture_validate_sprite_namespace[
+  sprite_directory, 4
+];
+doom_texture_test_expect[
+  (sprite_namespace\ok == 1) and
+  (sprite_namespace\first == 0) and (sprite_namespace\last == 3),
+  "bounded sprite namespace"
+];
+doom_texture_test_name[sprite_directory, 24, "POSSA9"];
+let bad_sprite_namespace = doom_texture_validate_sprite_namespace[
+  sprite_directory, 4
+];
+doom_texture_test_expect[
+  bad_sprite_namespace\ok == 0,
+  "malformed sprite namespace fails before patch reads"
+];
+
+doom_texture_test_u16[texture, 34, 1];
+let bad_definition = doom_texture_validate_definitions["TEXTURE1", texture, 1];
+doom_texture_test_expect[bad_definition\ok == 0, "PNAMES bound rejection"];
+doom_texture_test_u16[texture, 34, 0];
+
+bytes_set[patch, 29, 0];
+let bad_patch = doom_texture_validate_patch[patch];
+doom_texture_test_expect[bad_patch\ok == 0, "unterminated patch rejection"];
+
+print "doom texture graph ok";

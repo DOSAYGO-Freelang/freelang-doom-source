@@ -1,0 +1,46 @@
+// Inspect one real WAD collision neighborhood without opening a presenter.
+
+credits: <../games/doom-world.flx> <f/buffers> <f/process> <f/strings>;
+
+op doom_position_probe_int [text] (
+  if ((str_len[text] > 1) and (string_starts_with[text, "-"] == 1)) (
+    => 0 - string_to_int[string_slice[text, 1, str_len[text] - 1]];
+  )
+  => string_to_int[text];
+)
+
+if (argc[] == 5) () else (
+  print "usage: doom-position-probe WAD X Y Z";
+  fall "doom-position-probe: expected four arguments";
+)
+
+let map = doom_map_load[argv[1], "E1M1"];
+if (map\ok == 1) () else (
+  print map\error;
+  fall "doom-position-probe: map load failed";
+)
+let world = doom_world_new[map];
+let play_map = doom_world_map[map, world];
+let x = doom_position_probe_int[argv[2]];
+let y = doom_position_probe_int[argv[3]];
+let z = doom_position_probe_int[argv[4]];
+world\player_z = z;
+let origin_sector = doom_map_point_sector[play_map, x, y];
+print "origin ^{x},^{y},^{z} sector ^{origin_sector} floor ^{buf_get[play_map\sectors, origin_sector * 5]} ceiling ^{buf_get[play_map\sectors, origin_sector * 5 + 1]}";
+let dy = 0 - 8;
+while (dy <= 8) (
+  let dx = 0 - 8;
+  while (dx <= 8) (
+    if ((dx != 0) or (dy != 0)) (
+      let tx = x + dx;
+      let ty = y + dy;
+      let sector = doom_map_point_sector[play_map, tx, ty];
+      let blocked = doom_world_player_move_blocked[
+        play_map, world, x, y, tx, ty
+      ];
+      print "move ^{dx},^{dy} -> ^{tx},^{ty} sector ^{sector} floor ^{buf_get[play_map\sectors, sector * 5]} ceiling ^{buf_get[play_map\sectors, sector * 5 + 1]} blocked ^{blocked}";
+    )
+    dx = dx + 8;
+  )
+  dy = dy + 8;
+)

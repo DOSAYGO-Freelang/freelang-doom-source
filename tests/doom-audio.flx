@@ -1,0 +1,293 @@
+credits: <../games/doom-audio.flx> <f/bytes>;
+
+op doom_audio_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom audio expectation failed";
+  )
+)
+
+op doom_audio_test_u16 [b, off, value] (
+  bytes_set[b, off, value % 256];
+  bytes_set[b, off + 1, (value / 256) % 256];
+  => 0;
+)
+
+op doom_audio_test_u32 [b, off, value] (
+  bytes_set[b, off, value % 256];
+  bytes_set[b, off + 1, (value / 256) % 256];
+  bytes_set[b, off + 2, (value / 65536) % 256];
+  bytes_set[b, off + 3, (value / 16777216) % 256];
+  => 0;
+)
+
+let path = "doom-audio-fixture.tmp";
+let wad = bytes_new[52];
+bytes_set[wad, 0, 80]; bytes_set[wad, 1, 87];
+bytes_set[wad, 2, 65]; bytes_set[wad, 3, 68];
+doom_audio_test_u32[wad, 4, 1];
+doom_audio_test_u32[wad, 8, 36];
+
+// Two-tick A4 pulse. tests/doom-mus.flx retains the separate one-second
+// synthesis proof; this shorter integration fixture keeps cache hashing
+// bounded under collect-on-every-allocation on every hosted target.
+bytes_set[wad, 12, 77]; bytes_set[wad, 13, 85];
+bytes_set[wad, 14, 83]; bytes_set[wad, 15, 26];
+doom_audio_test_u16[wad, 16, 8];
+doom_audio_test_u16[wad, 18, 16];
+doom_audio_test_u16[wad, 20, 1];
+bytes_set[wad, 28, 144]; bytes_set[wad, 29, 197];
+bytes_set[wad, 30, 127]; bytes_set[wad, 31, 1];
+bytes_set[wad, 32, 128]; bytes_set[wad, 33, 69];
+bytes_set[wad, 34, 1]; bytes_set[wad, 35, 96];
+
+doom_audio_test_u32[wad, 36, 12];
+doom_audio_test_u32[wad, 40, 24];
+let name = %[68, 95, 69, 49, 77, 49, 0, 0];
+let i = 0;
+while (i < 8) (
+  bytes_set[wad, 44 + i, bytes_get[name, i]];
+  i = i + 1;
+)
+doom_audio_test_expect[_intrinsic_fs_write_bytes[path, wad] == 0, "fixture write"];
+let rendered = doom_audio_render_map[path, "E1M1"];
+let missing_bank = doom_audio_render_map_opl2[path, "E1M1"];
+_intrinsic_fs_remove[path];
+doom_audio_test_expect[rendered\ok == 1, "E1M1 render"];
+doom_audio_test_expect[string_eq[rendered\track, "D_E1M1"] == 1, "track mapping"];
+doom_audio_test_expect[rendered\samples == 157, "two-tick synthesis"];
+doom_audio_test_expect[bytes_len[rendered\wav] == 201, "WAV bytes"];
+doom_audio_test_expect[
+  (string_eq[doom_audio_track_for_map["E1M2"], "D_E1M2"] == 1) and
+  (string_eq[doom_audio_track_for_map["E3M9"], "D_E3M9"] == 1) and
+  (str_len[doom_audio_track_for_map["MAP01"]] == 0),
+  "checked classic-map music naming"
+];
+doom_audio_test_expect[missing_bank\ok == 0, "missing GENMIDI rejection"];
+
+// The OPL2 integration fixture retains the same MUS and adds the minimum
+// structurally complete GENMIDI bank plus a second directory entry.
+let opl_path = "doom-audio-opl2-fixture.tmp";
+let opl_wad = bytes_new[6376];
+bytes_set[opl_wad, 0, 80]; bytes_set[opl_wad, 1, 87];
+bytes_set[opl_wad, 2, 65]; bytes_set[opl_wad, 3, 68];
+doom_audio_test_u32[opl_wad, 4, 2];
+doom_audio_test_u32[opl_wad, 8, 6344];
+i = 0;
+while (i < 24) (
+  bytes_set[opl_wad, 12 + i, bytes_get[wad, 12 + i]];
+  i = i + 1;
+)
+let signature = [35, 79, 80, 76, 95, 73, 73, 35];
+i = 0;
+while (i < 8) (
+  bytes_set[opl_wad, 36 + i, signature\@i];
+  i = i + 1;
+)
+// GENMIDI instrument zero, voice zero: two sustained sine operators.
+bytes_set[opl_wad, 46, 128];
+bytes_set[opl_wad, 48, 1];
+bytes_set[opl_wad, 49, 242];
+bytes_set[opl_wad, 50, 68];
+bytes_set[opl_wad, 53, 8];
+bytes_set[opl_wad, 54, 0];
+bytes_set[opl_wad, 55, 1];
+bytes_set[opl_wad, 56, 242];
+bytes_set[opl_wad, 57, 68];
+doom_audio_test_u32[opl_wad, 6344, 12];
+doom_audio_test_u32[opl_wad, 6348, 24];
+let music_name = [68, 95, 69, 49, 77, 49, 0, 0];
+i = 0;
+while (i < 8) (
+  bytes_set[opl_wad, 6352 + i, music_name\@i];
+  i = i + 1;
+)
+doom_audio_test_u32[opl_wad, 6360, 36];
+doom_audio_test_u32[opl_wad, 6364, 6308];
+let bank_name = [71, 69, 78, 77, 73, 68, 73, 0];
+i = 0;
+while (i < 8) (
+  bytes_set[opl_wad, 6368 + i, bank_name\@i];
+  i = i + 1;
+)
+doom_audio_test_expect[
+  _intrinsic_fs_write_bytes[opl_path, opl_wad] == 0, "OPL2 fixture write"
+];
+let stress = string_eq[getenv["FREELANG_GC_STRESS"], "1"];
+let windows_stress = (_intrinsic_os[] == 2) and stress;
+let cache_dir = "";
+let cache = doom_audio_cache_disabled[];
+if (windows_stress == 0) (
+  cache_dir = "doom-audio-cache-fixture-^{pid[]}";
+  cache = doom_audio_cache_at[cache_dir];
+  doom_audio_test_expect[cache\enabled == 1, "cache directory creation"];
+)
+let cache_entry = "";
+let opl_rendered = {
+  ok: 0, error: "uninitialized test result", track: "", wav: bytes_new[0],
+  ticks: 0, samples: 0, events: 0, cache_status: 0
+};
+
+// Partition this deliberately hostile cross-product. tests/doom-mus.flx
+// proves the full GENMIDI/FM renderer under Windows collect-on-every-
+// allocation; this test proves the complete cache path on ordinary Windows
+// and hostile Unix. Repeating WAD load + FM + filesystem cache here exposes
+// a Windows runtime-stress seam unrelated to the cache contract and used to
+// make the hosted sweep either exceed its process bound or exit early.
+if (windows_stress == 0) (
+  let small_key = doom_audio_cache_key[%[1, 2], %[3, 4]];
+  let stale_entry = doom_audio_cache_entry_path[
+    cache, "E1M1",
+    "0000000000000000000000000000000000000000000000000000000000000000"
+  ];
+  doom_audio_test_expect[
+    _intrinsic_fs_write_bytes[stale_entry, %[1, 2, 3]] == 0,
+    "stale map cache fixture write"
+  ];
+  opl_rendered = doom_audio_render_map_opl2_cached[
+    opl_path, "E1M1", cache
+  ];
+  doom_audio_test_expect[
+    opl_rendered\cache_status == 2, "OPL2 cache miss stored"
+  ];
+  doom_audio_test_expect[
+    _intrinsic_fs_exists[stale_entry] == 0,
+    "older same-map cache entry pruned"
+  ];
+  let cache_names = _intrinsic_fs_list_dir[cache\dir];
+  doom_audio_test_expect[
+    arr_len[cache_names] == 1, "one retained map cache entry"
+  ];
+  cache_entry = cache\dir + cache_names\\0;
+  if (stress == 0) (
+    let opl_hit = doom_audio_render_map_opl2_cached[
+      opl_path, "E1M1", cache
+    ];
+    doom_audio_test_expect[
+      (opl_hit\ok == 1) and (opl_hit\cache_status == 1) and
+      string_eq[rainbow256[opl_hit\wav], rainbow256[opl_rendered\wav]],
+      "OPL2 high-level cache hit is byte-identical"
+    ];
+  )
+  doom_audio_test_expect[
+    string_eq[
+      rainbow256[doom_audio_cache_read_wav[cache_entry, 315]],
+      rainbow256[opl_rendered\wav]
+    ] == 1,
+    "stored OPL2 cache validates byte-identically"
+  ];
+  doom_audio_test_expect[
+    (string_eq[small_key, doom_audio_cache_key[%[1, 3], %[3, 4]]] == 0) and
+    (string_eq[small_key, doom_audio_cache_key[%[1, 2], %[3, 5]]] == 0),
+    "MUS and GENMIDI bytes invalidate cache key"
+  ];
+  let short_cache = %[82, 73, 70, 70];
+  doom_audio_test_expect[
+    _intrinsic_fs_write_bytes[cache_entry, short_cache] == 0,
+    "corrupt cache fixture write"
+  ];
+  doom_audio_test_expect[
+    bytes_len[doom_audio_cache_read_wav[cache_entry, 315]] == 0,
+    "corrupt cache ignored"
+  ];
+  doom_audio_test_expect[
+    doom_audio_cache_publish_wav[
+      cache_entry, opl_rendered\wav, opl_rendered\samples
+    ] == 1,
+    "validated cache republished atomically"
+  ];
+  doom_audio_test_expect[
+    string_eq[
+      rainbow256[doom_audio_cache_read_wav[cache_entry, 315]],
+      rainbow256[opl_rendered\wav]
+    ] == 1,
+    "republished cache validates"
+  ];
+  doom_audio_test_expect[
+    _intrinsic_fs_exists["^{cache_entry}.^{pid[]}.tmp"] == 0,
+    "cache publication leaves no temp"
+  ];
+  _intrinsic_fs_remove[cache_entry];
+)
+_intrinsic_fs_remove[opl_path];
+if (windows_stress == 0) (
+  doom_audio_test_expect[opl_rendered\ok == 1, "OPL2 map render"];
+  doom_audio_test_expect[opl_rendered\samples == 315, "OPL2 map samples"];
+  doom_audio_test_expect[
+    bytes_len[opl_rendered\wav] == 359, "OPL2 map WAV bytes"
+  ];
+  _intrinsic_fs_rmdir[cache_dir];
+)
+let sound = bytes_new[12];
+doom_audio_test_u16[sound, 0, 3];
+doom_audio_test_u16[sound, 2, 8000];
+doom_audio_test_u32[sound, 4, 4];
+bytes_set[sound, 8, 17]; bytes_set[sound, 9, 34];
+bytes_set[sound, 10, 51]; bytes_set[sound, 11, 68];
+let effect = doom_audio_render_sound_lump[sound];
+doom_audio_test_expect[
+  (effect\ok == 1) and (bytes_len[effect\wav] == 48) and
+  (bytes_get[effect\wav, 0] == 82) and
+  (bytes_get[effect\wav, 44] == 17) and
+  (bytes_get[effect\wav, 47] == 68) and (effect\ticks == 1),
+  "bounded Doom PCM becomes canonical one-shot WAV"
+];
+doom_audio_test_u16[sound, 0, 2];
+let invalid_effect = doom_audio_render_sound_lump[sound];
+doom_audio_test_expect[
+  invalid_effect\ok == 0,
+  "non-format-3 sound is rejected"
+];
+
+// The gameplay bank is WAD policy, not mixer policy. Prove the stable bank
+// order with twenty-four independently directory-addressed Doom sound lumps.
+let effects_path = "doom-effects-fixture.tmp";
+let effect_names = [
+  "DSSAWFUL", "DSPISTOL", "DSSHOTGN", "DSRLAUNC",
+  "DSITEMUP", "DSWPNUP", "DSDOROPN", "DSDORCLS",
+  "DSSWTCHN", "DSSWTCHX", "DSTELEPT", "DSBAREXP",
+  "DSPLPAIN", "DSPOSIT1", "DSSGTSIT", "DSBGSIT1",
+  "DSSGTATK", "DSCLAW", "DSPOPAIN", "DSDMPAIN",
+  "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD"
+];
+let effect_count = arr_len[effect_names];
+let effects_directory = 12 + effect_count * 12;
+let effects_wad = bytes_new[effects_directory + effect_count * 16];
+bytes_set[effects_wad, 0, 80]; bytes_set[effects_wad, 1, 87];
+bytes_set[effects_wad, 2, 65]; bytes_set[effects_wad, 3, 68];
+doom_audio_test_u32[effects_wad, 4, effect_count];
+doom_audio_test_u32[effects_wad, 8, effects_directory];
+i = 0;
+while (i < effect_count) (
+  let lump_at = 12 + i * 12;
+  doom_audio_test_u16[effects_wad, lump_at, 3];
+  doom_audio_test_u16[effects_wad, lump_at + 2, 8000 + i];
+  doom_audio_test_u32[effects_wad, lump_at + 4, 4];
+  bytes_set[effects_wad, lump_at + 8, 112 + i];
+  bytes_set[effects_wad, lump_at + 9, 128];
+  bytes_set[effects_wad, lump_at + 10, 144 - i];
+  bytes_set[effects_wad, lump_at + 11, 128];
+  let dir_at = effects_directory + i * 16;
+  doom_audio_test_u32[effects_wad, dir_at, lump_at];
+  doom_audio_test_u32[effects_wad, dir_at + 4, 12];
+  let ni = 0;
+  while (ni < str_len[effect_names\@i]) (
+    bytes_set[effects_wad, dir_at + 8 + ni, effect_names\@i\@ni];
+    ni = ni + 1;
+  )
+  i = i + 1;
+)
+doom_audio_test_expect[
+  _intrinsic_fs_write_bytes[effects_path, effects_wad] == 0,
+  "effects fixture write"
+];
+let effects = doom_audio_render_effects[effects_path];
+_intrinsic_fs_remove[effects_path];
+doom_audio_test_expect[
+  (effects\ok == 1) and (arr_len[effects\wavs] == 24) and
+  (bytes_len[effects\wavs\@0] == 48) and
+  (bytes_len[effects\wavs\@23] == 48) and
+  (doom_wad_u32le[effects\wavs\@23, 24] == 8023),
+  "gameplay effect bank renders in stable independent-rate order"
+];
+print "doom audio integration ok";

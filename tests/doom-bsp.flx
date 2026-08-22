@@ -1,0 +1,470 @@
+credits: <../games/doom-view.flx> <f/buffers> <f/bytes> <f/gui> <f/trig>;
+
+op doom_bsp_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom BSP expectation failed";
+  )
+)
+
+op doom_bsp_u16 [b, offset, value] (
+  let stored = value;
+  if (stored < 0) ( stored = stored + 65536; )
+  bytes_set[b, offset, stored % 256];
+  bytes_set[b, offset + 1, (stored / 256) % 256];
+  => 0;
+)
+
+let vertices = bytes_new[24];
+doom_bsp_u16[vertices, 0, 0]; doom_bsp_u16[vertices, 2, 0];
+doom_bsp_u16[vertices, 4, 100]; doom_bsp_u16[vertices, 6, 0];
+doom_bsp_u16[vertices, 8, 200]; doom_bsp_u16[vertices, 10, 0];
+doom_bsp_u16[vertices, 12, 200]; doom_bsp_u16[vertices, 14, 100];
+doom_bsp_u16[vertices, 16, 100]; doom_bsp_u16[vertices, 18, 100];
+doom_bsp_u16[vertices, 20, 0]; doom_bsp_u16[vertices, 22, 100];
+
+// Two adjacent convex rooms. Linedef 3 is the shared two-sided portal.
+let lines = bytes_new[98];
+let line_first = %32[1, 0, 5, 4, 2, 3, 4];
+let line_second = %32[0, 5, 4, 1, 1, 2, 3];
+let line_right = %32[0, 1, 2, 3, 5, 6, 7];
+let li = 0;
+while (li < 7) (
+  let off = li * 14;
+  doom_bsp_u16[lines, off, buf_get[line_first, li]];
+  doom_bsp_u16[lines, off + 2, buf_get[line_second, li]];
+  let flags = 0;
+  let left = 65535;
+  if (li == 3) ( flags = 4; left = 4; )
+  doom_bsp_u16[lines, off + 4, flags];
+  doom_bsp_u16[lines, off + 10, buf_get[line_right, li]];
+  doom_bsp_u16[lines, off + 12, left];
+  li = li + 1;
+)
+
+let things = bytes_new[20];
+doom_bsp_u16[things, 0, 50]; doom_bsp_u16[things, 2, 50];
+doom_bsp_u16[things, 4, 0]; doom_bsp_u16[things, 6, 1];
+doom_bsp_u16[things, 8, 7];
+doom_bsp_u16[things, 10, 150]; doom_bsp_u16[things, 12, 50];
+doom_bsp_u16[things, 14, 180]; doom_bsp_u16[things, 16, 3004];
+doom_bsp_u16[things, 18, 7];
+
+let base = doom_map_parse["TEST", vertices, lines, things];
+doom_bsp_expect[base\ok == 1, "base parse"];
+
+let sectors = bytes_new[52];
+doom_bsp_u16[sectors, 0, 0]; doom_bsp_u16[sectors, 2, 128];
+doom_bsp_u16[sectors, 20, 160];
+doom_bsp_u16[sectors, 26, 24]; doom_bsp_u16[sectors, 28, 96];
+doom_bsp_u16[sectors, 46, 128];
+
+let sides = bytes_new[240];
+let si = 0;
+while (si < 8) (
+  let sector = 0;
+  if ((si == 4) or (si >= 5)) ( sector = 1; )
+  doom_bsp_u16[sides, si * 30 + 28, sector];
+  si = si + 1;
+)
+
+let segs = bytes_new[96];
+let seg_v1 = %32[1, 0, 5, 4, 1, 2, 3, 4];
+let seg_v2 = %32[0, 5, 4, 1, 4, 1, 2, 3];
+let seg_line = %32[0, 1, 2, 3, 3, 4, 5, 6];
+let gi = 0;
+while (gi < 8) (
+  let off = gi * 12;
+  doom_bsp_u16[segs, off, buf_get[seg_v1, gi]];
+  doom_bsp_u16[segs, off + 2, buf_get[seg_v2, gi]];
+  doom_bsp_u16[segs, off + 6, buf_get[seg_line, gi]];
+  let side = 0;
+  if (gi == 4) ( side = 1; )
+  doom_bsp_u16[segs, off + 8, side];
+  gi = gi + 1;
+)
+
+let subsectors = bytes_new[8];
+doom_bsp_u16[subsectors, 0, 4]; doom_bsp_u16[subsectors, 2, 0];
+doom_bsp_u16[subsectors, 4, 4]; doom_bsp_u16[subsectors, 6, 4];
+
+let nodes = bytes_new[28];
+doom_bsp_u16[nodes, 0, 100]; doom_bsp_u16[nodes, 2, 0];
+doom_bsp_u16[nodes, 4, 0]; doom_bsp_u16[nodes, 6, 100];
+doom_bsp_u16[nodes, 24, 32769];
+doom_bsp_u16[nodes, 26, 32768];
+
+let map = doom_map_parse_geometry[
+  base, lines, sides, segs, subsectors, nodes, sectors
+];
+doom_bsp_expect[map\ok == 1, "geometry parse"];
+doom_bsp_expect[map\sector_count == 2, "sector count"];
+doom_bsp_expect[map\seg_count == 8, "seg count"];
+doom_bsp_expect[map\subsector_count == 2, "subsector count"];
+doom_bsp_expect[map\node_count == 1, "node count"];
+doom_bsp_expect[doom_map_point_subsector[map, 50, 50] == 0, "west subsector"];
+doom_bsp_expect[doom_map_point_subsector[map, 150, 50] == 1, "east subsector"];
+doom_bsp_expect[doom_map_point_sector[map, 50, 50] == 0, "west sector"];
+doom_bsp_expect[doom_map_point_sector[map, 150, 50] == 1, "east sector"];
+
+// Classic Doom derives a subsector's sector from its first seg. Some official
+// maps contain later segs with a different front sector, so that is accepted
+// as data rather than rejected as a malformed BSP.
+doom_bsp_u16[segs, 3 * 12 + 8, 1];
+let mixed_front = doom_map_parse_geometry[
+  base, lines, sides, segs, subsectors, nodes, sectors
+];
+doom_bsp_expect[
+  (mixed_front\ok == 1) and
+  (buf_get[mixed_front\subsectors, 2] == 0),
+  "mixed-front subsector keeps first-seg sector ownership"
+];
+doom_bsp_u16[segs, 3 * 12 + 8, 0];
+
+let ledge_world = doom_world_new[map];
+let ledge_combat = doom_combat_new[map];
+// The east actor stands on floor 24 and ends at z=80. A player whose feet are
+// exactly z=80 may pass over it; one unit lower still has a real overlap.
+ledge_world\player_z = 80;
+doom_bsp_expect[
+  doom_world_player_actor_blocked[
+    map, ledge_world, ledge_combat, 150, 50
+  ] == 0,
+  "monster below a ledge cannot form an invisible horizontal blocker"
+];
+ledge_world\player_z = 79;
+doom_bsp_expect[
+  doom_world_player_actor_blocked[
+    map, ledge_world, ledge_combat, 150, 50
+  ] == 1,
+  "one unit of vertical body overlap remains solid"
+];
+
+let stack = buf_new[32, 3];
+let order = buf_new[32, 2];
+doom_bsp_expect[
+  doom_map_bsp_order_into[map, 50, 50, stack, order] == 2,
+  "bounded traversal"
+];
+doom_bsp_expect[
+  (buf_get[order, 0] == 0) and (buf_get[order, 1] == 1),
+  "west front-to-back order"
+];
+doom_map_bsp_order_into[map, 150, 50, stack, order];
+doom_bsp_expect[
+  (buf_get[order, 0] == 1) and (buf_get[order, 1] == 0),
+  "east front-to-back order"
+];
+
+doom_bsp_expect[
+  doom_map_move_blocked[map, 50, 50, 150, 50, 56, 24] == 0,
+  "24-unit step"
+];
+
+let alive = bytes_new[2];
+bytes_set[alive, 1, 1];
+doom_bsp_expect[
+  doom_view_hitscan_target[
+    map, alive, 50, 50, trig_from_degrees[0], 200
+  ] == 1,
+  "continuous-angle hitscan"
+];
+let pixels = gui_buffer[320, 200];
+let view = doom_view_draw[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
+];
+doom_bsp_expect[view\subsectors == 2, "render traverses both leaves"];
+doom_bsp_expect[view\walls > 0, "render sees walls"];
+doom_bsp_expect[view\panels > 0, "render draws height panels"];
+doom_bsp_expect[view\columns > 0, "render writes projected columns"];
+doom_bsp_expect[view\visible_enemies == 1, "render projects visible enemy"];
+let pitched = doom_view_draw_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 40, alive, 0, 1, 0, 0, 0
+];
+doom_bsp_expect[pitched\columns == view\columns,
+                "pitch preserves horizontal BSP visibility"];
+let pitched_crosshair = ((100 * 320) + 160) * 4;
+doom_bsp_expect[
+  (bytes_get[pixels, pitched_crosshair] == 236) and
+  (bytes_get[pixels, pitched_crosshair + 1] == 220),
+  "vertical look keeps the aim marker at viewport centre"
+];
+let reticle = gui_buffer[320, 200];
+doom_view_draw_reticle[reticle, 320, 200];
+let reticle_centre = ((100 * 320) + 160) * 4;
+let reticle_gap = ((100 * 320) + 162) * 4;
+let reticle_arm = ((100 * 320) + 164) * 4;
+doom_bsp_expect[
+  (bytes_get[reticle, reticle_centre] == 236) and
+  (bytes_get[reticle, reticle_centre + 1] == 220) and
+  (bytes_get[reticle, reticle_gap] == 0) and
+  (bytes_get[reticle, reticle_arm] == 236),
+  "reticle preserves a visible target gap around its exact aim point"
+];
+doom_bsp_expect[
+  (doom_view_horizon_y[300, 145] == 5) and
+  (doom_view_horizon_y[300, 0 - 145] == 295) and
+  (doom_view_horizon_y[200, 145] == 5) and
+  (doom_view_horizon_y[200, 0 - 145] == 195),
+  "vertical look endpoints scale across fixed logical rasters"
+];
+doom_bsp_expect[
+  (doom_view_sprite_rotation[0, 100, 0] == 1) and
+  (doom_view_sprite_rotation[0, 0 - 100, 0] == 5) and
+  (doom_view_sprite_rotation[0, 0, 100] == 3) and
+  (doom_view_sprite_rotation[0, 0, 0 - 100] == 7) and
+  (doom_view_sprite_rotation[180, 0 - 100, 0] == 1),
+  "actor-to-viewer octants select WAD front and back rotations"
+];
+
+// A tiny checked atlas proves that the textured path samples indexed pixels,
+// while the independently callable flat oracle remains available.
+let texture_pixels = bytes_new[4];
+let texture_opaque = bytes_new[4];
+let pi = 0;
+while (pi < 4) (
+  bytes_set[texture_pixels, pi, 1];
+  bytes_set[texture_opaque, pi, 1];
+  pi = pi + 1;
+)
+let colours = buf_new[32, 8192];
+let shade = 0;
+let red = 251 * 65536 + 7 * 256 + 3;
+let blue = 5 * 65536 + 17 * 256 + 239;
+let green = 11 * 65536 + 241 * 256 + 19;
+let yellow = 247 * 65536 + 211 * 256 + 29;
+let magenta = 233 * 65536 + 37 * 256 + 197;
+while (shade < 32) (
+  buf_set[colours, shade * 256 + 1, red];
+  buf_set[colours, shade * 256 + 2, blue];
+  buf_set[colours, shade * 256 + 3, green];
+  buf_set[colours, shade * 256 + 4, yellow];
+  buf_set[colours, shade * 256 + 5, magenta];
+  shade = shade + 1;
+)
+let sprite_meta = buf_new[32, doom_texture_sprite_slots[] * 6];
+// The fixture actor faces its viewer, so the WAD A1 front slot is populated.
+let enemy_mb = 0;
+buf_set[sprite_meta, enemy_mb, 1];
+buf_set[sprite_meta, enemy_mb + 1, 1];
+buf_set[sprite_meta, enemy_mb + 2, 0];
+buf_set[sprite_meta, enemy_mb + 3, 0];
+buf_set[sprite_meta, enemy_mb + 4, 1];
+let weapon_mb = doom_texture_weapon_slot[0] * 6;
+buf_set[sprite_meta, weapon_mb, 1];
+buf_set[sprite_meta, weapon_mb + 1, 1];
+buf_set[sprite_meta, weapon_mb + 2, 1];
+let clip_mb = doom_texture_pickup_slot[2007] * 6;
+buf_set[sprite_meta, clip_mb, 1];
+buf_set[sprite_meta, clip_mb + 1, 1];
+buf_set[sprite_meta, clip_mb + 2, 2];
+buf_set[sprite_meta, clip_mb + 4, 1];
+let fog_mb = doom_texture_teleport_slot[0] * 6;
+buf_set[sprite_meta, fog_mb, 1];
+buf_set[sprite_meta, fog_mb + 1, 1];
+buf_set[sprite_meta, fog_mb + 2, 3];
+buf_set[sprite_meta, fog_mb + 4, 41];
+let sprite_pixels = bytes_new[4];
+let sprite_opaque = bytes_new[4];
+bytes_set[sprite_pixels, 0, 2];
+bytes_set[sprite_pixels, 1, 3];
+bytes_set[sprite_pixels, 2, 4];
+bytes_set[sprite_pixels, 3, 5];
+bytes_set[sprite_opaque, 0, 1];
+bytes_set[sprite_opaque, 1, 1];
+bytes_set[sprite_opaque, 2, 1];
+bytes_set[sprite_opaque, 3, 1];
+let flat_pixels = bytes_new[4096];
+let bank = map\texture_bank + {
+  ready: 1, texture_count: 1,
+  texture_names: bytes_new[8], texture_meta: %32[2, 2, 0],
+  texture_pixels: texture_pixels, texture_opaque: texture_opaque,
+  flat_count: 1, flat_names: bytes_new[8], flat_pixels: flat_pixels,
+  sky_flat: 0, palette: bytes_new[0], colormap: bytes_new[0],
+  sprite_ready: 1, sprite_slots: doom_texture_sprite_slots[], sprite_loaded: 4,
+  sprite_meta: sprite_meta, sprite_pixels: sprite_pixels,
+  sprite_opaque: sprite_opaque, colours: colours
+};
+map = map + { texture_bank: bank };
+pi = 0;
+while (pi < map\sector_count * 2) (
+  buf_set[map\sector_flats, pi, 0];
+  pi = pi + 1;
+)
+pi = 0;
+while (pi < map\side_count * 3) (
+  buf_set[map\side_textures, pi, 0];
+  pi = pi + 1;
+)
+let textured_work = doom_view_work[map];
+let textured = doom_view_draw[
+  pixels, 320, 200, gui_font[], map, textured_work,
+  50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
+];
+doom_bsp_expect[textured\textured == 1, "textured renderer selected"];
+doom_bsp_expect[
+  textured\plane_gaps < 64,
+  "wall-owned plane spans bound projection-edge coverage"
+];
+let red_pixels = 0;
+let blue_pixels = 0;
+let green_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 251) and
+      (bytes_get[pixels, pi + 1] == 7) and
+      (bytes_get[pixels, pi + 2] == 3)) (
+    red_pixels = red_pixels + 1;
+  )
+  if ((bytes_get[pixels, pi] == 5) and
+      (bytes_get[pixels, pi + 1] == 17) and
+      (bytes_get[pixels, pi + 2] == 239)) (
+    blue_pixels = blue_pixels + 1;
+  )
+  if ((bytes_get[pixels, pi] == 11) and
+      (bytes_get[pixels, pi + 1] == 241) and
+      (bytes_get[pixels, pi + 2] == 19)) (
+    green_pixels = green_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[red_pixels > 0, "indexed wall texels reach the frame"];
+doom_bsp_expect[blue_pixels > 0, "depth-tested enemy sprite reaches the frame"];
+doom_bsp_expect[green_pixels > 0, "first-person weapon sprite reaches the frame"];
+
+// A two-sided portal may legitimately name `-` for an optional upper/lower
+// texture. In textured mode that means no surface. It must never select the
+// depthless flat-oracle panel that formerly appeared as a remote gray door
+// aura over nearer walls.
+buf_set[map\side_textures, 3 * 3, 0 - 1];
+doom_view_draw[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
+];
+let aura_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 120) and
+      (bytes_get[pixels, pi + 1] == 128) and
+      (bytes_get[pixels, pi + 2] == 160)) (
+    aura_pixels = aura_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  aura_pixels == 0,
+  "absent optional texture cannot select depthless flat fallback"
+];
+buf_set[map\side_textures, 3 * 3, 0];
+let plane_owned = 0;
+let py = 102;
+while (py < 180) (
+  let sample_y = py - py % 3 + 1;
+  let expected_west = 41 * 240 / (sample_y - 100);
+  let expected_east = 17 * 240 / (sample_y - 100);
+  let px = 0;
+  while (px < 320) (
+    let pixel = py * 320 + px;
+    if (((textured_work\stamp)@pixel == textured_work\frame) and
+        (((textured_work\depth)@pixel == expected_west) or
+         ((textured_work\depth)@pixel == expected_east))) (
+      plane_owned = plane_owned + 1;
+    )
+    px = px + 1;
+  )
+  py = py + 1;
+)
+doom_bsp_expect[
+  plane_owned > 0,
+  "sampled floor planes participate in depth ownership"
+];
+textured_work = 0;
+let combat = doom_combat_new[map];
+// A dead former human spawns a clip at its exact coordinates. Model that
+// equal-depth state directly: the clip must remain visible over the actor
+// sprite instead of losing every stamped-depth tie.
+combat\drops = [{ x: 150, y: 50, kind: 2007, alive: 1 }];
+let combat_view = doom_view_draw_combat_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, combat, 0, 0
+];
+doom_bsp_expect[
+  (combat_view\combat == 1) and (combat_view\health == 100) and
+  (combat_view\ammo == 50) and (combat_view\visible_enemies == 1),
+  "explicit combat state reaches the animated renderer"
+];
+doom_bsp_expect[
+  combat_view\visible_combat_items == 1,
+  "equal-depth dropped clip remains visible over its source actor"
+];
+let yellow_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 247) and
+      (bytes_get[pixels, pi + 1] == 211) and
+      (bytes_get[pixels, pi + 2] == 29)) (
+    yellow_pixels = yellow_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[yellow_pixels > 0, "dropped clip texels reach the frame"];
+
+let fog_world = doom_world_new[map];
+fog_world\teleport_fog_tick = 70;
+fog_world\teleport_from_x = 0;
+fog_world\teleport_from_y = 50;
+fog_world\teleport_to_x = 90;
+fog_world\teleport_to_y = 50;
+doom_view_draw_world_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, combat, fog_world, 0, 0
+];
+let fog_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 233) and
+      (bytes_get[pixels, pi + 1] == 37) and
+      (bytes_get[pixels, pi + 2] == 197)) (
+    fog_pixels = fog_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  fog_pixels > 0,
+  "WAD-native teleport fog frame reaches the depth-tested world raster"
+];
+let flat_oracle = doom_view_draw_flat_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, alive, 0, 1, 0, 0, 0
+];
+doom_bsp_expect[flat_oracle\textured == 0, "flat oracle remains selectable"];
+
+buf_set[map\sectors, 5, 25];
+doom_bsp_expect[
+  doom_map_move_blocked[map, 50, 50, 150, 50, 56, 24] == 1,
+  "25-unit step rejection"
+];
+buf_set[map\sectors, 5, 24];
+buf_set[map\sectors, 6, 70];
+doom_bsp_expect[
+  doom_map_move_blocked[map, 50, 50, 150, 50, 56, 24] == 1,
+  "closed-height portal rejection"
+];
+buf_set[map\sectors, 6, 96];
+
+doom_bsp_u16[segs, 8, 2];
+let bad_seg = doom_map_parse_geometry[
+  base, lines, sides, segs, subsectors, nodes, sectors
+];
+doom_bsp_expect[bad_seg\ok == 0, "invalid seg side rejection"];
+doom_bsp_u16[segs, 8, 0];
+
+doom_bsp_u16[nodes, 24, 0];
+let bad_tree = doom_map_parse_geometry[
+  base, lines, sides, segs, subsectors, nodes, sectors
+];
+doom_bsp_expect[bad_tree\ok == 0, "cyclic child rejection"];
+
+print "doom BSP geometry ok";

@@ -1,0 +1,339 @@
+// WAD-native Doom status and menu composition. The presenter remains a pixel
+// sink: layout, menu state and every decision stay deterministic in Freelang.
+
+credits: <../games/doom-combat.flx> <f/gui> <f/strings>;
+
+op doom_ui_new [] (
+  => doom_ui_new_for_map["E1M2"];
+)
+
+private op doom_ui_default_maps [] ( => ["E1M1", "E1M2"]; )
+
+op doom_ui_new_for_maps [maps, map_name] (
+  if ((arr_len[maps] > 0) and (arr_len[maps] <= 81)) () else (
+    fall "doom_ui_new_for_maps: classic map count outside 1..81";
+  )
+  let cursor = 0;
+  let found = 0;
+  let i = 0;
+  while (i < arr_len[maps]) (
+    if (string_eq[maps\@i, map_name] == 1) (
+      cursor = i;
+      found = 1;
+    )
+    i = i + 1;
+  )
+  if (found == 1) () else (
+    fall "doom_ui_new_for_maps: current map is absent from menu";
+  )
+  let top = cursor - 3;
+  if (top < 0) ( top = 0; )
+  if (top + 7 > arr_len[maps]) ( top = arr_len[maps] - 7; )
+  if (top < 0) ( top = 0; )
+  => {
+    open: 0, cursor: cursor, top: top, maps: maps,
+    look_speed: 1, selection: 0
+  };
+)
+
+op doom_ui_new_for_map [map_name] (
+  => doom_ui_new_for_maps[doom_ui_default_maps[], map_name];
+)
+
+op doom_ui_map_selector [maps, selection] (
+  if ((selection >= 1) and (selection <= arr_len[maps])) (
+    => maps\@(selection - 1);
+  )
+  fall "doom_ui_map_selector: selection outside checked map menu";
+)
+
+// Compatibility name retained for callers that still use the original
+// two-entry application fixture.
+op doom_ui_episode_selector [selection] (
+  => doom_ui_map_selector[doom_ui_default_maps[], selection];
+)
+
+// Asset-independent first frame: it is available before the caller has
+// parsed map geometry, WAD patches or a derived music cache entry.
+op doom_ui_draw_loading [buf, w, h, font, map_name] (
+  gui_fill[buf, gui_rgb[14, 10, 12]];
+  let heading = "FREELANG DOOM";
+  let loading = "LOADING ^{map_name}...";
+  gui_text_scaled[
+    buf, w, h, font, (w - str_len[heading] * 16) / 2, h / 2 - 25,
+    heading, gui_rgb[190, 32, 24], 2
+  ];
+  gui_text[
+    buf, w, h, font, (w - str_len[loading] * 8) / 2, h / 2 + 9,
+    loading, gui_rgb[218, 206, 172]
+  ];
+  => 1;
+)
+
+op doom_ui_next [ui, events] (
+  ui\selection = 0;
+  if (gui_key_pressed[events, gui_key_esc[]] == 1) (
+    if (ui\open == 0) (
+      ui\open = 1;
+    ) else (
+      ui\open = 0;
+    )
+    => ui;
+  )
+  if (ui\open == 0) ( => ui; )
+
+  if (gui_key_pressed[events, gui_key_up[]] == 1) (
+    ui\cursor = ui\cursor - 1;
+    if (ui\cursor < 0) ( ui\cursor = arr_len[ui\maps] - 1; )
+  )
+  if (gui_key_pressed[events, gui_key_down[]] == 1) (
+    ui\cursor = ui\cursor + 1;
+    if (ui\cursor >= arr_len[ui\maps]) ( ui\cursor = 0; )
+  )
+  if (ui\cursor < ui\top) ( ui\top = ui\cursor; )
+  if (ui\cursor >= ui\top + 7) ( ui\top = ui\cursor - 6; )
+  let max_top = arr_len[ui\maps] - 7;
+  if (max_top < 0) ( max_top = 0; )
+  if (ui\top > max_top) ( ui\top = max_top; )
+  if (ui\top < 0) ( ui\top = 0; )
+  if (ui\cursor >= arr_len[ui\maps]) (
+    fall "doom_ui_next: cursor escaped checked map menu";
+  )
+  if (gui_key_pressed[events, gui_key_return[]] == 1) (
+    ui\selection = ui\cursor + 1;
+    ui\open = 0;
+  )
+  => ui;
+)
+
+op doom_ui_draw_patch [buf, w, h, bank, slot, x, y] (
+  if ((bank\ui_ready == 1) and
+      (bank\ui_slots == doom_texture_ui_slots[]) and
+      (slot >= 0) and (slot < bank\ui_slots) and
+      (buf_len[bank\ui_meta] == bank\ui_slots * 5) and
+      (bytes_len[bank\ui_pixels] == bytes_len[bank\ui_opaque])) () else (
+    => 0;
+  )
+  let mb = slot * 5;
+  let pw = buf_get[bank\ui_meta, mb];
+  let ph = buf_get[bank\ui_meta, mb + 1];
+  let offset = buf_get[bank\ui_meta, mb + 2];
+  if ((pw > 0) and (ph > 0) and (offset >= 0) and
+      (pw * ph <= bytes_len[bank\ui_pixels] - offset)) () else ( => 0; )
+  let painted = 0;
+  let sy = 0;
+  while (sy < ph) (
+    let dy = y + sy;
+    if ((dy >= 0) and (dy < h)) (
+      let sx = 0;
+      while (sx < pw) (
+        let dx = x + sx;
+        let source = offset + sy * pw + sx;
+        if ((dx >= 0) and (dx < w) and
+            (bytes_get[bank\ui_opaque, source] == 1)) (
+          let colour = buf_get[
+            bank\colours, bytes_get[bank\ui_pixels, source]
+          ];
+          let target = (dy * w + dx) * 4;
+          bytes_set[buf, target, (colour *> 16) *& 255];
+          bytes_set[buf, target + 1, (colour *> 8) *& 255];
+          bytes_set[buf, target + 2, colour *& 255];
+          painted = painted + 1;
+        )
+        sx = sx + 1;
+      )
+    )
+    sy = sy + 1;
+  )
+  => painted;
+)
+
+private op doom_ui_patch_width [bank, slot] (
+  if ((slot >= 0) and (slot < bank\ui_slots)) (
+    => buf_get[bank\ui_meta, slot * 5];
+  )
+  => 0;
+)
+
+op doom_ui_text_width [bank, text] (
+  let width = 0;
+  let i = 0;
+  while (i < str_len[text]) (
+    let c = text\\i;
+    if (c == 32) ( width = width + 4; )
+    else if ((c >= 33) and (c <= 95)) (
+      width = width + doom_ui_patch_width[
+        bank, doom_texture_ui_font_slot[c]
+      ] + 1;
+    )
+    i = i + 1;
+  )
+  => width;
+)
+
+op doom_ui_draw_text [buf, w, h, bank, x, y, text] (
+  let cursor = x;
+  let i = 0;
+  while (i < str_len[text]) (
+    let c = text\\i;
+    if (c == 32) (
+      cursor = cursor + 4;
+    ) else if ((c >= 33) and (c <= 95)) (
+      let slot = doom_texture_ui_font_slot[c];
+      doom_ui_draw_patch[buf, w, h, bank, slot, cursor, y];
+      cursor = cursor + doom_ui_patch_width[bank, slot] + 1;
+    )
+    i = i + 1;
+  )
+  => cursor - x;
+)
+
+private op doom_ui_number_width [bank, text, small, yellow] (
+  let width = 0;
+  let i = 0;
+  while (i < str_len[text]) (
+    let digit = text\\i - 48;
+    let slot = doom_texture_ui_big_number_slot[digit];
+    if (small == 1) (
+      slot = doom_texture_ui_gray_number_slot[digit];
+      if (yellow == 1) ( slot = doom_texture_ui_yellow_number_slot[digit]; )
+    )
+    width = width + doom_ui_patch_width[bank, slot];
+    i = i + 1;
+  )
+  => width;
+)
+
+private op doom_ui_draw_number_right [buf, w, h, bank, right, y,
+                                      value, small, yellow] (
+  let shown = value;
+  if (shown < 0) ( shown = 0; )
+  if (shown > 999) ( shown = 999; )
+  let text = int_to_string[shown];
+  let x = right - doom_ui_number_width[bank, text, small, yellow];
+  let i = 0;
+  while (i < str_len[text]) (
+    let digit = text\\i - 48;
+    let slot = doom_texture_ui_big_number_slot[digit];
+    if (small == 1) (
+      slot = doom_texture_ui_gray_number_slot[digit];
+      if (yellow == 1) ( slot = doom_texture_ui_yellow_number_slot[digit]; )
+    )
+    doom_ui_draw_patch[buf, w, h, bank, slot, x, y];
+    x = x + doom_ui_patch_width[bank, slot];
+    i = i + 1;
+  )
+  => 0;
+)
+
+op doom_ui_draw_status [buf, w, h, bank, combat, world] (
+  if (bank\ui_ready == 1) () else ( => 0; )
+  let bx = (w - 320) / 2;
+  let by = h - 32;
+  doom_ui_draw_patch[
+    buf, w, h, bank, doom_texture_ui_status_slot[], bx, by
+  ];
+  doom_ui_draw_patch[
+    buf, w, h, bank, doom_texture_ui_arms_slot[], bx + 104, by
+  ];
+  doom_ui_draw_patch[
+    buf, w, h, bank, doom_texture_ui_face_slot[], bx + 143, by + 2
+  ];
+
+  doom_ui_draw_number_right[
+    buf, w, h, bank, bx + 44, by + 3,
+    doom_combat_current_ammo[combat], 0, 0
+  ];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 90, by + 3,
+                            combat\health, 0, 0];
+  doom_ui_draw_patch[
+    buf, w, h, bank, doom_texture_ui_percent_slot[], bx + 90, by + 3
+  ];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 221, by + 3,
+                            combat\armor, 0, 0];
+  doom_ui_draw_patch[
+    buf, w, h, bank, doom_texture_ui_percent_slot[], bx + 221, by + 3
+  ];
+
+  let weapon = 2;
+  while (weapon <= 7) (
+    let column = (weapon - 2) % 3;
+    let row = (weapon - 2) / 3;
+    let slot = doom_texture_ui_gray_number_slot[weapon];
+    if (doom_combat_weapon_owned[combat, weapon] == 1) (
+      slot = doom_texture_ui_yellow_number_slot[weapon];
+    )
+    doom_ui_draw_patch[
+      buf, w, h, bank, slot, bx + 111 + column * 12, by + 4 + row * 10
+    ];
+    weapon = weapon + 1;
+  )
+
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 4,
+                            combat\ammo, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 10,
+                            combat\shells, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 16,
+                            combat\rockets, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 22,
+                            combat\cells, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 4,
+                            combat\max_ammo, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 10,
+                            combat\max_shells, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 16,
+                            combat\max_rockets, 1, 1];
+  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 22,
+                            combat\max_cells, 1, 1];
+
+  if (world\pickup_tick > 0) (
+    let message_x = (w - doom_ui_text_width[bank, world\pickup_message]) / 2;
+    doom_ui_draw_text[
+      buf, w, h, bank, message_x, 12, world\pickup_message
+    ];
+  )
+  => 1;
+)
+
+private op doom_ui_draw_centered_patch [buf, w, h, bank, slot, y] (
+  let x = (w - doom_ui_patch_width[bank, slot]) / 2;
+  => doom_ui_draw_patch[buf, w, h, bank, slot, x, y];
+)
+
+private op doom_ui_draw_centered_text [buf, w, h, bank, y, text] (
+  let x = (w - doom_ui_text_width[bank, text]) / 2;
+  => doom_ui_draw_text[buf, w, h, bank, x, y, text];
+)
+
+op doom_ui_draw_menu [buf, w, h, bank, ui] (
+  if ((ui\open == 1) and (bank\ui_ready == 1)) () else ( => 0; )
+  gui_rect[buf, w, h, 0, 0, w, h, gui_rgb[14, 10, 12]];
+  doom_ui_draw_centered_patch[
+    buf, w, h, bank, doom_texture_ui_logo_slot[], 10
+  ];
+  doom_ui_draw_centered_text[buf, w, h, bank, 66, "SELECT MAP"];
+  let first_y = 84;
+  let row = 0;
+  let index = ui\top;
+  while ((row < 7) and (index < arr_len[ui\maps])) (
+    doom_ui_draw_centered_text[
+      buf, w, h, bank, first_y + row * 13, ui\maps\@index
+    ];
+    row = row + 1;
+    index = index + 1;
+  )
+  let cursor = ui\cursor;
+  let selected = ui\maps\@cursor;
+  let selected_x = (w - doom_ui_text_width[bank, selected]) / 2;
+  let cy = first_y - 5 + (ui\cursor - ui\top) * 13;
+  doom_ui_draw_patch[
+    buf, w, h, bank,
+    doom_texture_ui_skull1_slot[] + ((ui\cursor + ui\look_speed) % 2),
+    selected_x - 24, cy
+  ];
+  doom_ui_draw_centered_text[
+    buf, w, h, bank, 181,
+    "MAP ^{ui\cursor + 1}/^{arr_len[ui\maps]}"
+  ];
+  => 1;
+)

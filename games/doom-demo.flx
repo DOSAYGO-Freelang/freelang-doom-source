@@ -1,0 +1,225 @@
+// Deterministic Episode One evidence drives. These are bounded command
+// producers, not
+// a camera teleport: doom-play feeds its turn/move/fire results through the
+// ordinary collision and hitscan path used by interactive play.
+
+credits: <f/buffers> <f/strings>;
+
+op doom_demo_e1m1_new [map] (
+  => doom_demo_e1m1_new_mode[map, 1];
+)
+
+op doom_demo_e1m1_new_mode [map, combat_mode] (
+  // An eight-unit drive follows a collision-checked route from the player
+  // start into the first connected combat room. Closed E1M1 doors remain
+  // closed because moving sectors are a later slice.
+  let route = %32[
+    1056, -3288,
+    248, -3288,
+    248, -3352
+  ];
+  => doom_demo_new_state[
+    map, combat_mode, "E1M1", route, 252, 92
+  ];
+)
+
+op doom_demo_e1m2_new [map] (
+  => doom_demo_e1m2_new_mode[map, 1];
+)
+
+op doom_demo_e1m2_new_mode [map, combat_mode] (
+  // E1M2 begins in a broad, immediately playable room. The short northward
+  // route proves ordinary movement without pretending to solve the whole map;
+  // target bearings are still chosen from live, wall-occluded combat state.
+  let route = %32[
+    -32, -176,
+    -32, -112,
+    -32, -48
+  ];
+  => doom_demo_new_state[
+    map, combat_mode, "E1M2", route, 90, 270
+  ];
+)
+
+private op doom_demo_new_state [map, combat_mode, selector, route,
+                                first_aim, second_aim] (
+  => {
+    selector: selector,
+    route: route,
+    point: 0,
+    phase: 0,
+    frame: 0,
+    heading: map\player_angle,
+    pitch: 0,
+    moving: 0,
+    last_x: map\player_x,
+    last_y: map\player_y,
+    stuck: 0,
+    hold: 0,
+    combat: combat_mode,
+    aim_heading: first_aim,
+    first_aim: first_aim,
+    second_aim: second_aim
+  };
+)
+
+// Interactive sessions do not consume demo commands, but retain one
+// shape-stable state so their loop need not invent a second control record.
+op doom_demo_idle_new_mode [map, combat_mode] (
+  => doom_demo_new_state[
+    map, combat_mode, map\name, %32[], map\player_angle, map\player_angle
+  ];
+)
+
+op doom_demo_new_mode [map, combat_mode] (
+  if (string_eq[map\name, "E1M1"] == 1) (
+    => doom_demo_e1m1_new_mode[map, combat_mode];
+  )
+  if (string_eq[map\name, "E1M2"] == 1) (
+    => doom_demo_e1m2_new_mode[map, combat_mode];
+  )
+  fall "doom_demo_new_mode: map has no bounded deterministic route";
+)
+
+private op doom_demo_normalize_heading [heading] (
+  let out = heading;
+  while (out < 0) ( out = out + 360; )
+  while (out >= 360) ( out = out - 360; )
+  => out;
+)
+
+private op doom_demo_turn_toward [heading, desired, maximum] (
+  let diff = desired - heading;
+  if (diff > 180) ( diff = diff - 360; )
+  if (diff < 0 - 180) ( diff = diff + 360; )
+  if (diff > maximum) ( => doom_demo_normalize_heading[heading + maximum]; )
+  if (diff < 0 - maximum) ( => doom_demo_normalize_heading[heading - maximum]; )
+  => desired;
+)
+
+op doom_demo_next [st, player_x, player_y] (
+  let route = st\route;
+  let point = st\point;
+  let phase = st\phase;
+  let frame = st\frame + 1;
+  let heading = st\heading;
+  let pitch = st\pitch;
+  let stuck = st\stuck;
+  let hold = st\hold;
+  let forward = 0;
+  let fire = 0;
+  let finished = 0;
+  let moving = 0;
+
+  if (st\moving == 1) (
+    if ((player_x == st\last_x) and (player_y == st\last_y)) (
+      stuck = stuck + 1;
+    ) else (
+      stuck = 0;
+    )
+  )
+
+  if (phase == 0) (
+    // Establish the first-person view with a deliberate look around before
+    // the route begins. Six degrees/frame keeps the proof short and legible.
+    let desired = 30;
+    let desired_pitch = 0 - 52;
+    if (frame > 40) ( desired = 150; )
+    if (frame > 40) ( desired_pitch = 52; )
+    if (frame > 80) ( desired = 90; desired_pitch = 0; )
+    heading = doom_demo_turn_toward[heading, desired, 6];
+    if (pitch < desired_pitch) (
+      pitch = pitch + 4;
+      if (pitch > desired_pitch) ( pitch = desired_pitch; )
+    )
+    if (pitch > desired_pitch) (
+      pitch = pitch - 4;
+      if (pitch < desired_pitch) ( pitch = desired_pitch; )
+    )
+    if ((frame > 80) and (heading == 90) and (pitch == 0)) ( phase = 1; )
+  ) else if (phase == 1) (
+    if (point * 2 >= buf_len[route]) (
+      phase = 2;
+    ) else (
+      let tx = buf_get[route, point * 2];
+      let ty = buf_get[route, point * 2 + 1];
+      if ((player_x == tx) and (player_y == ty)) (
+        point = point + 1;
+        stuck = 0;
+      ) else (
+        let desired = 0;
+        if (player_x > tx) ( desired = 180; )
+        if (player_y < ty) ( desired = 90; )
+        if (player_y > ty) ( desired = 270; )
+        heading = doom_demo_turn_toward[heading, desired, 6];
+        if (heading == desired) (
+          forward = 8;
+          moving = 1;
+        )
+        // A malformed or changed map cannot make evidence generation hang.
+        if (stuck > 20) (
+          point = point + 1;
+          stuck = 0;
+        )
+      )
+    )
+  ) else if (phase == 2) (
+    // Two bounded pistol pairs prove pain and death on two acquired targets.
+    // The 12-frame gap exceeds the explicit shot cooldown; no command bypasses
+    // ordinary hitscan, ammunition or cooldown state.
+    heading = doom_demo_turn_toward[heading, st\aim_heading, 6];
+    if (heading == st\aim_heading) (
+      hold = hold + 1;
+      if (hold >= 30) (
+        fire = 1;
+        phase = 3;
+        if (st\combat == 0) ( phase = 4; )
+        hold = 0;
+      )
+    )
+  ) else if (phase == 3) (
+    hold = hold + 1;
+    if (hold >= 12) ( fire = 1; phase = 4; hold = 0; )
+  ) else if (phase == 4) (
+    hold = hold + 1;
+    if (hold >= 45) ( phase = 5; hold = 0; )
+  ) else if (phase == 5) (
+    heading = doom_demo_turn_toward[heading, st\aim_heading, 6];
+    if (heading == st\aim_heading) (
+      hold = hold + 1;
+      if (hold >= 30) (
+        fire = 1;
+        phase = 6;
+        if (st\combat == 0) ( phase = 7; )
+        hold = 0;
+      )
+    )
+  ) else if (phase == 6) (
+    hold = hold + 1;
+    if (hold >= 12) ( fire = 1; phase = 7; hold = 0; )
+  ) else if (phase == 7) (
+    // Hold the final proof frame long enough to read the HUD, then exit.
+    hold = hold + 1;
+    if (hold >= 92) ( finished = 1; )
+  )
+
+  => {
+    state: {
+      route: route, point: point, phase: phase, frame: frame,
+      heading: heading, pitch: pitch, moving: moving,
+      last_x: player_x, last_y: player_y, stuck: stuck, hold: hold,
+      combat: st\combat, selector: st\selector,
+      aim_heading: st\aim_heading,
+      first_aim: st\first_aim, second_aim: st\second_aim
+    },
+    heading: heading,
+    pitch: pitch,
+    forward: forward,
+    fire: fire,
+    finished: finished
+  };
+)
+
+op doom_demo_e1m1_next [st, player_x, player_y] (
+  => doom_demo_next[st, player_x, player_y];
+)

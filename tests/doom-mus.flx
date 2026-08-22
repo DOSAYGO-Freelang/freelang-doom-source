@@ -1,0 +1,89 @@
+credits: <../games/doom-mus.flx> <../games/doom-opl2.flx> <f/bytes>;
+
+op doom_mus_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom mus expectation failed";
+  )
+)
+
+op doom_mus_test_u16 [b, offset, value] (
+  bytes_set[b, offset, value % 256];
+  bytes_set[b, offset + 1, (value / 256) % 256];
+  => 0;
+)
+
+// A4 on for half a second, off for half a second, then score end.
+let mus = bytes_new[24];
+bytes_set[mus, 0, 77]; bytes_set[mus, 1, 85];
+bytes_set[mus, 2, 83]; bytes_set[mus, 3, 26];
+doom_mus_test_u16[mus, 4, 8];
+doom_mus_test_u16[mus, 6, 16];
+doom_mus_test_u16[mus, 8, 1];
+bytes_set[mus, 16, 144];
+bytes_set[mus, 17, 197];
+bytes_set[mus, 18, 127];
+bytes_set[mus, 19, 70];
+bytes_set[mus, 20, 128];
+bytes_set[mus, 21, 69];
+bytes_set[mus, 22, 70];
+bytes_set[mus, 23, 96];
+
+let decoded = doom_mus_decode[mus];
+doom_mus_test_expect[decoded\ok == 1, "decode"];
+doom_mus_test_expect[decoded\ticks == 140, "140 Hz duration"];
+doom_mus_test_expect[decoded\events == 3, "event count"];
+
+let rendered = doom_mus_render_wav[mus];
+doom_mus_test_expect[rendered\ok == 1, "render"];
+doom_mus_test_expect[rendered\samples == 11025, "one second sample count"];
+doom_mus_test_expect[bytes_len[rendered\wav] == 11069, "WAV length"];
+doom_mus_test_expect[bytes_get[rendered\wav, 0] == 82, "RIFF R"];
+doom_mus_test_expect[bytes_get[rendered\wav, 8] == 87, "WAVE W"];
+doom_mus_test_expect[bytes_get[rendered\wav, 44] != 128, "audible note"];
+doom_mus_test_expect[bytes_get[rendered\wav, 11068] == 128, "released silence"];
+
+let truncated = bytes_slice[mus, 0, 23];
+let bad_decode = doom_mus_decode[truncated];
+doom_mus_test_expect[bad_decode\ok == 0, "truncated score rejection"];
+
+// Minimum structural GENMIDI bank with one audible two-operator patch. The
+// remaining melodic/percussion entries may be zero because this score selects
+// program zero only.
+let genmidi = bytes_new[6308];
+let signature = [35, 79, 80, 76, 95, 73, 73, 35];
+let gi = 0;
+while (gi < 8) (
+  bytes_set[genmidi, gi, signature\@gi];
+  gi = gi + 1;
+)
+bytes_set[genmidi, 10, 128];
+// Instrument 0, voice 0 starts at byte 12.
+bytes_set[genmidi, 12, 1];
+bytes_set[genmidi, 13, 242];
+bytes_set[genmidi, 14, 68];
+bytes_set[genmidi, 17, 8];
+bytes_set[genmidi, 18, 0];
+bytes_set[genmidi, 19, 1];
+bytes_set[genmidi, 20, 242];
+bytes_set[genmidi, 21, 68];
+
+let opl = doom_mus_render_opl2_wav[mus, genmidi];
+doom_mus_test_expect[opl\ok == 1, "GENMIDI FM render"];
+doom_mus_test_expect[opl\samples == 22050, "OPL2 sample rate"];
+doom_mus_test_expect[bytes_len[opl\wav] == 22094, "OPL2 WAV length"];
+let audible = 0;
+let oi = 44;
+while ((oi < 11069) and (audible == 0)) (
+  if (bytes_get[opl\wav, oi] != 128) ( audible = 1; )
+  oi = oi + 1;
+)
+doom_mus_test_expect[audible == 1, "GENMIDI operator output"];
+let short_bank = bytes_slice[genmidi, 0, 6307];
+let short_bank_result = doom_opl_bank_validate[short_bank];
+doom_mus_test_expect[
+  short_bank_result\ok == 0,
+  "short GENMIDI rejection"
+];
+
+print "doom mus decoder ok";

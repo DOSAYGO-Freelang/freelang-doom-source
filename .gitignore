@@ -1,0 +1,26 @@
+.DS_Store
+Thumbs.db
+
+# Compiled and generated outputs
+*.bin
+*.exe
+*.o
+*.obj
+*.ppm
+*.tmp
+tests/bin/
+
+# Caller-owned game/media data is never repository content
+*.wad
+*.WAD
+*.lmp
+*.LMP
+*.wav
+*.mp3
+*.mov
+*.mp4
+
+# Tool caches
+__pycache__/
+.pytest_cache/
+.cache/

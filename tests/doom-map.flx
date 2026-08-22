@@ -1,0 +1,93 @@
+credits: <../games/doom-map.flx> <f/bytes>;
+
+op doom_map_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom map expectation failed";
+  )
+)
+
+op doom_map_test_u16 [b, offset, value] (
+  let stored = value;
+  if (stored < 0) ( stored = stored + 65536; )
+  bytes_set[b, offset, stored % 256];
+  bytes_set[b, offset + 1, (stored / 256) % 256];
+  => 0;
+)
+
+let vertices = bytes_new[16];
+doom_map_test_u16[vertices, 0, 0]; doom_map_test_u16[vertices, 2, 0];
+doom_map_test_u16[vertices, 4, 100]; doom_map_test_u16[vertices, 6, 0];
+doom_map_test_u16[vertices, 8, 100]; doom_map_test_u16[vertices, 10, 100];
+doom_map_test_u16[vertices, 12, 0]; doom_map_test_u16[vertices, 14, 100];
+
+let lines = bytes_new[56];
+let i = 0;
+while (i < 4) (
+  let off = i * 14;
+  doom_map_test_u16[lines, off, i];
+  doom_map_test_u16[lines, off + 2, (i + 1) % 4];
+  doom_map_test_u16[lines, off + 10, 0];
+  doom_map_test_u16[lines, off + 12, 65535];
+  i = i + 1;
+)
+
+let things = bytes_new[20];
+doom_map_test_u16[things, 0, 50];
+doom_map_test_u16[things, 2, 50];
+doom_map_test_u16[things, 4, 90];
+doom_map_test_u16[things, 6, 1];
+doom_map_test_u16[things, 8, 7];
+doom_map_test_u16[things, 10, 80];
+doom_map_test_u16[things, 12, 50];
+doom_map_test_u16[things, 14, 180];
+doom_map_test_u16[things, 16, 3004];
+doom_map_test_u16[things, 18, 7];
+
+let map = doom_map_parse["E1M1", vertices, lines, things];
+doom_map_test_expect[map\ok == 1, "parse"];
+doom_map_test_expect[map\vertex_count == 4, "vertices"];
+doom_map_test_expect[map\line_count == 4, "linedefs"];
+doom_map_test_expect[map\thing_count == 2, "things"];
+doom_map_test_expect[map\player_x == 50, "player x"];
+doom_map_test_expect[map\player_angle == 90, "player angle"];
+doom_map_test_expect[
+  (buf_get[map\thing_angles, 0] == 90) and
+  (buf_get[map\thing_angles, 1] == 180),
+  "thing orientations retained independently"
+];
+doom_map_test_expect[map\max_x == 100, "extent"];
+doom_map_test_expect[
+  doom_map_move_crosses_wall[map, 50, 50, 60, 50] == 0,
+  "interior move"
+];
+doom_map_test_expect[
+  doom_map_move_crosses_wall[map, 50, 50, 110, 50] == 1,
+  "wall crossing"
+];
+doom_map_test_expect[
+  doom_map_move_crosses_wall[map, 20, 0, 80, 0] == 0,
+  "movement tangent may ride an already contacted wall"
+];
+doom_map_test_expect[
+  doom_map_move_crosses_wall[map, 200, 0, 210, 0] == 0,
+  "a remote collinear wall is not an infinite collision plane"
+];
+doom_map_test_expect[doom_map_thing_is_enemy[3004] == 1, "enemy type"];
+doom_map_test_expect[doom_map_thing_is_enemy[2001] == 0, "item type"];
+let alive = bytes_new[2];
+bytes_set[alive, 1, 1];
+doom_map_test_expect[
+  doom_map_hitscan_target[map, alive, 50, 50, 0, 100] == 1,
+  "east hitscan"
+];
+doom_map_test_expect[
+  doom_map_hitscan_target[map, alive, 50, 50, 2, 100] == 0 - 1,
+  "facing away"
+];
+
+let malformed = bytes_new[5];
+let bad_map = doom_map_parse["BAD", malformed, lines, things];
+doom_map_test_expect[bad_map\ok == 0, "record tiling rejection"];
+
+print "doom map parser ok";

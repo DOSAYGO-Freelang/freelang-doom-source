@@ -1,0 +1,158 @@
+// doom — a tiny WAD inspector and audible MUS jukebox.
+
+credits: <doom-wad.flx> <doom-mus.flx> <doom-opl2.flx>
+         <f/process> <f/files>
+         <f/arrays> <f/strings>;
+
+op doom_usage [] (
+  eprint["usage: doom <wad>"];
+  eprint["       doom <wad> --render <track-name-or-index> <output.wav>"];
+  eprint["       doom <wad> --render-opl2 <track-name-or-index> <output.wav>"];
+  eprint["       doom <wad> --play <track-name-or-index>"];
+  eprint["       doom <wad> --play-opl2 <track-name-or-index>"];
+  => 0;
+)
+
+op doom_print_inspection [wad] (
+  print "DOOM WAD | ^{wad\kind} | ^{wad\file_bytes} bytes";
+  print "directory | ^{wad\lump_count} lumps | ^{wad\directory_bytes} bytes @ ^{wad\directory_offset}";
+  print "structure | ^{wad\map_count} maps | ^{wad\zero_lumps} zero-size markers | ^{wad\invalid_names} unsafe names";
+  print "music | ^{wad\mus_lumps} MUS lumps | ^{wad\music_overrides} overridden | ^{arr_len[wad\music_tracks]} effective tracks";
+  print "";
+  print "INDEX NAME       LUMP   SCORE  CHAN AUX INST";
+  forall track in wad\music_tracks (
+    print "^{track\index} ^{track\name} ^{track\lump_bytes} ^{track\score_bytes} ^{track\primary_channels} ^{track\secondary_channels} ^{track\instruments}";
+  )
+  => 0;
+)
+
+op doom_track_position [tracks, selector] (
+  let numeric = string_to_int[selector];
+  let i = 0;
+  while (i < arr_len[tracks]) (
+    let track = tracks\@i;
+    if (string_eq[track\name, selector] == 1) ( => i; )
+    if ((numeric >= 0) and (track\index == numeric)) ( => i; )
+    i = i + 1;
+  )
+  => 0 - 1;
+)
+
+op doom_render_track [path, track] (
+  let mus = read_range[path, track\lump_offset, track\lump_bytes];
+  if (bytes_len[mus] == track\lump_bytes) () else (
+    => {
+      ok: 0, error: "short music lump read", wav: bytes_new[0],
+      ticks: 0, samples: 0, events: 0, voice_steals: 0
+    };
+  )
+  => doom_mus_render_wav[mus];
+)
+
+op doom_render_track_opl2 [path, wad, track] (
+  let mus = read_range[path, track\lump_offset, track\lump_bytes];
+  if (bytes_len[mus] == track\lump_bytes) () else (
+    => {
+      ok: 0, error: "short music lump read", wav: bytes_new[0],
+      ticks: 0, samples: 0, events: 0, voice_steals: 0
+    };
+  )
+  let bank = doom_wad_load_named[path, wad, "GENMIDI"];
+  if (bank\ok == 1) () else (
+    => {
+      ok: 0, error: "GENMIDI: ^{bank\error}", wav: bytes_new[0],
+      ticks: 0, samples: 0, events: 0, voice_steals: 0
+    };
+  )
+  => doom_mus_render_opl2_wav[mus, bank\data];
+)
+
+op doom_play_wav [path, wav] (
+  let staged = write_bytes[path, wav] with unwind (
+    remove[path];
+  );
+  => program_run["/usr/bin/afplay", ["afplay", path], []] with chaos {
+    NotFound(_) => 127
+    PermissionDenied(_) => 126
+    _ => 125
+  };
+)
+
+let argument_count = argc[];
+if ((argument_count == 2) or (argument_count == 4) or
+    (argument_count == 5)) () else (
+  doom_usage[];
+  exit[2];
+)
+
+let path = argv[1];
+if ((exists[path] == 1) and (is_file[path] == 1)) () else (
+  eprint["doom: ^{path}: not a file"];
+  exit[1];
+)
+
+let wad = doom_wad_inspect[path];
+if (wad\ok == 1) () else (
+  eprint["doom: ^{path}: ^{wad\error}"];
+  exit[1];
+)
+
+if (argument_count == 2) (
+  doom_print_inspection[wad];
+  exit[0];
+)
+
+let mode = argv[2];
+let wants_render = string_eq[mode, "--render"];
+let wants_play = string_eq[mode, "--play"];
+let wants_opl_render = string_eq[mode, "--render-opl2"];
+let wants_opl_play = string_eq[mode, "--play-opl2"];
+if ((((wants_render == 1) or (wants_opl_render == 1)) and
+     (argument_count == 5)) or
+    (((wants_play == 1) or (wants_opl_play == 1)) and
+     (argument_count == 4))) () else (
+  doom_usage[];
+  exit[2];
+)
+
+let selector = argv[3];
+let selected = doom_track_position[wad\music_tracks, selector];
+if (selected >= 0) () else (
+  eprint["doom: no effective music track named/indexed ^{selector}"];
+  exit[1];
+)
+let track = wad\music_tracks\@selected;
+let engine = "legacy";
+if ((wants_opl_render == 1) or (wants_opl_play == 1)) ( engine = "GENMIDI FM"; )
+print "rendering ^{track\name}: ^{track\score_bytes} score bytes / ^{engine}";
+let rendered = doom_render_track[path, track];
+if ((wants_opl_render == 1) or (wants_opl_play == 1)) (
+  rendered = doom_render_track_opl2[path, wad, track];
+)
+if (rendered\ok == 1) () else (
+  eprint["doom: ^{track\name}: ^{rendered\error}"];
+  exit[1];
+)
+print "decoded ^{rendered\events} events / ^{rendered\ticks} ticks / ^{rendered\samples} samples";
+if (rendered\voice_steals > 0) (
+  if ((wants_opl_render == 1) or (wants_opl_play == 1)) (
+    print "voice bound: ^{rendered\voice_steals} active OPL replacements";
+  ) else (
+    print "voice bound: ^{rendered\voice_steals} oldest-voice replacements";
+  )
+)
+
+if ((wants_render == 1) or (wants_opl_render == 1)) (
+  let output = argv[4];
+  write_bytes[output, rendered\wav];
+  print "wrote ^{bytes_len[rendered\wav]} bytes to ^{output}";
+  exit[0];
+)
+
+let temporary = "/tmp/freelang-doom-^{pid[]}.wav";
+let play_status = doom_play_wav[temporary, rendered\wav];
+if (play_status == 0) () else (
+  eprint["doom: audio player exited ^{play_status}; use --render to keep the WAV"];
+  exit[1];
+)
+exit[0];

@@ -1,0 +1,52 @@
+// The evidence drive is deterministic and bounded independently of a window.
+
+credits: <../games/doom-demo.flx>;
+
+op expect [condition, message] (
+  if (condition == 1) () else (
+    print "failed: ^{message}";
+    fall "doom demo expectation failed";
+  )
+)
+
+let map = {
+  name: "E1M1", player_x: 1056, player_y: 0 - 3616, player_angle: 90
+};
+let st = doom_demo_e1m1_new[map];
+expect[buf_len[st\route] == 6, "the route must remain explicitly bounded"];
+
+let i = 0;
+let command = doom_demo_e1m1_next[st, map\player_x, map\player_y];
+while (i < 120) (
+  command = doom_demo_e1m1_next[command\state, map\player_x, map\player_y];
+  i = i + 1;
+)
+expect[command\state\phase == 1, "the opening look must reach the drive phase"];
+expect[command\pitch == 0, "the opening two-axis look must return to level"];
+expect[command\state\point <= 1, "a stationary player cannot consume the route"];
+
+// The stuck bound skips a waypoint instead of allowing changed geometry to
+// hang a marketing/evidence run forever.
+i = 0;
+while (i < 30) (
+  command = doom_demo_e1m1_next[command\state, map\player_x, map\player_y];
+  i = i + 1;
+)
+expect[command\state\point > 0, "a stuck route must make bounded progress"];
+
+let map2 = {
+  name: "E1M2", player_x: 0 - 32, player_y: 0 - 240, player_angle: 90
+};
+let st2 = doom_demo_new_mode[map2, 1];
+expect[
+  (buf_len[st2\route] == 6) and
+  (buf_get[st2\route, 0] == 0 - 32) and
+  (buf_get[st2\route, 1] == 0 - 176),
+  "E1M2 owns a separate bounded route from its real player start"
+];
+expect[
+  string_eq[st2\selector, "E1M2"] == 1,
+  "selected demo state retains its explicit map identity"
+];
+
+print "doom demo commands ok";

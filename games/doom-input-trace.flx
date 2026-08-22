@@ -1,0 +1,281 @@
+// Opt-in, bounded evidence for live input failures. Each record keeps the raw
+// presenter batch (including v3 state records) beside held state both before
+// and after folding. Version 2 also samples requested motion,
+// result and exact blocker identity, separating producer/state errors from the
+// later gameplay consumer after the process has exited. Version 3 retains
+// partial collision response too: requested and accepted vectors, held state,
+// resolver probes and the first clean frame after contact.
+
+credits: <../games/doom-input.flx> <f/files-chaos> <f/bytes> <f/strings>;
+
+private op doom_input_trace_newline [] ( => ascii_to_string[%[10]]; )
+private op doom_input_trace_limit [] ( => 16384; )
+private op doom_input_trace_event_limit [] ( => 64; )
+
+op doom_input_trace_snapshot [st] (
+  => "focus=^{st\focused} capture=^{st\captured}" +
+    " w=^{doom_input_held[st, 119]} up=^{doom_input_held[st, gui_key_up[]]}" +
+    " s=^{doom_input_held[st, 115]} down=^{doom_input_held[st, gui_key_down[]]}" +
+    " a=^{doom_input_held[st, 97]} q=^{doom_input_held[st, 113]}" +
+    " d=^{doom_input_held[st, 100]} e=^{doom_input_held[st, 101]}" +
+    " left=^{doom_input_held[st, gui_key_left[]]}" +
+    " right=^{doom_input_held[st, gui_key_right[]]}" +
+    " space=^{doom_input_held[st, 32]}" +
+    " control=^{doom_input_held[st, gui_key_control[]]}" +
+    " mouse0=^{doom_input_mouse_held[st, 0]}" +
+    " axis=^{doom_input_forward_axis[st]},^{doom_input_strafe_axis[st]}" +
+    " fire=^{doom_input_fire_held[st]} epoch=^{st\input_epoch}";
+)
+
+private op doom_input_trace_active [st] (
+  if ((doom_input_forward_axis[st] != 0) or
+      (doom_input_strafe_axis[st] != 0) or
+      (doom_input_held[st, gui_key_left[]] == 1) or
+      (doom_input_held[st, gui_key_right[]] == 1) or
+      (doom_input_held[st, 32] == 1) or
+      (doom_input_fire_held[st] == 1)) ( => 1; )
+  => 0;
+)
+
+op doom_input_trace_reset [path] (
+  if (str_len[path] == 0) ( => 1; )
+  => write_utf8_atomic[
+    path, "freelang-doom-input/3" + doom_input_trace_newline[]
+  ];
+)
+
+op doom_input_trace_new [path, map_name] (
+  if (str_len[path] == 0) (
+    => { enabled: 0, error: "", path: "", records: 0, truncated: 0 };
+  )
+  if (exists[path] == 1) () else (
+    if (doom_input_trace_reset[path] == 1) () else (
+      => {
+        enabled: 0, error: "cannot create input trace ^{path}",
+        path: path, records: 0, truncated: 0
+      };
+    )
+  )
+  let header = "session map=^{map_name}" +
+    doom_input_trace_newline[];
+  let appended = append[path, header] with chaos { _ => 1 };
+  if (appended == 0) () else (
+    => {
+      enabled: 0, error: "cannot append input trace ^{path}",
+      path: path, records: 0, truncated: 0
+    };
+  )
+  => { enabled: 1, error: "", path: path, records: 0, truncated: 0 };
+)
+
+private op doom_input_trace_has_room [trace] (
+  if (trace\records < doom_input_trace_limit[]) ( => 1; )
+  if (trace\truncated == 0) (
+    let limited = append[
+      trace\path,
+      "trace-limit records=^{trace\records}" + doom_input_trace_newline[]
+    ] with chaos { _ => 1 };
+    if (limited == 0) () else (
+      trace\enabled = 0;
+      trace\error = "input trace append failed";
+    )
+    trace\truncated = 1;
+  )
+  => 0;
+)
+
+op doom_input_trace_frame [trace, frame, events, before_snapshot,
+                           after, ui_open] (
+  if (trace\enabled == 1) () else ( => trace; )
+  let event_count = arr_len[events];
+  // A v3 batch always contains INPUT_STATE, so only transition records make
+  // this an event-bearing milestone. Snapshot-only frames retain the existing
+  // active/idle cadence instead of exhausting the bounded log immediately.
+  let should_write = 0;
+  let event_probe = 0;
+  while (event_probe < event_count) (
+    let probed_event = events\@event_probe;
+    if (probed_event\kind < gui_ev_input_state[]) (
+      should_write = 1;
+    )
+    event_probe = event_probe + 1;
+  )
+  if ((doom_input_trace_active[after] == 1) and (frame % 15 == 0)) (
+    should_write = 1;
+  )
+  if (frame % 60 == 0) ( should_write = 1; )
+  if (should_write == 0) ( => trace; )
+
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+
+  let line = "frame=^{frame} events=^{event_count} ui=^{ui_open}";
+  let i = 0;
+  while ((i < event_count) and (i < doom_input_trace_event_limit[])) (
+    let event = events\@i;
+    line = line + " raw=^{event\kind},^{event\a},^{event\b},^{event\mods}";
+    i = i + 1;
+  )
+  if (event_count > doom_input_trace_event_limit[]) (
+    line = line + " omitted=^{event_count - doom_input_trace_event_limit[]}";
+  )
+  line = line + " before{" + before_snapshot + "}" +
+    " after{" + doom_input_trace_snapshot[after] + "}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+// Movement evidence is sampled beside the held-state record and becomes
+// immediate on collision onset. The accepted vector and its dot product with
+// the request expose a slide that technically moved but discarded the useful
+// W/A/D component. Blocker kind/index are supplied by the world resolver:
+// 1 bounds, 2 linedef, 3 actor, 4 barrel, 5 sector.
+op doom_input_trace_movement [trace, frame, from_x, from_y, player_z,
+                              dx, dy, movement, blocked_streak,
+                              contact_streak] (
+  if (trace\enabled == 1) () else ( => trace; )
+  if ((dx != 0) or (dy != 0)) () else ( => trace; )
+  let should_write = frame % 15 == 0;
+  if ((movement\blocked == 1) and
+      ((contact_streak == 1) or (contact_streak % 15 == 0))) (
+    should_write = 1;
+  )
+  if (should_write == 1) () else ( => trace; )
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+
+  let actual_dx = movement\x - from_x;
+  let actual_dy = movement\y - from_y;
+  let request_sq = dx * dx + dy * dy;
+  let actual_sq = actual_dx * actual_dx + actual_dy * actual_dy;
+  let forward_dot = actual_dx * dx + actual_dy * dy;
+  let line = "move frame=^{frame}" +
+    " from=^{from_x},^{from_y},^{player_z}" +
+    " motion=^{dx},^{dy}" +
+    " actual=^{actual_dx},^{actual_dy}" +
+    " to=^{movement\x},^{movement\y}" +
+    " forward_dot=^{forward_dot} request_sq=^{request_sq}" +
+    " actual_sq=^{actual_sq}" +
+    " moved=^{movement\moved} blocked=^{movement\blocked}" +
+    " blocker=^{movement\blocker_kind},^{movement\blocker_index}" +
+    " streak=^{blocked_streak} contact_streak=^{contact_streak}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+// A partial-contact milestone is the evidence the original full-stop trace
+// missed. It keeps the resolver alternatives beside the exact W/A/D state.
+op doom_input_trace_contact [trace, frame, from_x, from_y, player_z,
+                             dx, dy, angle, controls, movement, probe,
+                             contact_streak] (
+  if (trace\enabled == 1) () else ( => trace; )
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+  let actual_dx = movement\x - from_x;
+  let actual_dy = movement\y - from_y;
+  let request_sq = dx * dx + dy * dy;
+  let actual_sq = actual_dx * actual_dx + actual_dy * actual_dy;
+  let forward_dot = actual_dx * dx + actual_dy * dy;
+  let line = "contact frame=^{frame}" +
+    " from=^{from_x},^{from_y},^{player_z}" +
+    " motion=^{dx},^{dy} actual=^{actual_dx},^{actual_dy}" +
+    " angle=^{angle} contact_streak=^{contact_streak}" +
+    " forward_dot=^{forward_dot} request_sq=^{request_sq}" +
+    " actual_sq=^{actual_sq}" +
+    " blocker=^{movement\blocker_kind},^{movement\blocker_index}" +
+    " full=^{probe\full_kind},^{probe\full_index},^{probe\full_support_mask}" +
+    " tangent=^{probe\tangent_attempted},^{probe\tangent_dx},^{probe\tangent_dy},^{probe\tangent_kind},^{probe\tangent_index},^{probe\tangent_support_mask}" +
+    " x=^{probe\x_attempted},^{probe\x_kind},^{probe\x_index},^{probe\x_support_mask}" +
+    " y=^{probe\y_attempted},^{probe\y_kind},^{probe\y_index},^{probe\y_support_mask}" +
+    " line=^{probe\line_ax},^{probe\line_ay},^{probe\line_bx},^{probe\line_by},^{probe\line_solid}" +
+    " state{" + doom_input_trace_snapshot[controls] + "}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+// A full-stop milestone retains the resolver's complete decision rather than
+// only its first blocker. Support-mask bits 0..4 are centre,+X,-X,+Y,-Y.
+op doom_input_trace_stall [trace, frame, from_x, from_y, player_z,
+                           dx, dy, angle, controls, probe, blocked_streak] (
+  if (trace\enabled == 1) () else ( => trace; )
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+  let line = "stall frame=^{frame}" +
+    " from=^{from_x},^{from_y},^{player_z}" +
+    " motion=^{dx},^{dy} angle=^{angle}" +
+    " streak=^{blocked_streak}" +
+    " full=^{probe\full_kind},^{probe\full_index},^{probe\full_support_mask}" +
+    " tangent=^{probe\tangent_attempted},^{probe\tangent_dx},^{probe\tangent_dy},^{probe\tangent_kind},^{probe\tangent_index},^{probe\tangent_support_mask}" +
+    " x=^{probe\x_attempted},^{probe\x_kind},^{probe\x_index},^{probe\x_support_mask}" +
+    " y=^{probe\y_attempted},^{probe\y_kind},^{probe\y_index},^{probe\y_support_mask}" +
+    " line=^{probe\line_ax},^{probe\line_ay},^{probe\line_bx},^{probe\line_by},^{probe\line_solid}" +
+    " state{" + doom_input_trace_snapshot[controls] + "}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+// Record the first clean frame after any contact too. This makes a changed
+// vector, key release or successful crossing directly comparable with the
+// rejected position rather than relying on the normal sample cadence.
+op doom_input_trace_resume [trace, frame, from_x, from_y, player_z,
+                            dx, dy, angle, controls, movement,
+                            previous_streak] (
+  if (trace\enabled == 1) () else ( => trace; )
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+  let line = "resume frame=^{frame}" +
+    " from=^{from_x},^{from_y},^{player_z}" +
+    " motion=^{dx},^{dy} angle=^{angle}" +
+    " to=^{movement\x},^{movement\y}" +
+    " moved=^{movement\moved} blocked=^{movement\blocked}" +
+    " blocker=^{movement\blocker_kind},^{movement\blocker_index}" +
+    " previous_streak=^{previous_streak}" +
+    " state{" + doom_input_trace_snapshot[controls] + "}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+op doom_input_trace_finish [trace, frame] (
+  if (trace\enabled == 1) (
+    let appended = append[
+      trace\path,
+      "end frame=^{frame} records=^{trace\records}" +
+        " truncated=^{trace\truncated}" + doom_input_trace_newline[]
+    ] with chaos { _ => 1 };
+    if (appended == 0) () else (
+      trace\enabled = 0;
+      trace\error = "input trace append failed";
+    )
+  )
+  => trace;
+)

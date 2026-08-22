@@ -1,0 +1,292 @@
+// The combat fold is deterministic and filesystem/window independent. This
+// fixture pins every admitted enemy phase, player resources and atlas mapping.
+
+credits: <../games/doom-combat.flx> <f/bytes> <f/trig> <f/strings>;
+
+op doom_combat_test_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom combat expectation failed";
+  )
+)
+
+op doom_combat_test_u16 [b, offset, value] (
+  let stored = value;
+  if (stored < 0) ( stored = stored + 65536; )
+  bytes_set[b, offset, stored % 256];
+  bytes_set[b, offset + 1, (stored / 256) % 256];
+  => 0;
+)
+
+let vertices = bytes_new[16];
+doom_combat_test_u16[vertices, 0, 0];
+doom_combat_test_u16[vertices, 2, 0];
+doom_combat_test_u16[vertices, 4, 200];
+doom_combat_test_u16[vertices, 6, 0];
+doom_combat_test_u16[vertices, 8, 200];
+doom_combat_test_u16[vertices, 10, 200];
+doom_combat_test_u16[vertices, 12, 0];
+doom_combat_test_u16[vertices, 14, 200];
+
+let lines = bytes_new[56];
+let i = 0;
+while (i < 4) (
+  let off = i * 14;
+  doom_combat_test_u16[lines, off, i];
+  doom_combat_test_u16[lines, off + 2, (i + 1) % 4];
+  doom_combat_test_u16[lines, off + 10, 0];
+  doom_combat_test_u16[lines, off + 12, 65535];
+  i = i + 1;
+)
+
+let things = bytes_new[40];
+doom_combat_test_u16[things, 0, 50];
+doom_combat_test_u16[things, 2, 50];
+doom_combat_test_u16[things, 4, 0];
+doom_combat_test_u16[things, 6, 1];
+doom_combat_test_u16[things, 8, 7];
+doom_combat_test_u16[things, 10, 150];
+doom_combat_test_u16[things, 12, 50];
+doom_combat_test_u16[things, 14, 180];
+doom_combat_test_u16[things, 16, 3004];
+doom_combat_test_u16[things, 18, 7];
+doom_combat_test_u16[things, 20, 100];
+doom_combat_test_u16[things, 22, 150];
+doom_combat_test_u16[things, 24, 0];
+doom_combat_test_u16[things, 26, 2035];
+doom_combat_test_u16[things, 28, 7];
+doom_combat_test_u16[things, 30, 170];
+doom_combat_test_u16[things, 32, 150];
+doom_combat_test_u16[things, 34, 0];
+doom_combat_test_u16[things, 36, 3002];
+doom_combat_test_u16[things, 38, 7];
+
+let base = doom_map_parse["COMBAT", vertices, lines, things];
+doom_combat_test_expect[base\ok == 1, "base map"];
+// One leaf/sector is sufficient for collision-aware movement inside the
+// already validated solid square.
+let map = base + {
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0],
+  sectors: %32[0, 128, 160, 0, 0],
+  line_sides: buf_new[32, base\line_count * 4]
+};
+
+let combat = doom_combat_new[map];
+doom_combat_test_expect[
+  (doom_combat_actor_move_blocked[map, 180, 50, 182, 50] == 0) and
+  (doom_combat_actor_move_blocked[map, 182, 50, 184, 50] == 1),
+  "actor radius stops before its billboard anchor reaches a wall"
+];
+doom_combat_test_expect[
+  (combat\enemy_count == 1) and (combat\health == 100) and
+  (combat\unsupported_enemies == 1) and
+  (arr_len[combat\barrels] == 1) and
+  (combat\ammo == 50) and (combat\armor == 0) and
+  (combat\max_ammo == 200) and (combat\kills == 0),
+  "explicit player resources"
+];
+let actor = combat\actors\\0;
+doom_combat_test_expect[
+  actor\phase == DoomEnemyPhase\Dormant,
+  "enemy begins dormant"
+];
+doom_combat_test_expect[
+  (doom_combat_actor_position_blocked[
+     map, combat, actor, 81, 50, 50, 50, 0
+   ] == 1) and
+  (doom_combat_actor_position_blocked[
+     map, combat, actor, 82, 50, 50, 50, 0
+   ] == 0),
+  "monster and player radii may touch but never overlap"
+];
+doom_combat_test_expect[
+  (doom_combat_vertical_overlap[0, 56, 55, 56] == 1) and
+  (doom_combat_vertical_overlap[0, 56, 56, 56] == 0),
+  "body collision requires vertical overlap rather than only XY overlap"
+];
+let other = actor + { thing: 99, x: 120, y: 50 };
+let pair = combat + {
+  actors: combat\actors + [other], enemy_count: 2
+};
+doom_combat_test_expect[
+  doom_combat_actor_position_blocked[
+    map, pair, actor, 89, 50, 0, 0, 0
+  ] == 1,
+  "live monsters are solid to one another"
+];
+
+combat = doom_combat_tick[map, combat, 50, 50];
+doom_combat_test_expect[
+  (actor\phase == DoomEnemyPhase\Chase) and
+  (combat\monster_alert_serial == 1) and
+  (combat\monster_alert_kind == 3004) and
+  (string_eq[doom_combat_actor_phase_name[actor], "chase"] == 1),
+  "bounded sight wakes enemy and reports its sound event"
+];
+i = 0;
+while (i < 3) (
+  combat = doom_combat_tick[map, combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (actor\x == 148) and (actor\angle == 180),
+  "chase step is collision checked and faces the player"
+];
+
+actor\x = 80;
+combat = doom_combat_tick[map, combat, 50, 50];
+doom_combat_test_expect[
+  actor\phase == DoomEnemyPhase\Attack,
+  "nearby awake enemy enters attack"
+];
+i = 0;
+while (i < 8) (
+  combat = doom_combat_tick[map, combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (combat\health == 97) and (combat\damage_taken == 3) and
+  (combat\monster_attack_serial == 1) and
+  (combat\monster_attack_kind == 3004) and
+  (combat\player_pain_serial == 1),
+  "attack damage and both sound events are explicit and bounded"
+];
+
+combat = doom_combat_fire[
+  map, combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (actor\phase == DoomEnemyPhase\Pain) and (actor\health == 20) and
+  (combat\monster_pain_serial == 1) and
+  (combat\monster_pain_kind == 3004) and
+  (combat\ammo == 49) and (combat\shot_cooldown == 10) and
+  (doom_combat_actor_sprite_slot[actor, 5] == 52) and
+  (doom_combat_weapon_slot[combat] == 212),
+  "first shot consumes ammo and selects pain/weapon frames"
+];
+combat = doom_combat_fire[
+  map, combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (combat\ammo == 49) and (combat\shots == 1),
+  "cooldown rejects repeated fire without hidden consumption"
+];
+
+i = 0;
+while (i < 10) (
+  combat = doom_combat_tick[map, combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (combat\shot_cooldown == 0) and
+  (actor\phase == DoomEnemyPhase\Chase),
+  "pain and shot cooldown resolve independently"
+];
+combat = doom_combat_fire[
+  map, combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (actor\phase == DoomEnemyPhase\Death) and (actor\health == 0) and
+  (combat\monster_death_serial == 1) and
+  (combat\monster_death_kind == 3004) and
+  (combat\kills == 1) and (combat\ammo == 48) and
+  (arr_len[combat\drops] == 1) and
+  (combat\drops\0\kind == 2007) and (combat\drops\0\alive == 1) and
+  (bytes_get[combat\alive, actor\thing] == 0) and
+  (doom_combat_actor_sprite_slot[actor, 5] == 64),
+  "second shot enters death and retires target authority"
+];
+i = 0;
+while (i < 35) (
+  combat = doom_combat_tick[map, combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (actor\phase_tick == 25) and
+  (doom_combat_actor_sprite_slot[actor, 1] == 68) and
+  (doom_combat_weapon_slot[combat] == 211) and
+  (doom_combat_validate[map, combat] == 1),
+  "death animation terminates on the regular corpse frame"
+];
+
+let barrel_combat = doom_combat_new[map];
+let barrel_target = doom_combat_hitscan[
+  map, barrel_combat, 50, 150, trig_from_degrees[0], 1024
+];
+doom_combat_test_expect[
+  (barrel_target\kind == 2) and (barrel_target\index == 0) and
+  (barrel_target\distance == 50),
+  "hitscan admits the nearest live toxic barrel as an explicit target"
+];
+barrel_combat = doom_combat_fire[
+  map, barrel_combat, 50, 150, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (barrel_combat\barrels\0\health == 0) and
+  (barrel_combat\barrels\0\state == 2) and
+  (barrel_combat\barrels\0\phase_tick == 1) and
+  (barrel_combat\explosion_serial == 1) and
+  (barrel_combat\actors\0\health == 10) and
+  (barrel_combat\misses == 0),
+  "one pistol shot destroys a barrel and applies its bounded visible blast"
+];
+i = 0;
+while (i < 44) (
+  barrel_combat = doom_combat_tick[map, barrel_combat, 50, 150];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (barrel_combat\barrels\0\state == 0) and
+  (barrel_combat\barrels\0\phase_tick == 45),
+  "barrel blast retires after its bounded animation"
+];
+
+let arsenal = doom_combat_new[map];
+bytes_set[arsenal\weapons, 3, 1];
+bytes_set[arsenal\weapons, 5, 1];
+arsenal\shells = 4;
+arsenal\rockets = 2;
+arsenal = doom_combat_select_weapon[arsenal, 3];
+doom_combat_test_expect[
+  (arsenal\selected_weapon == 3) and
+  (doom_combat_current_ammo[arsenal] == 4) and
+  (doom_combat_weapon_slot[arsenal] ==
+   doom_texture_weapon_slot_for[3, 0]),
+  "owned shotgun selection changes ammo and view authority together"
+];
+arsenal = doom_combat_fire[
+  map, arsenal, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (arsenal\shells == 3) and (arsenal\shot_cooldown == 24) and
+  (arsenal\kills == 1),
+  "shotgun consumes shells and applies its explicit bounded profile"
+];
+arsenal = doom_combat_cycle_weapon[arsenal, 1];
+doom_combat_test_expect[
+  arsenal\selected_weapon == 5,
+  "weapon cycling skips inventory slots the player does not own"
+];
+arsenal = doom_combat_fire[
+  map, arsenal, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (arsenal\rockets == 1) and (arr_len[arsenal\projectiles] == 1) and
+  (arsenal\projectiles\0\state == 1) and
+  (arsenal\projectile_impacts == 0),
+  "rocket fire creates a travelling bounded projectile instead of hitscan"
+];
+i = 0;
+while (i < 10) (
+  arsenal = doom_combat_tick[map, arsenal, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (arsenal\projectiles\0\state == 2) and
+  (arsenal\projectile_impacts == 1) and (arsenal\misses == 0) and
+  (arsenal\barrels\0\state == 2),
+  "rocket impact destroys a nearby barrel and enters visible explosion state"
+];
+
+print "doom combat state ok";

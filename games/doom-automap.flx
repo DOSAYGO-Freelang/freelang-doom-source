@@ -1,0 +1,242 @@
+// A first playable Doom surface: the real map, things, player start, movement,
+// and bounded solid-linedef collision in a native window.
+
+credits: <doom-map.flx> <f/gui> <f/process> <f/strings>;
+
+op doom_automap_line [buf, w, h, x0, y0, x1, y1, colour] (
+  let x = x0;
+  let y = y0;
+  let dx = x1 - x0;
+  if (dx < 0) ( dx = 0 - dx; )
+  let sx = 1;
+  if (x0 > x1) ( sx = 0 - 1; )
+  let dy = y1 - y0;
+  if (dy < 0) ( dy = 0 - dy; )
+  dy = 0 - dy;
+  let sy = 1;
+  if (y0 > y1) ( sy = 0 - 1; )
+  let error = dx + dy;
+  let finished = 0;
+  while (finished == 0) (
+    gui_px[buf, w, x, y, colour];
+    if ((x == x1) and (y == y1)) (
+      finished = 1;
+    ) else (
+      let twice = error * 2;
+      if (twice >= dy) (
+        error = error + dy;
+        x = x + sx;
+      )
+      if (twice <= dx) (
+        error = error + dx;
+        y = y + sy;
+      )
+    )
+  )
+  => 0;
+)
+
+op doom_automap_x [x, map, scale, origin_x] (
+  => origin_x + (x - map\min_x) * scale / 1000;
+)
+
+op doom_automap_y [y, map, scale, origin_y] (
+  => origin_y + (map\max_y - y) * scale / 1000;
+)
+
+op doom_automap_draw [buf, w, h, font, map, player_x, player_y,
+                      facing, steps, blocked, alive, kills, enemies, misses] (
+  let ink = gui_rgb[220, 220, 226];
+  let wall = gui_rgb[184, 62, 54];
+  let portal = gui_rgb[74, 82, 92];
+  let actor = gui_rgb[215, 171, 61];
+  let enemy = gui_rgb[200, 74, 74];
+  let start = gui_rgb[80, 150, 100];
+  let player = gui_rgb[80, 220, 210];
+  gui_fill[buf, gui_rgb[12, 14, 18]];
+
+  let available_w = w - 40;
+  let available_h = h - 76;
+  let scale_x = available_w * 1000 / (map\max_x - map\min_x);
+  let scale_y = available_h * 1000 / (map\max_y - map\min_y);
+  let scale = scale_x;
+  if (scale_y < scale) ( scale = scale_y; )
+  if (scale < 1) ( scale = 1; )
+  let drawn_w = (map\max_x - map\min_x) * scale / 1000;
+  let drawn_h = (map\max_y - map\min_y) * scale / 1000;
+  let origin_x = (w - drawn_w) / 2;
+  let origin_y = 36 + (available_h - drawn_h) / 2;
+
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    let colour = portal;
+    if (buf_get[map\lines, lb + 2] == 1) ( colour = wall; )
+    doom_automap_line[
+      buf, w, h,
+      doom_automap_x[buf_get[map\vertices, va], map, scale, origin_x],
+      doom_automap_y[buf_get[map\vertices, va + 1], map, scale, origin_y],
+      doom_automap_x[buf_get[map\vertices, vb], map, scale, origin_x],
+      doom_automap_y[buf_get[map\vertices, vb + 1], map, scale, origin_y],
+      colour
+    ];
+    i = i + 1;
+  )
+
+  i = 0;
+  while (i < map\thing_count) (
+    let tb = i * 4;
+    let kind = buf_get[map\things, tb + 2];
+    let colour = actor;
+    if ((kind >= 1) and (kind <= 4)) ( colour = start; )
+    if (doom_map_thing_is_enemy[kind] == 1) (
+      colour = gui_rgb[54, 38, 38];
+      if (bytes_get[alive, i] == 1) ( colour = enemy; )
+    )
+    let tx = doom_automap_x[buf_get[map\things, tb], map, scale, origin_x];
+    let ty = doom_automap_y[buf_get[map\things, tb + 1], map, scale, origin_y];
+    gui_rect[buf, w, h, tx - 1, ty - 1, 3, 3, colour];
+    i = i + 1;
+  )
+
+  let px = doom_automap_x[player_x, map, scale, origin_x];
+  let py = doom_automap_y[player_y, map, scale, origin_y];
+  gui_rect[buf, w, h, px - 3, py - 3, 7, 7, player];
+  let hx = px;
+  let hy = py;
+  if (facing == 0) ( hx = hx + 11; )
+  if (facing == 1) ( hy = hy - 11; )
+  if (facing == 2) ( hx = hx - 11; )
+  if (facing == 3) ( hy = hy + 11; )
+  doom_automap_line[buf, w, h, px, py, hx, hy, player];
+
+  gui_text[buf, w, h, font, 12, 10,
+    "DOOM ^{map\name}  ^{map\line_count} linedefs  ^{map\thing_count} things", ink];
+  gui_text[buf, w, h, font, 12, h - 22,
+    "arrows/WASD move | SPACE fire | r reset | q/esc quit", ink];
+  gui_text[buf, w, h, font, w - 360, 10,
+    "kills ^{kills}/^{enemies} misses ^{misses} steps ^{steps} blocked ^{blocked}", ink];
+  if ((enemies > 0) and (kills == enemies)) (
+    gui_text_scaled[buf, w, h, font, w / 2 - 112, h / 2 - 16,
+      "AREA CLEARED", gui_rgb[80, 220, 210], 2];
+  )
+  => 0;
+)
+
+op doom_automap_run [map] (
+  let w = 960;
+  let h = 640;
+  let session = gui_open_fps_named[
+    w, h, "Freelang Doom Engine — ^{map\name}", 30,
+    "Freelang Doom Engine"
+  ]
+    with chaos { _ => 0 };
+  if (is_object[session]) () else ( => 1; )
+  let buf = gui_buffer[w, h];
+  let font = gui_font[];
+  let player_x = map\player_x;
+  let player_y = map\player_y;
+  let facing = 0;
+  if ((map\player_angle >= 45) and (map\player_angle < 135)) ( facing = 1; )
+  if ((map\player_angle >= 135) and (map\player_angle < 225)) ( facing = 2; )
+  if ((map\player_angle >= 225) and (map\player_angle < 315)) ( facing = 3; )
+  let steps = 0;
+  let blocked = 0;
+  let kills = 0;
+  let misses = 0;
+  let enemies = 0;
+  let alive = bytes_new[map\thing_count];
+  let ai = 0;
+  while (ai < map\thing_count) (
+    let kind = buf_get[map\things, ai * 4 + 2];
+    if (doom_map_thing_is_enemy[kind] == 1) (
+      bytes_set[alive, ai, 1];
+      enemies = enemies + 1;
+    )
+    ai = ai + 1;
+  )
+  let running = 1;
+  while (running == 1) (
+    doom_automap_draw[
+      buf, w, h, font, map, player_x, player_y, facing, steps, blocked,
+      alive, kills, enemies, misses
+    ];
+    let events = gui_present[session, buf] with chaos {
+      _ => [{ kind: gui_ev_close[], a: 0, b: 0, mods: 0 }]
+    };
+    if (gui_has_close[events] == 1) ( running = 0; )
+    if ((gui_key_pressed[events, 113] == 1) or
+        (gui_key_pressed[events, gui_key_esc[]] == 1)) ( running = 0; )
+    if (gui_key_pressed[events, 114] == 1) (
+      player_x = map\player_x;
+      player_y = map\player_y;
+      blocked = 0;
+      kills = 0;
+      misses = 0;
+      ai = 0;
+      while (ai < map\thing_count) (
+        let kind = buf_get[map\things, ai * 4 + 2];
+        let live = doom_map_thing_is_enemy[kind];
+        bytes_set[alive, ai, live];
+        ai = ai + 1;
+      )
+    )
+
+    if (gui_key_pressed[events, 32] == 1) (
+      let target = doom_map_hitscan_target[
+        map, alive, player_x, player_y, facing, 768
+      ];
+      if (target >= 0) (
+        bytes_set[alive, target, 0];
+        kills = kills + 1;
+      ) else (
+        misses = misses + 1;
+      )
+    )
+
+    let dx = 0;
+    let dy = 0;
+    if ((gui_key_pressed[events, gui_key_right[]] == 1) or
+        (gui_key_pressed[events, 100] == 1)) ( dx = 32; facing = 0; )
+    if ((gui_key_pressed[events, gui_key_up[]] == 1) or
+        (gui_key_pressed[events, 119] == 1)) ( dy = 32; facing = 1; )
+    if ((gui_key_pressed[events, gui_key_left[]] == 1) or
+        (gui_key_pressed[events, 97] == 1)) ( dx = 0 - 32; facing = 2; )
+    if ((gui_key_pressed[events, gui_key_down[]] == 1) or
+        (gui_key_pressed[events, 115] == 1)) ( dy = 0 - 32; facing = 3; )
+    if ((dx != 0) or (dy != 0)) (
+      let next_x = player_x + dx;
+      let next_y = player_y + dy;
+      let outside = (next_x < map\min_x) or (next_x > map\max_x) or
+        (next_y < map\min_y) or (next_y > map\max_y);
+      if ((outside == 0) and (doom_map_move_crosses_wall[
+            map, player_x, player_y, next_x, next_y
+          ] == 0)) (
+        player_x = next_x;
+        player_y = next_y;
+        steps = steps + 1;
+      ) else (
+        blocked = blocked + 1;
+      )
+    )
+  )
+  gui_close[session];
+  print "automap closed: ^{kills}/^{enemies} kills, ^{steps} moves, ^{blocked} blocked";
+  => 0;
+)
+
+let count = argc[];
+if ((count == 2) or (count == 3)) () else (
+  eprint["usage: doom-automap <wad> [E1M1]"];
+  exit[2];
+)
+let selector = "E1M1";
+if (count == 3) ( selector = argv[2]; )
+let map = doom_map_load[argv[1], selector];
+if (map\ok == 1) () else (
+  eprint["doom-automap: ^{map\error}"];
+  exit[1];
+)
+exit[doom_automap_run[map]];

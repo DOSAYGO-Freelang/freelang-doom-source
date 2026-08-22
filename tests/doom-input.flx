@@ -1,0 +1,187 @@
+// Synthetic transition frames prove that gameplay input persists until KEY_UP,
+// mouse deltas accumulate per frame, and focus loss cannot strand a held key.
+
+credits: <../games/doom-input.flx>;
+
+op ev [kind, a, b] ( => { kind: kind, a: a, b: b, mods: 0 }; )
+
+op expect [condition, message] (
+  if (condition == 1) () else (
+    print "failed: ^{message}";
+    fall "doom input expectation failed";
+  )
+)
+
+let st = doom_input_new[];
+st = doom_input_next[st, [ev[gui_ev_key_down[], 119, 0]]];
+expect[doom_input_held[st, 119] == 1, "keydown must hold W"];
+
+st = doom_input_next[st, []];
+expect[doom_input_held[st, 119] == 1, "held W must survive a quiet frame"];
+
+st = doom_input_next[st, [ev[gui_ev_mouse_move[], 100, 80]]];
+expect[st\mouse_dx == 0, "first mouse position establishes a baseline"];
+st = doom_input_next[st, [
+  ev[gui_ev_mouse_move[], 108, 84],
+  ev[gui_ev_mouse_move[], 112, 89]
+]];
+expect[st\mouse_dx == 12, "mouse deltas must accumulate within a frame"];
+expect[st\mouse_dy == 9, "vertical mouse deltas must accumulate within a frame"];
+
+st = doom_input_next[st, []];
+expect[st\mouse_dx == 0, "mouse delta must not persist across quiet frames"];
+expect[st\mouse_dy == 0, "vertical mouse delta must not persist"];
+st = doom_input_next[st, [ev[gui_ev_key_up[], 119, 0]]];
+expect[doom_input_held[st, 119] == 0, "keyup must release W"];
+
+// AppKit's printable key value includes Shift. If Shift changes while the
+// physical key remains down, the two edges legitimately differ in case. They
+// must still identify one held movement key.
+st = doom_input_next[st, [ev[gui_ev_key_down[], 87, 0]]];
+let delayed_frames = 0;
+while (delayed_frames < 12) (
+  st = doom_input_next[st, []];
+  delayed_frames = delayed_frames + 1;
+)
+expect[doom_input_forward_axis[st] == 1,
+       "quiet or delayed frames retain physical forward intent"];
+st = doom_input_next[st, [
+  { kind: gui_ev_mouse_down[], a: 40, b: 30, mods: 0 },
+  { kind: gui_ev_mouse_up[], a: 40, b: 30, mods: 0 }
+]];
+delayed_frames = 0;
+while (delayed_frames < 25) (
+  st = doom_input_next[st, []];
+  delayed_frames = delayed_frames + 1;
+)
+expect[doom_input_forward_axis[st] == 1,
+       "a fire edge and full death-animation interval cannot release held W"];
+st = doom_input_next[st, [ev[gui_ev_key_up[], 119, 0]]];
+expect[(doom_input_held[st, 87] == 0) and
+       (doom_input_held[st, 119] == 0) and
+       (doom_input_forward_axis[st] == 0),
+       "shift transition must not strand held W"];
+
+// Exact live report: stop, click-fire, then press forward. Mouse edges do not
+// own or suppress the later keyboard transition.
+st = doom_input_next[st, [
+  { kind: gui_ev_mouse_down[], a: 40, b: 30, mods: 0 },
+  { kind: gui_ev_mouse_up[], a: 40, b: 30, mods: 0 }
+]];
+st = doom_input_next[st, [ev[gui_ev_key_down[], 119, 0]]];
+expect[(doom_input_forward_axis[st] == 1) and (st\focused == 1),
+       "stop-fire-forward sequence retains the new W-down edge"];
+st = doom_input_next[st, [ev[gui_ev_key_up[], 119, 0]]];
+
+st = doom_input_next[st, [
+  { kind: gui_ev_mouse_down[], a: 40, b: 30, mods: 0 },
+  ev[gui_ev_key_down[], gui_key_control[], 0]
+]];
+expect[doom_input_fire_held[st] == 1,
+       "left mouse and Control are retained fire authority"];
+st = doom_input_next[st, [
+  { kind: gui_ev_mouse_up[], a: 40, b: 30, mods: 0 },
+  ev[gui_ev_key_up[], gui_key_control[], 0]
+]];
+expect[doom_input_fire_held[st] == 0,
+       "fire authority releases across quiet frames"];
+
+st = doom_input_next[st, [
+  ev[gui_ev_key_down[], gui_key_left[], 0],
+  ev[gui_ev_focus[], 0, 0]
+]];
+expect[doom_input_held[st, gui_key_left[]] == 0,
+       "focus loss must clear all held keys"];
+expect[st\mouse_ready == 0, "focus loss must clear the mouse baseline"];
+
+st = doom_input_next[st, [
+  ev[gui_ev_focus[], 1, 0],
+  ev[gui_ev_mouse_move[], 300, 90]
+]];
+expect[st\mouse_dx == 0, "refocus must establish a fresh mouse baseline"];
+
+st = doom_input_next[st, [ev[gui_ev_mouse_move[], 600, 0 - 300]]];
+expect[st\mouse_dx == 96, "mouse spikes must be bounded"];
+expect[st\mouse_dy == 0 - 96, "vertical mouse spikes must be bounded"];
+
+st = doom_input_next[st, [ev[gui_ev_pointer_capture[], 1, 0]]];
+expect[st\captured == 1, "capture transition must be explicit"];
+st = doom_input_next[st, [
+  { kind: gui_ev_mouse_down[], a: 40, b: 30, mods: 0 }
+]];
+st = doom_input_next[st, [ev[gui_ev_pointer_capture[], 0, 0]]];
+expect[doom_input_mouse_held[st, 0] == 0,
+       "capture release must clear a button whose mouse-up is suppressed"];
+st = doom_input_next[st, [ev[gui_ev_pointer_capture[], 1, 0]]];
+st = doom_input_next[st, [
+  ev[gui_ev_mouse_delta[], 7, 11],
+  ev[gui_ev_mouse_delta[], 5, 9]
+]];
+expect[st\mouse_dx == 12, "relative X deltas must accumulate"];
+expect[st\mouse_dy == 20, "relative Y deltas must accumulate"];
+st = doom_input_next[st, [
+  ev[gui_ev_scroll[], 0, 1],
+  ev[gui_ev_scroll[], 0, 2]
+]];
+expect[st\scroll_y == 3, "wheel deltas must accumulate for weapon cycling"];
+st = doom_input_next[st, []];
+expect[st\scroll_y == 0, "wheel delta must not persist across quiet frames"];
+expect[doom_input_pitch[0, 20] == 120,
+       "vertical look must match horizontal projected speed"];
+expect[doom_input_pitch[120, 0 - 40] == 0 - 120,
+       "mouse up must use the same measured speed"];
+expect[doom_input_pitch[136, 96] == 145,
+       "look-down pitch must clamp"];
+expect[doom_input_pitch[0 - 136, 0 - 96] == 0 - 145,
+       "look-up pitch must clamp symmetrically"];
+st = doom_input_next[st, [ev[gui_ev_focus[], 0, 0]]];
+expect[st\captured == 0, "focus loss must release capture state"];
+
+// Protocol v3 replaces retained truth after all fallible transition edges.
+// Deliberately omit W-up and A-down: the complete snapshot must still clear
+// W, retain A, and install the physical mouse/capture state atomically.
+let snap = doom_input_new[];
+snap = doom_input_next[snap, [ev[gui_ev_key_down[], 119, 0]]];
+snap = doom_input_next[snap, [
+  { kind: gui_ev_input_state[], a: 41, b: 3, mods: 1 },
+  { kind: gui_ev_key_held[], a: 97, b: 0, mods: 0 }
+]];
+expect[(doom_input_held[snap, 119] == 0) and
+       (doom_input_held[snap, 97] == 1),
+       "snapshot repairs both a missing key-up and missing key-down"];
+expect[(doom_input_fire_held[snap] == 1) and (snap\captured == 1) and
+       (snap\input_epoch == 41),
+       "snapshot owns mouse buttons, capture and authority epoch"];
+snap = doom_input_next[snap, [
+  { kind: gui_ev_input_state[], a: 41, b: 3, mods: 0 }
+]];
+expect[(doom_input_held[snap, 97] == 0) and
+       (doom_input_fire_held[snap] == 0),
+       "quiet complete snapshot releases absent controls"];
+
+snap = doom_input_next[snap, [
+  { kind: gui_ev_input_state[], a: 42, b: 1, mods: 0 },
+  { kind: gui_ev_key_held[], a: 119, b: 13, mods: 0 },
+  { kind: gui_ev_key_held[], a: 115, b: 1, mods: 0 },
+  { kind: gui_ev_key_held[], a: 97, b: 0, mods: 0 },
+  { kind: gui_ev_key_held[], a: 100, b: 2, mods: 0 }
+]];
+expect[(doom_input_forward_axis[snap] == 0) and
+       (doom_input_strafe_axis[snap] == 0),
+       "simultaneous opposite physical keys cancel without event priority"];
+snap = doom_input_next[snap, [
+  { kind: gui_ev_input_state[], a: 43, b: 0, mods: 7 },
+  { kind: gui_ev_key_held[], a: 119, b: 13, mods: 0 }
+]];
+expect[(snap\focused == 0) and (doom_input_held[snap, 119] == 0) and
+       (doom_input_fire_held[snap] == 0),
+       "unfocused snapshot grants no held-input authority"];
+
+let north = doom_input_motion[2147483648, 0, 8, 0];
+expect[(north\dx == 0) and (north\dy == 8),
+       "cardinal movement must not drift sideways"];
+let west = doom_input_motion[0, 0 - 2147483648, 8, 0];
+expect[(west\dx == 0 - 8) and (west\dy == 0),
+       "negative cardinal movement must round symmetrically"];
+
+print "doom input state ok";
