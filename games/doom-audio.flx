@@ -118,6 +118,74 @@ private op doom_audio_load_sound [path, directory, lump_count,
   => doom_audio_render_sound_lump[sound];
 )
 
+// Semantic effect slots live beside the stable WAD-lump bank they address.
+// Gameplay emits only weapon/world/actor identities; orchestration never
+// duplicates the numeric clip catalog.
+op doom_audio_weapon_clip [weapon] (
+  if (weapon == 1) ( => 1; )
+  if ((weapon == 2) or (weapon == 4)) ( => 2; )
+  if (weapon == 3) ( => 3; )
+  if (weapon == 5) ( => 4; )
+  if (weapon == 6) ( => 37; )
+  if (weapon == 7) ( => 38; )
+  => 2;
+)
+
+op doom_audio_world_clip [kind] (
+  if (kind == 1) ( => 7; )
+  if (kind == 2) ( => 8; )
+  if (kind == 3) ( => 9; )
+  if (kind == 4) ( => 10; )
+  if (kind == 5) ( => 11; )
+  => 0;
+)
+
+op doom_audio_monster_alert_clip [kind] (
+  if (kind == 3004) ( => 14; )
+  if (kind == 9) ( => 15; )
+  if (kind == 3001) ( => 16; )
+  if ((kind == 3002) or (kind == 58)) ( => 15; )
+  if (kind == 3005) ( => 27; )
+  if (kind == 3006) ( => 16; )
+  if (kind == 3003) ( => 28; )
+  if (kind == 16) ( => 29; )
+  if (kind == 7) ( => 30; )
+  => 0;
+)
+
+op doom_audio_monster_attack_clip [kind] (
+  if (kind == 3004) ( => 2; )
+  if (kind == 9) ( => 17; )
+  if (kind == 3001) ( => 25; )
+  if ((kind == 3002) or (kind == 58)) ( => 17; )
+  if ((kind == 3005) or (kind == 3003)) ( => 25; )
+  if (kind == 3006) ( => 31; )
+  if (kind == 16) ( => 4; )
+  if (kind == 7) ( => 2; )
+  => 0;
+)
+
+op doom_audio_monster_pain_clip [kind] (
+  if ((kind == 3004) or (kind == 9)) ( => 19; )
+  if ((kind == 3001) or (kind == 3002) or (kind == 58)) ( => 20; )
+  if ((kind == 3005) or (kind == 3006) or (kind == 3003) or
+      (kind == 16) or (kind == 7)) ( => 20; )
+  => 0;
+)
+
+op doom_audio_monster_death_clip [kind] (
+  if (kind == 3004) ( => 21; )
+  if (kind == 9) ( => 22; )
+  if (kind == 3001) ( => 23; )
+  if ((kind == 3002) or (kind == 58)) ( => 22; )
+  if (kind == 3005) ( => 32; )
+  if (kind == 3003) ( => 33; )
+  if (kind == 3006) ( => 34; )
+  if (kind == 16) ( => 35; )
+  if (kind == 7) ( => 36; )
+  => 0;
+)
+
 op doom_audio_render_effects [path] (
   let file_bytes = size[path] with chaos { _ => 0 - 1 };
   if (file_bytes >= 12) () else ( => doom_audio_effects_error["short WAD file"]; )
@@ -149,7 +217,11 @@ op doom_audio_render_effects [path] (
     "DSSWTCHN", "DSSWTCHX", "DSTELEPT", "DSBAREXP",
     "DSPLPAIN", "DSPOSIT1", "DSSGTSIT", "DSBGSIT1",
     "DSSGTATK", "DSCLAW", "DSPOPAIN", "DSDMPAIN",
-    "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD"
+    "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD",
+    "DSFIRSHT", "DSFIRXPL", "DSCACSIT", "DSBRSSIT",
+    "DSCYBSIT", "DSSPISIT", "DSSKLATK", "DSCACDTH",
+    "DSBRSDTH", "DSSKLDTH", "DSCYBDTH", "DSSPIDTH",
+    "DSPLASMA", "DSBFG", "DSGETPOW"
   ];
   let wavs = [];
   let i = 0;

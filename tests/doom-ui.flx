@@ -64,6 +64,7 @@ let meta = buf_new[32, slots * 5];
 let pixels = bytes_new[slots];
 let opaque = bytes_new[slots];
 let colours = buf_new[32, 8192];
+let rgbx_colours = buf_new[32, 8192];
 let i = 0;
 while (i < slots) (
   buf_set[meta, i * 5, 1];
@@ -72,11 +73,13 @@ while (i < slots) (
   bytes_set[pixels, i, i % 256];
   bytes_set[opaque, i, 1];
   buf_set[colours, i % 256, 200 * 65536 + 100 * 256 + 50];
+  buf_set[rgbx_colours, i % 256, 200 + 100 * 256 + 50 * 65536];
   i = i + 1;
 )
 let bank = {
   ui_ready: 1, ui_slots: slots, ui_meta: meta,
-  ui_pixels: pixels, ui_opaque: opaque, colours: colours
+  ui_pixels: pixels, ui_opaque: opaque,
+  colours: colours, rgbx_colours: rgbx_colours
 };
 let buf = gui_buffer[320, 200];
 let loading = gui_buffer[320, 200];
@@ -121,6 +124,80 @@ doom_ui_test_expect[
   (bytes_get[buf, off + 1] == 100) and
   (bytes_get[buf, off + 2] == 50),
   "palette-indexed UI patch uses the shared colour table"
+];
+let large_buf = gui_buffer[640, 400];
+let status_combat = {
+  weapons: bytes_new[8], selected_weapon: 2,
+  ammo: 50, shells: 0, rockets: 0, cells: 0,
+  max_ammo: 200, max_shells: 50, max_rockets: 50, max_cells: 300,
+  health: 100, armor: 0,
+  tick: 0, player_pain_tick: 0 - 1000
+};
+bytes_set[status_combat\weapons, 2, 1];
+let status_world = {
+  pickup_tick: 0, pickup_message: "",
+  blue_key: 1, yellow_key: 1, red_key: 1,
+  blue_skull: 0, yellow_skull: 0, red_skull: 0
+};
+doom_ui_test_expect[
+  doom_ui_face_slot[status_combat] ==
+    doom_texture_ui_face_straight_slot[0, 0],
+  "healthy status face begins in the first live idle frame"
+];
+status_combat\tick = 30;
+doom_ui_test_expect[
+  doom_ui_face_slot[status_combat] ==
+    doom_texture_ui_face_straight_slot[0, 1],
+  "status face idles independently of cached artwork"
+];
+status_combat\health = 55;
+status_combat\player_pain_tick = 30;
+doom_ui_test_expect[
+  doom_ui_face_slot[status_combat] == doom_texture_ui_face_ouch_slot[2],
+  "status face reacts in the current health tier"
+];
+status_combat\health = 0;
+doom_ui_test_expect[
+  doom_ui_face_slot[status_combat] == doom_texture_ui_face_dead_slot[],
+  "status face has an explicit death frame"
+];
+status_combat\health = 100;
+status_combat\tick = 0;
+status_combat\player_pain_tick = 0 - 1000;
+doom_ui_test_expect[
+  doom_ui_draw_status[
+    large_buf, 640, 400, bank, status_combat, status_world
+  ] == 1,
+  "status composition accepts the 640x400 logical raster"
+];
+let large_status = (336 * 640) * 4;
+let large_status_diagonal = ((337 * 640) + 1) * 4;
+doom_ui_test_expect[
+  (bytes_get[large_buf, large_status] == 200) and
+  (bytes_get[large_buf, large_status_diagonal] == 200),
+  "canonical status pixels scale two by two from the lower-left edge"
+];
+let cached_large_buf = gui_buffer[640, 400];
+let status_cache = doom_ui_status_cache_new[640, 400, bank];
+doom_ui_test_expect[
+  doom_ui_draw_status_cached[
+    cached_large_buf, 640, 400, bank, status_cache,
+    status_combat, status_world
+  ] == 1,
+  "cached status composition accepts the canonical raster"
+];
+let status_byte = large_status;
+let status_equal = 1;
+while (status_byte < bytes_len[large_buf]) (
+  if (bytes_get[cached_large_buf, status_byte] ==
+      bytes_get[large_buf, status_byte]) () else (
+    status_equal = 0;
+  )
+  status_byte = status_byte + 1;
+)
+doom_ui_test_expect[
+  status_equal == 1,
+  "cached static strip plus live overlays matches direct composition"
 ];
 ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_esc[]]]];
 doom_ui_test_expect[

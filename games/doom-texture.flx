@@ -6,7 +6,8 @@
 // checked before an indexed read; PLAYPAL/COLORMAP remain data, not a native
 // image-decoder boundary.
 
-credits: <../games/doom-format.flx> <f/buffers> <f/bytes>
+credits: <../games/doom-format.flx> <../games/doom-stock.flx>
+         <f/buffers> <f/bytes>
          <f/files-chaos> <f/strings>;
 
 private op doom_texture_read_range [path, offset, count] (
@@ -39,7 +40,8 @@ op doom_texture_empty_bank [] (
     sprite_opaque: bytes_new[0],
     ui_ready: 0, ui_slots: 0, ui_meta: %32[],
     ui_pixels: bytes_new[0], ui_opaque: bytes_new[0],
-    palette: bytes_new[0], colormap: bytes_new[0], colours: %32[]
+    palette: bytes_new[0], colormap: bytes_new[0],
+    colours: %32[], rgbx_colours: %32[]
   };
 )
 
@@ -418,43 +420,67 @@ op doom_texture_sprite_name_valid_at [b, offset] (
     (second_rotation >= 48) and (second_rotation <= 56);
 )
 
-// The bounded E1M1 slice deliberately recognizes only the enemy families it
-// can render. New thing types must earn an explicit sprite mapping.
+// Doom One's cast is a closed table. Spectres deliberately share SARG pixels
+// with demons; their visual distinction belongs to the renderer.
 op doom_texture_sprite_family [kind] (
-  if (kind == 3004) ( => 0; ) // POSS: former human
-  if (kind == 9) ( => 1; )    // SPOS: shotgun guy
-  if (kind == 3001) ( => 2; ) // TROO: imp
-  => 0 - 1;
+  => doom_stock_actor_family[kind];
 )
 
 // Static E1M1 resource and weapon sprites. Animation remains deliberately
 // outside this slice; frame A is the canonical, validated pickup witness.
 op doom_texture_pickup_family [kind] (
-  if (kind == 2007) ( => 0; ) // CLIP
-  if (kind == 2048) ( => 1; ) // AMMO
-  if (kind == 2011) ( => 2; ) // STIM
-  if (kind == 2012) ( => 3; ) // MEDI
-  if (kind == 2014) ( => 4; ) // BON1
-  if (kind == 2015) ( => 5; ) // BON2
-  if (kind == 2018) ( => 6; ) // ARM1
-  if (kind == 2019) ( => 7; ) // ARM2
-  if (kind == 2001) ( => 8; ) // SHOT
-  if (kind == 2002) ( => 9; ) // MGUN
-  if (kind == 2003) ( => 10; ) // LAUN
-  if (kind == 2008) ( => 11; ) // SHEL
-  if (kind == 2049) ( => 12; ) // SBOX
-  if (kind == 2046) ( => 13; ) // BROK
-  if (kind == 13) ( => 14; )   // RKEY
-  if (kind == 2013) ( => 15; ) // SOUL
-  if (kind == 2005) ( => 16; ) // CSAW
-  if (kind == 5) ( => 17; )    // BKEY
-  if (kind == 6) ( => 18; )    // YKEY
-  => 0 - 1;
+  => doom_stock_pickup_family[kind];
 )
 
 op doom_texture_prop_family [kind] (
-  if (kind == 2035) ( => 0; ) // BAR1: explosive barrel
-  => 0 - 1;
+  => doom_stock_prop_family[kind];
+)
+
+op doom_texture_prop_solid [kind] (
+  => doom_stock_prop_solid[kind];
+)
+
+op doom_texture_prop_radius [kind] (
+  => doom_stock_prop_radius[kind];
+)
+
+op doom_texture_prop_hangs [kind] (
+  => doom_stock_prop_hangs[kind];
+)
+
+op doom_texture_prop_world_height [kind] (
+  => doom_stock_prop_world_height[kind];
+)
+
+op doom_texture_prop_frame_count [family] (
+  if (family == 0) ( => 7; )
+  if ((family == 11) or (family == 14) or (family == 21)) ( => 2; )
+  if (family == 24) ( => 3; )
+  if ((family == 23) or (family == 26) or (family == 27) or
+      (family == 28) or (family == 31) or
+      (family == 37) or (family == 38) or (family == 39)) ( => 4; )
+  if ((family >= 1) and (family < 41)) ( => 1; )
+  => 0;
+)
+
+op doom_texture_prop_frame_for_tick [kind, tick] (
+  let family = doom_texture_prop_family[kind];
+  if (family < 1) ( => 0; )
+  let count = doom_texture_prop_frame_count[family];
+  if (count <= 1) ( => 0; )
+  let rate = 10;
+  if ((family == 21) or (family == 31)) ( rate = 20; )
+  if ((family >= 26) and (family <= 28)) ( rate = 7; )
+  if ((family >= 37) and (family <= 39)) ( rate = 7; )
+  => (tick / rate) % count;
+)
+
+private op doom_texture_frame_suffix [frame] (
+  if (frame == 0) ( => "A0"; )
+  if (frame == 1) ( => "B0"; )
+  if (frame == 2) ( => "C0"; )
+  if (frame == 3) ( => "D0"; )
+  => "";
 )
 
 private op doom_texture_prop_name [family, frame] (
@@ -467,6 +493,67 @@ private op doom_texture_prop_name [family, frame] (
     if (frame == 5) ( => "BEXPD0"; )
     if (frame == 6) ( => "BEXPE0"; )
   )
+  if (family == 1) ( => "PLAYW0"; )
+  if (family == 2) ( => "PLAYN0"; )
+  if (family == 3) ( => "POSSL0"; )
+  if (family == 4) ( => "SPOSL0"; )
+  if (family == 5) ( => "TROOM0"; )
+  if (family == 6) ( => "SARGN0"; )
+  if (family == 7) ( => "HEADL0"; )
+  if (family == 8) ( => "SKULK0"; )
+  if (family == 9) ( => "POL5A0"; )
+  if (family == 10) ( => "POL1A0"; )
+  if (family == 11) (
+    if (frame == 0) ( => "POL6A0"; )
+    if (frame == 1) ( => "POL6B0"; )
+  )
+  if (family == 12) ( => "POL4A0"; )
+  if (family == 13) ( => "POL2A0"; )
+  if (family == 14) (
+    if (frame == 0) ( => "POL3A0"; )
+    if (frame == 1) ( => "POL3B0"; )
+  )
+  if (family == 15) ( => "COL1A0"; )
+  if (family == 16) ( => "COL2A0"; )
+  if (family == 17) ( => "COL3A0"; )
+  if (family == 18) ( => "COL4A0"; )
+  if (family == 19) ( => "CANDA0"; )
+  if (family == 20) ( => "CBRAA0"; )
+  if (family == 21) (
+    if (frame == 0) ( => "COL5A0"; )
+    if (frame == 1) ( => "COL5B0"; )
+  )
+  if (family == 22) ( => "COL6A0"; )
+  if (family == 23) (
+    if (frame == 0) ( => "CEYEA0"; )
+    if ((frame == 1) or (frame == 3)) ( => "CEYEB0"; )
+    if (frame == 2) ( => "CEYEC0"; )
+  )
+  if (family == 24) (
+    if (frame == 0) ( => "FSKUA0"; )
+    if (frame == 1) ( => "FSKUB0"; )
+    if (frame == 2) ( => "FSKUC0"; )
+  )
+  if (family == 25) ( => "TRE1A0"; )
+  if (family == 26) ( => "TBLU" + doom_texture_frame_suffix[frame]; )
+  if (family == 27) ( => "TGRN" + doom_texture_frame_suffix[frame]; )
+  if (family == 28) ( => "TRED" + doom_texture_frame_suffix[frame]; )
+  if (family == 29) ( => "SMITA0"; )
+  if (family == 30) ( => "ELECA0"; )
+  if (family == 31) (
+    if (frame == 0) ( => "GOR1A0"; )
+    if ((frame == 1) or (frame == 3)) ( => "GOR1B0"; )
+    if (frame == 2) ( => "GOR1C0"; )
+  )
+  if (family == 32) ( => "GOR2A0"; )
+  if (family == 33) ( => "GOR3A0"; )
+  if (family == 34) ( => "GOR4A0"; )
+  if (family == 35) ( => "GOR5A0"; )
+  if (family == 36) ( => "TRE2A0"; )
+  if (family == 37) ( => "SMBT" + doom_texture_frame_suffix[frame]; )
+  if (family == 38) ( => "SMGT" + doom_texture_frame_suffix[frame]; )
+  if (family == 39) ( => "SMRT" + doom_texture_frame_suffix[frame]; )
+  if (family == 40) ( => "COLUA0"; )
   => "";
 )
 
@@ -490,6 +577,21 @@ private op doom_texture_pickup_name [family] (
   if (family == 16) ( => "CSAWA0"; )
   if (family == 17) ( => "BKEYA0"; )
   if (family == 18) ( => "YKEYA0"; )
+  if (family == 19) ( => "RSKUA0"; )
+  if (family == 20) ( => "YSKUA0"; )
+  if (family == 21) ( => "BSKUA0"; )
+  if (family == 22) ( => "PLASA0"; )
+  if (family == 23) ( => "BFUGA0"; )
+  if (family == 24) ( => "ROCKA0"; )
+  if (family == 25) ( => "CELLA0"; )
+  if (family == 26) ( => "CELPA0"; )
+  if (family == 27) ( => "BPAKA0"; )
+  if (family == 28) ( => "PINVA0"; )
+  if (family == 29) ( => "PSTRA0"; )
+  if (family == 30) ( => "PINSA0"; )
+  if (family == 31) ( => "SUITA0"; )
+  if (family == 32) ( => "PMAPA0"; )
+  if (family == 33) ( => "PVISA0"; )
   => "";
 )
 
@@ -498,6 +600,12 @@ private op doom_texture_sprite_base [family] (
   if (family == 0) ( base = "POSS"; )
   if (family == 1) ( base = "SPOS"; )
   if (family == 2) ( base = "TROO"; )
+  if (family == 3) ( base = "SARG"; )
+  if (family == 4) ( base = "HEAD"; )
+  if (family == 5) ( base = "SKUL"; )
+  if (family == 6) ( base = "BOSS"; )
+  if (family == 7) ( base = "CYBR"; )
+  if (family == 8) ( base = "SPID"; )
   => base;
 )
 
@@ -513,12 +621,7 @@ private op doom_texture_sprite_frame [frame] (
   => "";
 )
 
-private op doom_texture_sprite_spec [family, frame, rotation] (
-  let base = doom_texture_sprite_base[family];
-  let letter = doom_texture_sprite_frame[frame];
-  if ((str_len[base] == 4) and (str_len[letter] == 1)) () else (
-    => { ok: 0, name: "", flip: 0 };
-  )
+private op doom_texture_standard_sprite_spec [base, letter, rotation] (
   if (rotation == 1) ( => { ok: 1, name: "^{base}^{letter}1", flip: 0 }; )
   if (rotation == 2) ( => { ok: 1, name: "^{base}^{letter}2^{letter}8", flip: 0 }; )
   if (rotation == 3) ( => { ok: 1, name: "^{base}^{letter}3^{letter}7", flip: 0 }; )
@@ -530,20 +633,128 @@ private op doom_texture_sprite_spec [family, frame, rotation] (
   => { ok: 0, name: "", flip: 0 };
 )
 
+private op doom_texture_skull_sprite_spec [letter, rotation] (
+  if (rotation == 1) ( => { ok: 1, name: "SKUL^{letter}1", flip: 0 }; )
+  if (rotation == 2) ( => { ok: 1, name: "SKUL^{letter}8^{letter}2", flip: 1 }; )
+  if (rotation == 3) ( => { ok: 1, name: "SKUL^{letter}7^{letter}3", flip: 1 }; )
+  if (rotation == 4) ( => { ok: 1, name: "SKUL^{letter}6^{letter}4", flip: 1 }; )
+  if (rotation == 5) ( => { ok: 1, name: "SKUL^{letter}5", flip: 0 }; )
+  if (rotation == 6) ( => { ok: 1, name: "SKUL^{letter}6^{letter}4", flip: 0 }; )
+  if (rotation == 7) ( => { ok: 1, name: "SKUL^{letter}7^{letter}3", flip: 0 }; )
+  if (rotation == 8) ( => { ok: 1, name: "SKUL^{letter}8^{letter}2", flip: 0 }; )
+  => { ok: 0, name: "", flip: 0 };
+)
+
+// SPID reuses its A/B/C rotation-one and rotation-five lumps as D/E/F.
+// Frame seven is reserved for the independent-rotation I pain witness; the
+// shorter Freelang attack animation uses G while retaining the whole cast.
+private op doom_texture_spider_sprite_spec [frame, rotation] (
+  if ((frame >= 0) and (frame <= 2)) (
+    let letter = doom_texture_sprite_frame[frame];
+    let partner = doom_texture_sprite_frame[frame + 3];
+    if (rotation == 1) (
+      => { ok: 1, name: "SPID^{letter}1^{partner}1", flip: 0 };
+    )
+    if (rotation == 5) (
+      => { ok: 1, name: "SPID^{letter}5^{partner}5", flip: 0 };
+    )
+    => doom_texture_standard_sprite_spec["SPID", letter, rotation];
+  )
+  if ((frame >= 3) and (frame <= 5)) (
+    let letter = doom_texture_sprite_frame[frame];
+    let source = doom_texture_sprite_frame[frame - 3];
+    if (rotation == 1) (
+      => { ok: 1, name: "SPID^{source}1^{letter}1", flip: 0 };
+    )
+    if (rotation == 5) (
+      => { ok: 1, name: "SPID^{source}5^{letter}5", flip: 0 };
+    )
+    => doom_texture_standard_sprite_spec["SPID", letter, rotation];
+  )
+  if (frame == 6) (
+    => doom_texture_standard_sprite_spec["SPID", "G", rotation];
+  )
+  if ((frame == 7) and (rotation >= 1) and (rotation <= 8)) (
+    => { ok: 1, name: "SPIDI^{rotation}", flip: 0 };
+  )
+  => { ok: 0, name: "", flip: 0 };
+)
+
+private op doom_texture_sprite_spec [family, frame, rotation] (
+  let base = doom_texture_sprite_base[family];
+  let letter = doom_texture_sprite_frame[frame];
+  if ((str_len[base] == 4) and (str_len[letter] == 1)) () else (
+    => { ok: 0, name: "", flip: 0 };
+  )
+  if (family == 5) (
+    => doom_texture_skull_sprite_spec[letter, rotation];
+  )
+  if (family == 8) (
+    => doom_texture_spider_sprite_spec[frame, rotation];
+  )
+  // SARG/BOSS attack frames and every CYBR frame publish eight independent
+  // rotations rather than mirrored-pair spellings.
+  if (((family == 3) and (frame >= 4)) or
+      ((family == 6) and (frame >= 4)) or (family == 7)) (
+    if ((rotation >= 1) and (rotation <= 8)) (
+      => { ok: 1, name: "^{base}^{letter}^{rotation}", flip: 0 };
+    )
+    => { ok: 0, name: "", flip: 0 };
+  )
+  => doom_texture_standard_sprite_spec[base, letter, rotation];
+)
+
 private op doom_texture_sprite_death_frame [family, frame] (
-  let first = 72; // H
-  if (family == 2) ( first = 73; ) // I
-  if ((family >= 0) and (family <= 2) and
+  if ((family >= 0) and (family < 9) and
       (frame >= 0) and (frame < 5)) () else ( => ""; )
-  let code = first + frame;
-  if (code == 72) ( => "H"; )
-  if (code == 73) ( => "I"; )
-  if (code == 74) ( => "J"; )
-  if (code == 75) ( => "K"; )
-  if (code == 76) ( => "L"; )
-  if (code == 77) ( => "M"; )
-  if (code == 78) ( => "N"; )
+  if ((family == 0) or (family == 1)) (
+    if (frame == 0) ( => "H"; ) if (frame == 1) ( => "I"; )
+    if (frame == 2) ( => "J"; ) if (frame == 3) ( => "K"; )
+    => "L";
+  )
+  if (family == 2) (
+    if (frame == 0) ( => "I"; ) if (frame == 1) ( => "J"; )
+    if (frame == 2) ( => "K"; ) if (frame == 3) ( => "L"; )
+    => "M";
+  )
+  if (family == 3) (
+    if (frame == 0) ( => "I"; ) if (frame == 1) ( => "J"; )
+    if (frame == 2) ( => "K"; ) if (frame == 3) ( => "M"; )
+    => "N";
+  )
+  if (family == 4) (
+    if (frame == 0) ( => "G"; ) if (frame == 1) ( => "H"; )
+    if (frame == 2) ( => "I"; ) if (frame == 3) ( => "K"; )
+    => "L";
+  )
+  if (family == 5) (
+    if (frame == 0) ( => "F"; ) if (frame == 1) ( => "G"; )
+    if (frame == 2) ( => "H"; ) if (frame == 3) ( => "J"; )
+    => "K";
+  )
+  if (family == 6) (
+    if (frame == 0) ( => "I"; ) if (frame == 1) ( => "J"; )
+    if (frame == 2) ( => "L"; ) if (frame == 3) ( => "N"; )
+    => "O";
+  )
+  if (family == 7) (
+    if (frame == 0) ( => "H"; ) if (frame == 1) ( => "J"; )
+    if (frame == 2) ( => "L"; ) if (frame == 3) ( => "N"; )
+    => "P";
+  )
+  if (frame == 0) ( => "J"; ) if (frame == 1) ( => "L"; )
+  if (frame == 2) ( => "N"; ) if (frame == 3) ( => "Q"; )
+  if (frame == 4) ( => "S"; )
   => "";
+)
+
+private op doom_texture_sprite_frame_count [family] (
+  if ((family == 0) or (family == 1) or (family == 7)) ( => 7; )
+  if ((family == 2) or (family == 3) or
+      (family == 6) or (family == 8)) ( => 8; )
+  if (family == 4) ( => 6; )
+  if (family == 5) ( => 5; )
+  => 0;
 )
 
 private op doom_texture_sprite_death_spec [family, frame] (
@@ -583,6 +794,132 @@ private op doom_texture_weapon_name [weapon, frame] (
     if (frame == 0) ( => "MISGA0"; )
     if (frame == 1) ( => "MISGB0"; )
   )
+  if (weapon == 6) (
+    if (frame == 0) ( => "PLSGA0"; )
+    if (frame == 1) ( => "PLSGB0"; )
+  )
+  if (weapon == 7) (
+    if (frame == 0) ( => "BFGGA0"; )
+    if (frame == 1) ( => "BFGGB0"; )
+    if (frame == 2) ( => "BFGGC0"; )
+  )
+  => "";
+)
+
+// The first-person weapon body and its flash are separate Doom psprites.
+// Keeping them in distinct immutable atlas ranges lets combat decide exactly
+// when a flash exists without synthesizing screen-space fire geometry.
+private op doom_texture_muzzle_name [weapon, frame] (
+  if ((weapon == 2) and (frame == 0)) ( => "PISFA0"; )
+  if (weapon == 3) (
+    if (frame == 0) ( => "SHTFA0"; )
+    if (frame == 1) ( => "SHTFB0"; )
+  )
+  if (weapon == 4) (
+    if (frame == 0) ( => "CHGFA0"; )
+    if (frame == 1) ( => "CHGFB0"; )
+  )
+  if (weapon == 5) (
+    if (frame == 0) ( => "MISFA0"; )
+    if (frame == 1) ( => "MISFB0"; )
+    if (frame == 2) ( => "MISFC0"; )
+    if (frame == 3) ( => "MISFD0"; )
+  )
+  if (weapon == 6) (
+    if (frame == 0) ( => "PLSFA0"; )
+    if (frame == 1) ( => "PLSFB0"; )
+  )
+  if (weapon == 7) (
+    if (frame == 0) ( => "BFGFA0"; )
+    if (frame == 1) ( => "BFGFB0"; )
+  )
+  => "";
+)
+
+op doom_texture_muzzle_frame_count [weapon] (
+  if (weapon == 2) ( => 1; )
+  if ((weapon == 3) or (weapon == 4)) ( => 2; )
+  if (weapon == 5) ( => 4; )
+  if ((weapon == 6) or (weapon == 7)) ( => 2; )
+  => 0;
+)
+
+private op doom_texture_muzzle_offset [weapon] (
+  if (weapon == 2) ( => 0; )
+  if (weapon == 3) ( => 1; )
+  if (weapon == 4) ( => 3; )
+  if (weapon == 5) ( => 5; )
+  if (weapon == 6) ( => 9; )
+  if (weapon == 7) ( => 11; )
+  => 0 - 1;
+)
+
+// MISLA publishes the live rocket's eight rotations through four mirrored
+// pairs plus the direct front/back witnesses. MISLB-D are its rotation-zero
+// impact sequence. The flip bit follows Doom's second-frame convention.
+private op doom_texture_rocket_spec [frame, rotation] (
+  if (frame == 0) (
+    if (rotation == 1) ( => { ok: 1, name: "MISLA1", flip: 0 }; )
+    if (rotation == 2) ( => { ok: 1, name: "MISLA8A2", flip: 1 }; )
+    if (rotation == 3) ( => { ok: 1, name: "MISLA7A3", flip: 1 }; )
+    if (rotation == 4) ( => { ok: 1, name: "MISLA6A4", flip: 1 }; )
+    if (rotation == 5) ( => { ok: 1, name: "MISLA5", flip: 0 }; )
+    if (rotation == 6) ( => { ok: 1, name: "MISLA6A4", flip: 0 }; )
+    if (rotation == 7) ( => { ok: 1, name: "MISLA7A3", flip: 0 }; )
+    if (rotation == 8) ( => { ok: 1, name: "MISLA8A2", flip: 0 }; )
+  )
+  if (frame == 1) ( => { ok: 1, name: "MISLB0", flip: 0 }; )
+  if (frame == 2) ( => { ok: 1, name: "MISLC0", flip: 0 }; )
+  if (frame == 3) ( => { ok: 1, name: "MISLD0", flip: 0 }; )
+  => { ok: 0, name: "", flip: 0 };
+)
+
+private op doom_texture_imp_ball_name [frame] (
+  if (frame == 0) ( => "BAL1A0"; )
+  if (frame == 1) ( => "BAL1B0"; )
+  if (frame == 2) ( => "BAL1C0"; )
+  if (frame == 3) ( => "BAL1D0"; )
+  if (frame == 4) ( => "BAL1E0"; )
+  => "";
+)
+
+private op doom_texture_caco_ball_name [frame] (
+  if (frame == 0) ( => "BAL2A0"; )
+  if (frame == 1) ( => "BAL2B0"; )
+  if (frame == 2) ( => "BAL2C0"; )
+  if (frame == 3) ( => "BAL2D0"; )
+  if (frame == 4) ( => "BAL2E0"; )
+  => "";
+)
+
+private op doom_texture_baron_ball_name [frame] (
+  if (frame == 0) ( => "BAL7A1A5"; )
+  if (frame == 1) ( => "BAL7C0"; )
+  if (frame == 2) ( => "BAL7D0"; )
+  if (frame == 3) ( => "BAL7E0"; )
+  => "";
+)
+
+private op doom_texture_plasma_ball_name [frame] (
+  if (frame == 0) ( => "PLSSA0"; )
+  if (frame == 1) ( => "PLSSB0"; )
+  if (frame == 2) ( => "PLSEA0"; )
+  if (frame == 3) ( => "PLSEB0"; )
+  if (frame == 4) ( => "PLSEC0"; )
+  if (frame == 5) ( => "PLSED0"; )
+  if (frame == 6) ( => "PLSEE0"; )
+  => "";
+)
+
+private op doom_texture_bfg_ball_name [frame] (
+  if (frame == 0) ( => "BFS1A0"; )
+  if (frame == 1) ( => "BFS1B0"; )
+  if (frame == 2) ( => "BFE1A0"; )
+  if (frame == 3) ( => "BFE1B0"; )
+  if (frame == 4) ( => "BFE1C0"; )
+  if (frame == 5) ( => "BFE1D0"; )
+  if (frame == 6) ( => "BFE1E0"; )
+  if (frame == 7) ( => "BFE1F0"; )
   => "";
 )
 
@@ -591,6 +928,8 @@ op doom_texture_weapon_frame_count [weapon] (
   if (weapon == 2) ( => 5; )
   if (weapon == 3) ( => 4; )
   if ((weapon == 4) or (weapon == 5)) ( => 2; )
+  if (weapon == 6) ( => 2; )
+  if (weapon == 7) ( => 3; )
   => 0;
 )
 
@@ -600,6 +939,8 @@ private op doom_texture_weapon_offset [weapon] (
   if (weapon == 3) ( => 9; )
   if (weapon == 4) ( => 13; )
   if (weapon == 5) ( => 15; )
+  if (weapon == 6) ( => 17; )
+  if (weapon == 7) ( => 19; )
   => 0 - 1;
 )
 
@@ -608,22 +949,54 @@ private op doom_texture_weapon_offset [weapon] (
 // extreme-death sequence and must never become the stable corpse. POSS/SPOS
 // deliberately leave directional H empty; TROO uses it for pain.
 op doom_texture_sprite_family_stride [] ( => 69; )
-op doom_texture_sprite_family_slots [] ( => 207; )
-op doom_texture_weapon_slots [] ( => 17; )
-op doom_texture_pickup_slots [] ( => 19; )
-op doom_texture_prop_families [] ( => 1; )
-op doom_texture_prop_frame_count [] ( => 7; )
-op doom_texture_prop_slots [] ( => 7; )
+op doom_texture_sprite_family_slots [] ( => 621; )
+op doom_texture_weapon_slots [] ( => 22; )
+op doom_texture_pickup_slots [] ( => 34; )
+op doom_texture_prop_families [] ( => 41; )
+op doom_texture_prop_stride [] ( => 7; )
+op doom_texture_prop_slots [] (
+  => doom_texture_prop_families[] * doom_texture_prop_stride[];
+)
 op doom_texture_teleport_frames [] ( => 10; )
-op doom_texture_sprite_slots [] ( => 260; )
+op doom_texture_muzzle_slots [] ( => 13; )
+op doom_texture_rocket_slots [] ( => 11; )
+op doom_texture_imp_ball_slots [] ( => 5; )
+op doom_texture_caco_ball_slots [] ( => 5; )
+op doom_texture_baron_ball_slots [] ( => 4; )
+op doom_texture_plasma_ball_slots [] ( => 7; )
+op doom_texture_bfg_ball_slots [] ( => 8; )
+op doom_texture_sprite_slots [] ( => 1027; )
 
 // WAD-native status, font and episode-menu patches occupy a separate immutable
 // atlas. The old new-game/options/quit/pause art is deliberately absent: the
 // menu exposes only the two admitted Episode One maps.
 // Slots are stable so the UI renderer never searches strings in the frame loop.
-op doom_texture_ui_slots [] ( => 100; )
+op doom_texture_ui_slots [] ( => 126; )
 op doom_texture_ui_status_slot [] ( => 0; )
 op doom_texture_ui_face_slot [] ( => 1; )
+op doom_texture_ui_face_straight_slot [tier, frame] (
+  if ((tier >= 0) and (tier <= 4) and
+      (frame >= 0) and (frame <= 2)) () else (
+    fall "doom_texture_ui_face_straight_slot: face outside 5x3 atlas";
+  )
+  let flat = tier * 3 + frame;
+  if (flat == 0) ( => doom_texture_ui_face_slot[]; )
+  => 99 + flat;
+)
+op doom_texture_ui_face_ouch_slot [tier] (
+  if ((tier >= 0) and (tier <= 4)) () else (
+    fall "doom_texture_ui_face_ouch_slot: tier outside 0..4";
+  )
+  => 114 + tier;
+)
+op doom_texture_ui_face_dead_slot [] ( => 119; )
+op doom_texture_ui_key_slot [colour, skull] (
+  if ((colour >= 0) and (colour <= 2) and
+      ((skull == 0) or (skull == 1))) () else (
+    fall "doom_texture_ui_key_slot: key outside colour/style atlas";
+  )
+  => 120 + colour + skull * 3;
+)
 op doom_texture_ui_big_number_slot [digit] (
   if ((digit >= 0) and (digit <= 9)) () else (
     fall "doom_texture_ui_big_number_slot: digit outside 0..9";
@@ -674,11 +1047,22 @@ private op doom_texture_ui_name [slot] (
   if (slot == 97) ( => "M_DOOM"; )
   if (slot == 98) ( => "M_SKULL1"; )
   if (slot == 99) ( => "M_SKULL2"; )
+  if ((slot >= 100) and (slot <= 113)) (
+    let flat = slot - 99;
+    => "STFST" + int_to_string[flat / 3] + int_to_string[flat % 3];
+  )
+  if ((slot >= 114) and (slot <= 118)) (
+    => "STFOUCH" + int_to_string[slot - 114];
+  )
+  if (slot == 119) ( => "STFDEAD0"; )
+  if ((slot >= 120) and (slot <= 125)) (
+    => "STKEYS" + int_to_string[slot - 120];
+  )
   => "";
 )
 
 op doom_texture_sprite_directional_slot [family, frame, rotation] (
-  if ((family >= 0) and (family < 3) and
+  if ((family >= 0) and (family < 9) and
       (frame >= 0) and (frame < 8) and
       (rotation >= 1) and (rotation <= 8)) () else (
     fall "doom_texture_sprite_directional_slot: index outside bounded atlas";
@@ -687,7 +1071,7 @@ op doom_texture_sprite_directional_slot [family, frame, rotation] (
 )
 
 op doom_texture_sprite_death_slot [family, frame] (
-  if ((family >= 0) and (family < 3) and
+  if ((family >= 0) and (family < 9) and
       (frame >= 0) and (frame < 5)) () else (
     fall "doom_texture_sprite_death_slot: index outside bounded atlas";
   )
@@ -722,12 +1106,13 @@ op doom_texture_prop_slot [kind] (
 op doom_texture_prop_slot_for [kind, frame] (
   let family = doom_texture_prop_family[kind];
   if ((family >= 0) and (family < doom_texture_prop_families[]) and
-      (frame >= 0) and (frame < doom_texture_prop_frame_count[])) () else (
+      (frame >= 0) and
+      (frame < doom_texture_prop_frame_count[family])) () else (
     fall "doom_texture_prop_slot_for: unsupported prop/frame";
   )
   => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
     doom_texture_pickup_slots[] +
-    family * doom_texture_prop_frame_count[] + frame;
+    family * doom_texture_prop_stride[] + frame;
 )
 
 op doom_texture_teleport_slot [frame] (
@@ -736,6 +1121,88 @@ op doom_texture_teleport_slot [frame] (
   )
   => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
     doom_texture_pickup_slots[] + doom_texture_prop_slots[] + frame;
+)
+
+op doom_texture_muzzle_slot_for [weapon, frame] (
+  let offset = doom_texture_muzzle_offset[weapon];
+  let count = doom_texture_muzzle_frame_count[weapon];
+  if ((offset >= 0) and (frame >= 0) and (frame < count)) () else (
+    fall "doom_texture_muzzle_slot_for: weapon/frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + offset + frame;
+)
+
+op doom_texture_rocket_slot [frame, rotation] (
+  if ((frame >= 0) and (frame <= 3)) () else (
+    fall "doom_texture_rocket_slot: frame outside bounded atlas";
+  )
+  let base = doom_texture_sprite_family_slots[] +
+    doom_texture_weapon_slots[] + doom_texture_pickup_slots[] +
+    doom_texture_prop_slots[] + doom_texture_teleport_frames[] +
+    doom_texture_muzzle_slots[];
+  if (frame == 0) (
+    if ((rotation >= 1) and (rotation <= 8)) () else (
+      fall "doom_texture_rocket_slot: live rotation outside 1..8";
+    )
+    => base + rotation - 1;
+  )
+  => base + 8 + frame - 1;
+)
+
+op doom_texture_imp_ball_slot [frame] (
+  if ((frame >= 0) and (frame < doom_texture_imp_ball_slots[])) () else (
+    fall "doom_texture_imp_ball_slot: frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + doom_texture_muzzle_slots[] +
+    doom_texture_rocket_slots[] + frame;
+)
+
+op doom_texture_caco_ball_slot [frame] (
+  if ((frame >= 0) and (frame < doom_texture_caco_ball_slots[])) () else (
+    fall "doom_texture_caco_ball_slot: frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + doom_texture_muzzle_slots[] +
+    doom_texture_rocket_slots[] + doom_texture_imp_ball_slots[] + frame;
+)
+
+op doom_texture_baron_ball_slot [frame] (
+  if ((frame >= 0) and (frame < doom_texture_baron_ball_slots[])) () else (
+    fall "doom_texture_baron_ball_slot: frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + doom_texture_muzzle_slots[] +
+    doom_texture_rocket_slots[] + doom_texture_imp_ball_slots[] +
+    doom_texture_caco_ball_slots[] + frame;
+)
+
+op doom_texture_plasma_ball_slot [frame] (
+  if ((frame >= 0) and (frame < doom_texture_plasma_ball_slots[])) () else (
+    fall "doom_texture_plasma_ball_slot: frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + doom_texture_muzzle_slots[] +
+    doom_texture_rocket_slots[] + doom_texture_imp_ball_slots[] +
+    doom_texture_caco_ball_slots[] + doom_texture_baron_ball_slots[] + frame;
+)
+
+op doom_texture_bfg_ball_slot [frame] (
+  if ((frame >= 0) and (frame < doom_texture_bfg_ball_slots[])) () else (
+    fall "doom_texture_bfg_ball_slot: frame outside bounded atlas";
+  )
+  => doom_texture_sprite_family_slots[] + doom_texture_weapon_slots[] +
+    doom_texture_pickup_slots[] + doom_texture_prop_slots[] +
+    doom_texture_teleport_frames[] + doom_texture_muzzle_slots[] +
+    doom_texture_rocket_slots[] + doom_texture_imp_ball_slots[] +
+    doom_texture_caco_ball_slots[] + doom_texture_baron_ball_slots[] +
+    doom_texture_plasma_ball_slots[] + frame;
 )
 
 private op doom_texture_teleport_name [frame] (
@@ -831,6 +1298,113 @@ private op doom_texture_load_sprite_patch [path, directory, first, last,
   => { ok: 1, error: "", data: data };
 )
 
+// One canonical interpretation of the fixed sprite atlas. Both the sizing
+// pass and the composition pass consume this operation, so a slot can no
+// longer drift to a different WAD patch between allocation and drawing.
+private op doom_texture_sprite_slot_spec [slot] (
+  let spec = { ok: 0, name: "", flip: 0 };
+  let actor_end = doom_texture_sprite_family_slots[];
+  let weapon_end = actor_end + doom_texture_weapon_slots[];
+  let pickup_end = weapon_end + doom_texture_pickup_slots[];
+  let prop_end = pickup_end + doom_texture_prop_slots[];
+  let teleport_end = prop_end + doom_texture_teleport_frames[];
+  let muzzle_end = teleport_end + doom_texture_muzzle_slots[];
+  let rocket_end = muzzle_end + doom_texture_rocket_slots[];
+  let imp_end = rocket_end + doom_texture_imp_ball_slots[];
+  let caco_end = imp_end + doom_texture_caco_ball_slots[];
+  let baron_end = caco_end + doom_texture_baron_ball_slots[];
+  let plasma_end = baron_end + doom_texture_plasma_ball_slots[];
+  if ((slot < 0) or (slot >= doom_texture_sprite_slots[])) ( => spec; )
+  if (slot < actor_end) (
+    let family = slot / doom_texture_sprite_family_stride[];
+    let within = slot % doom_texture_sprite_family_stride[];
+    if (within < 64) (
+      => doom_texture_sprite_spec[
+        family, within / 8, within % 8 + 1
+      ];
+    )
+    => doom_texture_sprite_death_spec[family, within - 64];
+  )
+  if (slot < weapon_end) (
+    let relative = slot - actor_end;
+    let weapon = 1;
+    if (relative >= 19) ( weapon = 7; )
+    else if (relative >= 17) ( weapon = 6; )
+    else if (relative >= 15) ( weapon = 5; )
+    else if (relative >= 13) ( weapon = 4; )
+    else if (relative >= 9) ( weapon = 3; )
+    else if (relative >= 4) ( weapon = 2; )
+    let name = doom_texture_weapon_name[
+      weapon, relative - doom_texture_weapon_offset[weapon]
+    ];
+    if (str_len[name] == 6) ( => { ok: 1, name: name, flip: 0 }; )
+    => spec;
+  )
+  if (slot < pickup_end) (
+    let name = doom_texture_pickup_name[slot - weapon_end];
+    if (str_len[name] == 6) ( => { ok: 1, name: name, flip: 0 }; )
+    => spec;
+  )
+  if (slot < prop_end) (
+    let relative = slot - pickup_end;
+    let name = doom_texture_prop_name[
+      relative / doom_texture_prop_stride[],
+      relative % doom_texture_prop_stride[]
+    ];
+    if (str_len[name] == 6) ( => { ok: 1, name: name, flip: 0 }; )
+    => spec;
+  )
+  if (slot < teleport_end) (
+    let name = doom_texture_teleport_name[slot - prop_end];
+    if (str_len[name] == 6) ( => { ok: 1, name: name, flip: 0 }; )
+    => spec;
+  )
+  if (slot < muzzle_end) (
+    let relative = slot - teleport_end;
+    let weapon = 2;
+    if (relative >= 11) ( weapon = 7; )
+    else if (relative >= 9) ( weapon = 6; )
+    else if (relative >= 5) ( weapon = 5; )
+    else if (relative >= 3) ( weapon = 4; )
+    else if (relative >= 1) ( weapon = 3; )
+    let name = doom_texture_muzzle_name[
+      weapon, relative - doom_texture_muzzle_offset[weapon]
+    ];
+    if (str_len[name] == 6) ( => { ok: 1, name: name, flip: 0 }; )
+    => spec;
+  )
+  if (slot < rocket_end) (
+    let relative = slot - muzzle_end;
+    let frame = 0;
+    let rotation = relative + 1;
+    if (relative >= 8) (
+      frame = relative - 7;
+      rotation = 1;
+    )
+    => doom_texture_rocket_spec[frame, rotation];
+  )
+  let frame = 0;
+  let name = "";
+  if (slot < imp_end) (
+    frame = slot - rocket_end;
+    name = doom_texture_imp_ball_name[frame];
+  ) else if (slot < caco_end) (
+    frame = slot - imp_end;
+    name = doom_texture_caco_ball_name[frame];
+  ) else if (slot < baron_end) (
+    frame = slot - caco_end;
+    name = doom_texture_baron_ball_name[frame];
+  ) else if (slot < plasma_end) (
+    frame = slot - baron_end;
+    name = doom_texture_plasma_ball_name[frame];
+  ) else (
+    frame = slot - plasma_end;
+    name = doom_texture_bfg_ball_name[frame];
+  )
+  if (str_len[name] > 0) ( => { ok: 1, name: name, flip: 0 }; )
+  => spec;
+)
+
 private op doom_texture_load_sprites [path, directory, lump_count,
                                       file_bytes, map] (
   let namespace = doom_texture_validate_sprite_namespace[
@@ -842,7 +1416,7 @@ private op doom_texture_load_sprites [path, directory, lump_count,
   let first = namespace\first;
   let last = namespace\last;
 
-  let needed = bytes_new[3];
+  let needed = bytes_new[9];
   let needed_pickups = bytes_new[doom_texture_pickup_slots[]];
   let needed_props = bytes_new[doom_texture_prop_families[]];
   let needed_teleport = 0;
@@ -873,272 +1447,176 @@ private op doom_texture_load_sprites [path, directory, lump_count,
     li = li + 1;
   )
 
-  // Three fixed family ranges hold A..H directional views plus five regular
-  // death frames; the bounded E1M1 first-person weapon frames follow.
+  // Nine fixed family ranges hold directional/action views plus five sampled
+  // regular-death frames; the first-person weapon frames follow.
   // Metadata is width, height, atlas offset, left offset, top offset and flip.
   let slots = doom_texture_sprite_slots[];
+  let required = bytes_new[slots];
   let meta = buf_new[32, slots * 6];
-  let texels = 0;
-  let loaded = 0;
+
+  // Translate map/game policy into a fixed set of atlas slots. The following
+  // sizing and composition passes then share one slot-to-patch authority.
   let family = 0;
-  while (family < 3) (
+  while (family < 9) (
     if (bytes_get[needed, family] == 1) (
-      let frame_count = 7;
-      if (family == 2) ( frame_count = 8; )
       let frame = 0;
-      while (frame < frame_count) (
+      while (frame < doom_texture_sprite_frame_count[family]) (
         let rotation = 1;
         while (rotation <= 8) (
-          let spec = doom_texture_sprite_spec[family, frame, rotation];
-          if (spec\ok == 1) () else (
-            => doom_texture_sprite_error["invalid directional sprite specification"];
-          )
-          let patch = doom_texture_load_sprite_patch[
-            path, directory, first, last, file_bytes, spec\name
+          bytes_set[
+            required,
+            doom_texture_sprite_directional_slot[family, frame, rotation],
+            1
           ];
-          if (patch\ok == 1) () else (
-            => doom_texture_sprite_error[patch\error];
-          )
-          let width = doom_wad_u16le[patch\data, 0];
-          let height = doom_wad_u16le[patch\data, 2];
-          if (width * height <= 8388608 - texels) () else (
-            => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
-          )
-          let slot = doom_texture_sprite_directional_slot[
-            family, frame, rotation
-          ];
-          let mb = slot * 6;
-          buf_set[meta, mb, width];
-          buf_set[meta, mb + 1, height];
-          buf_set[meta, mb + 2, texels];
-          buf_set[meta, mb + 3, doom_texture_s16[patch\data, 4]];
-          buf_set[meta, mb + 4, doom_texture_s16[patch\data, 6]];
-          buf_set[meta, mb + 5, spec\flip];
-          texels = texels + width * height;
-          loaded = loaded + 1;
           rotation = rotation + 1;
         )
         frame = frame + 1;
       )
       let death = 0;
       while (death < 5) (
-        let spec = doom_texture_sprite_death_spec[family, death];
-        if (spec\ok == 1) () else (
-          => doom_texture_sprite_error["invalid death sprite specification"];
-        )
-        let patch = doom_texture_load_sprite_patch[
-          path, directory, first, last, file_bytes, spec\name
+        bytes_set[
+          required, doom_texture_sprite_death_slot[family, death], 1
         ];
-        if (patch\ok == 1) () else (
-          => doom_texture_sprite_error[patch\error];
-        )
-        let width = doom_wad_u16le[patch\data, 0];
-        let height = doom_wad_u16le[patch\data, 2];
-        if (width * height <= 8388608 - texels) () else (
-          => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
-        )
-        let slot = doom_texture_sprite_death_slot[family, death];
-        let mb = slot * 6;
-        buf_set[meta, mb, width];
-        buf_set[meta, mb + 1, height];
-        buf_set[meta, mb + 2, texels];
-        buf_set[meta, mb + 3, doom_texture_s16[patch\data, 4]];
-        buf_set[meta, mb + 4, doom_texture_s16[patch\data, 6]];
-        buf_set[meta, mb + 5, 0];
-        texels = texels + width * height;
-        loaded = loaded + 1;
         death = death + 1;
       )
     )
     family = family + 1;
   )
-
-  let weapon_kind = 1;
-  while (weapon_kind <= 5) (
-    let weapon_frame = 0;
-    while (weapon_frame < doom_texture_weapon_frame_count[weapon_kind]) (
-      let name = doom_texture_weapon_name[weapon_kind, weapon_frame];
-      let weapon = doom_texture_load_sprite_patch[
-        path, directory, first, last, file_bytes, name
-      ];
-      if (weapon\ok == 1) () else (
-        => doom_texture_sprite_error[weapon\error];
-      )
-      let weapon_width = doom_wad_u16le[weapon\data, 0];
-      let weapon_height = doom_wad_u16le[weapon\data, 2];
-      if (weapon_width * weapon_height <= 8388608 - texels) () else (
-        => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
-      )
-      let weapon_mb = doom_texture_weapon_slot_for[
-        weapon_kind, weapon_frame
-      ] * 6;
-      buf_set[meta, weapon_mb, weapon_width];
-      buf_set[meta, weapon_mb + 1, weapon_height];
-      buf_set[meta, weapon_mb + 2, texels];
-      buf_set[meta, weapon_mb + 3, doom_texture_s16[weapon\data, 4]];
-      buf_set[meta, weapon_mb + 4, doom_texture_s16[weapon\data, 6]];
-      buf_set[meta, weapon_mb + 5, 0];
-      texels = texels + weapon_width * weapon_height;
-      loaded = loaded + 1;
-      weapon_frame = weapon_frame + 1;
+  let weapon = 1;
+  while (weapon <= 7) (
+    let frame = 0;
+    while (frame < doom_texture_weapon_frame_count[weapon]) (
+      bytes_set[required, doom_texture_weapon_slot_for[weapon, frame], 1];
+      frame = frame + 1;
     )
-    weapon_kind = weapon_kind + 1;
+    weapon = weapon + 1;
   )
-
-  let pickup_family = 0;
-  while (pickup_family < doom_texture_pickup_slots[]) (
-    if (bytes_get[needed_pickups, pickup_family] == 1) (
-      let pickup_name = doom_texture_pickup_name[pickup_family];
-      let pickup = doom_texture_load_sprite_patch[
-        path, directory, first, last, file_bytes, pickup_name
-      ];
-      if (pickup\ok == 1) () else (
-        => doom_texture_sprite_error[pickup\error];
-      )
-      let pickup_width = doom_wad_u16le[pickup\data, 0];
-      let pickup_height = doom_wad_u16le[pickup\data, 2];
-      if (pickup_width * pickup_height <= 8388608 - texels) () else (
-        => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
-      )
-      let pickup_slot = doom_texture_sprite_family_slots[] +
-        doom_texture_weapon_slots[] + pickup_family;
-      let pickup_mb = pickup_slot * 6;
-      buf_set[meta, pickup_mb, pickup_width];
-      buf_set[meta, pickup_mb + 1, pickup_height];
-      buf_set[meta, pickup_mb + 2, texels];
-      buf_set[meta, pickup_mb + 3, doom_texture_s16[pickup\data, 4]];
-      buf_set[meta, pickup_mb + 4, doom_texture_s16[pickup\data, 6]];
-      buf_set[meta, pickup_mb + 5, 0];
-      texels = texels + pickup_width * pickup_height;
-      loaded = loaded + 1;
+  let pickup = 0;
+  while (pickup < doom_texture_pickup_slots[]) (
+    if (bytes_get[needed_pickups, pickup] == 1) (
+      let slot = doom_texture_sprite_family_slots[] +
+        doom_texture_weapon_slots[] + pickup;
+      bytes_set[required, slot, 1];
     )
-    pickup_family = pickup_family + 1;
+    pickup = pickup + 1;
   )
-
-  let prop_family = 0;
-  while (prop_family < doom_texture_prop_families[]) (
-    if (bytes_get[needed_props, prop_family] == 1) (
-      let prop_frame = 0;
-      while (prop_frame < doom_texture_prop_frame_count[]) (
-        let prop_name = doom_texture_prop_name[prop_family, prop_frame];
-        let prop = doom_texture_load_sprite_patch[
-          path, directory, first, last, file_bytes, prop_name
-        ];
-        if (prop\ok == 1) () else ( => doom_texture_sprite_error[prop\error]; )
-        let prop_width = doom_wad_u16le[prop\data, 0];
-        let prop_height = doom_wad_u16le[prop\data, 2];
-        if (prop_width * prop_height <= 8388608 - texels) () else (
-          => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
-        )
-        let prop_slot = doom_texture_sprite_family_slots[] +
+  let prop = 0;
+  while (prop < doom_texture_prop_families[]) (
+    if (bytes_get[needed_props, prop] == 1) (
+      let frame = 0;
+      while (frame < doom_texture_prop_frame_count[prop]) (
+        let slot = doom_texture_sprite_family_slots[] +
           doom_texture_weapon_slots[] + doom_texture_pickup_slots[] +
-          prop_family * doom_texture_prop_frame_count[] + prop_frame;
-        let prop_mb = prop_slot * 6;
-        buf_set[meta, prop_mb, prop_width];
-        buf_set[meta, prop_mb + 1, prop_height];
-        buf_set[meta, prop_mb + 2, texels];
-        buf_set[meta, prop_mb + 3, doom_texture_s16[prop\data, 4]];
-        buf_set[meta, prop_mb + 4, doom_texture_s16[prop\data, 6]];
-        buf_set[meta, prop_mb + 5, 0];
-        texels = texels + prop_width * prop_height;
-        loaded = loaded + 1;
-        prop_frame = prop_frame + 1;
+          prop * doom_texture_prop_stride[] + frame;
+        bytes_set[required, slot, 1];
+        frame = frame + 1;
       )
     )
-    prop_family = prop_family + 1;
+    prop = prop + 1;
+  )
+  if (needed_teleport == 1) (
+    let frame = 0;
+    while (frame < doom_texture_teleport_frames[]) (
+      bytes_set[required, doom_texture_teleport_slot[frame], 1];
+      frame = frame + 1;
+    )
+  )
+  weapon = 2;
+  while (weapon <= 7) (
+    let frame = 0;
+    while (frame < doom_texture_muzzle_frame_count[weapon]) (
+      bytes_set[required, doom_texture_muzzle_slot_for[weapon, frame], 1];
+      frame = frame + 1;
+    )
+    weapon = weapon + 1;
+  )
+  let rocket_frame = 0;
+  while (rocket_frame <= 3) (
+    let rotation = 1;
+    let last_rotation = 8;
+    if (rocket_frame > 0) ( last_rotation = 1; )
+    while (rotation <= last_rotation) (
+      bytes_set[
+        required, doom_texture_rocket_slot[rocket_frame, rotation], 1
+      ];
+      rotation = rotation + 1;
+    )
+    rocket_frame = rocket_frame + 1;
+  )
+  if (bytes_get[needed, 2] == 1) (
+    let frame = 0;
+    while (frame < doom_texture_imp_ball_slots[]) (
+      bytes_set[required, doom_texture_imp_ball_slot[frame], 1];
+      frame = frame + 1;
+    )
+  )
+  if (bytes_get[needed, 4] == 1) (
+    let frame = 0;
+    while (frame < doom_texture_caco_ball_slots[]) (
+      bytes_set[required, doom_texture_caco_ball_slot[frame], 1];
+      frame = frame + 1;
+    )
+  )
+  if (bytes_get[needed, 6] == 1) (
+    let frame = 0;
+    while (frame < doom_texture_baron_ball_slots[]) (
+      bytes_set[required, doom_texture_baron_ball_slot[frame], 1];
+      frame = frame + 1;
+    )
+  )
+  let frame = 0;
+  while (frame < doom_texture_plasma_ball_slots[]) (
+    bytes_set[required, doom_texture_plasma_ball_slot[frame], 1];
+    frame = frame + 1;
+  )
+  frame = 0;
+  while (frame < doom_texture_bfg_ball_slots[]) (
+    bytes_set[required, doom_texture_bfg_ball_slot[frame], 1];
+    frame = frame + 1;
   )
 
-  if (needed_teleport == 1) (
-    let effect_frame = 0;
-    while (effect_frame < doom_texture_teleport_frames[]) (
-      let effect_name = doom_texture_teleport_name[effect_frame];
-      let effect = doom_texture_load_sprite_patch[
-        path, directory, first, last, file_bytes, effect_name
-      ];
-      if (effect\ok == 1) () else (
-        => doom_texture_sprite_error[effect\error];
+  let texels = 0;
+  let loaded = 0;
+  let slot = 0;
+  while (slot < slots) (
+    if (bytes_get[required, slot] == 1) (
+      let spec = doom_texture_sprite_slot_spec[slot];
+      if (spec\ok == 1) () else (
+        => doom_texture_sprite_error["invalid required sprite atlas slot"];
       )
-      let effect_width = doom_wad_u16le[effect\data, 0];
-      let effect_height = doom_wad_u16le[effect\data, 2];
-      if (effect_width * effect_height <= 8388608 - texels) () else (
+      let patch = doom_texture_load_sprite_patch[
+        path, directory, first, last, file_bytes, spec\name
+      ];
+      if (patch\ok == 1) () else (
+        => doom_texture_sprite_error[patch\error];
+      )
+      let width = doom_wad_u16le[patch\data, 0];
+      let height = doom_wad_u16le[patch\data, 2];
+      if (width * height <= 8388608 - texels) () else (
         => doom_texture_sprite_error["sprite atlas exceeds 8 MiB"];
       )
-      let effect_mb = doom_texture_teleport_slot[effect_frame] * 6;
-      buf_set[meta, effect_mb, effect_width];
-      buf_set[meta, effect_mb + 1, effect_height];
-      buf_set[meta, effect_mb + 2, texels];
-      buf_set[meta, effect_mb + 3, doom_texture_s16[effect\data, 4]];
-      buf_set[meta, effect_mb + 4, doom_texture_s16[effect\data, 6]];
-      buf_set[meta, effect_mb + 5, 0];
-      texels = texels + effect_width * effect_height;
+      let mb = slot * 6;
+      buf_set[meta, mb, width];
+      buf_set[meta, mb + 1, height];
+      buf_set[meta, mb + 2, texels];
+      buf_set[meta, mb + 3, doom_texture_s16[patch\data, 4]];
+      buf_set[meta, mb + 4, doom_texture_s16[patch\data, 6]];
+      buf_set[meta, mb + 5, spec\flip];
+      texels = texels + width * height;
       loaded = loaded + 1;
-      effect_frame = effect_frame + 1;
     )
+    slot = slot + 1;
   )
-
   let pixels = bytes_new[texels];
   let opaque = bytes_new[texels];
   doom_texture_zero[pixels];
   doom_texture_zero[opaque];
-  let slot = 0;
+  slot = 0;
   while (slot < slots) (
     let mb = slot * 6;
     let width = buf_get[meta, mb];
     if (width > 0) (
-      let spec = { ok: 0, name: "", flip: 0 };
-      if (slot < doom_texture_sprite_family_slots[]) (
-        let family = slot / doom_texture_sprite_family_stride[];
-        let within = slot % doom_texture_sprite_family_stride[];
-        if (within < 64) (
-          spec = doom_texture_sprite_spec[
-            family, within / 8, within % 8 + 1
-          ];
-        ) else (
-          spec = doom_texture_sprite_death_spec[family, within - 64];
-        )
-      ) else if (slot < doom_texture_sprite_family_slots[] +
-                           doom_texture_weapon_slots[]) (
-        let relative = slot - doom_texture_sprite_family_slots[];
-        let weapon = 1;
-        if (relative >= 15) ( weapon = 5; )
-        else if (relative >= 13) ( weapon = 4; )
-        else if (relative >= 9) ( weapon = 3; )
-        else if (relative >= 4) ( weapon = 2; )
-        let frame = relative - doom_texture_weapon_offset[weapon];
-        let name = doom_texture_weapon_name[weapon, frame];
-        if (str_len[name] == 6) (
-          spec = { ok: 1, name: name, flip: 0 };
-        )
-      ) else if (slot < doom_texture_sprite_family_slots[] +
-                           doom_texture_weapon_slots[] +
-                           doom_texture_pickup_slots[]) (
-        let pickup = slot - doom_texture_sprite_family_slots[] -
-          doom_texture_weapon_slots[];
-        let name = doom_texture_pickup_name[pickup];
-        if (str_len[name] == 6) (
-          spec = { ok: 1, name: name, flip: 0 };
-        )
-      ) else if (slot < doom_texture_sprite_family_slots[] +
-                           doom_texture_weapon_slots[] +
-                           doom_texture_pickup_slots[] +
-                           doom_texture_prop_slots[]) (
-        let relative = slot - doom_texture_sprite_family_slots[] -
-          doom_texture_weapon_slots[] - doom_texture_pickup_slots[];
-        let prop = relative / doom_texture_prop_frame_count[];
-        let frame = relative % doom_texture_prop_frame_count[];
-        let name = doom_texture_prop_name[prop, frame];
-        if (str_len[name] == 6) (
-          spec = { ok: 1, name: name, flip: 0 };
-        )
-      ) else (
-        let effect_frame = slot - doom_texture_sprite_family_slots[] -
-          doom_texture_weapon_slots[] - doom_texture_pickup_slots[] -
-          doom_texture_prop_slots[];
-        let name = doom_texture_teleport_name[effect_frame];
-        if (str_len[name] == 6) (
-          spec = { ok: 1, name: name, flip: 0 };
-        )
-      )
+      let spec = doom_texture_sprite_slot_spec[slot];
       if (spec\ok == 1) () else (
         => doom_texture_sprite_error["invalid populated sprite atlas slot"];
       )
@@ -1325,54 +1803,183 @@ private op doom_texture_load_ui [path, directory, lump_count, file_bytes] (
        meta: meta, pixels: pixels, opaque: opaque };
 )
 
+private op doom_texture_flat_error [message] (
+  => {
+    ok: 0, error: message, count: 0, names: bytes_new[0],
+    pixels: bytes_new[0], sky: 0 - 1
+  };
+)
+
+// Sector-flat discovery and loading is one cold, independently checked
+// catalog stage. It mutates only the map's validated name-to-slot table.
+private op doom_texture_load_flats [path, directory, lump_count,
+                                    file_bytes, map] (
+  let first = doom_texture_find_lump[directory, lump_count, "F_START"];
+  let last = doom_texture_find_lump[directory, lump_count, "F_END"];
+  if ((first >= 0) and (last > first)) () else (
+    => doom_texture_flat_error[
+      "F_START/F_END do not bound a flat namespace"
+    ];
+  )
+  let maximum = map\sector_count * 2;
+  let scratch_names = bytes_new[maximum * 8];
+  doom_texture_zero[scratch_names];
+  let count = 0;
+  let slot = 0;
+  while (slot < maximum) (
+    buf_set[map\sector_flats, slot, 0 - 1];
+    let name_offset = slot * 8;
+    if (doom_texture_name_valid_at[map\sector_names, name_offset] == 1) ()
+    else (
+      => doom_texture_flat_error[
+        "SECTORS flat slot ^{slot} is not a canonical WAD name"
+      ];
+    )
+    let flat = doom_texture_compact_find[
+      scratch_names, count, map\sector_names, name_offset
+    ];
+    if (flat < 0) (
+      if (count < 2048) () else (
+        => doom_texture_flat_error["map requires more than 2048 flats"];
+      )
+      let lump = doom_texture_find_lump_raw[
+        directory, lump_count, map\sector_names, name_offset
+      ];
+      if ((lump > first) and (lump < last)) () else (
+        => doom_texture_flat_error[
+          "SECTORS references a flat outside F_START/F_END"
+        ];
+      )
+      let entry = doom_texture_entry[directory, lump];
+      if ((doom_texture_entry_fits[entry, file_bytes] == 1) and
+          (entry\bytes == 4096)) () else (
+        => doom_texture_flat_error[
+          "sector flat is not one bounded 64x64 span"
+        ];
+      )
+      flat = count;
+      doom_texture_name_copy[
+        map\sector_names, name_offset, scratch_names, flat * 8
+      ];
+      count = count + 1;
+    )
+    buf_set[map\sector_flats, slot, flat];
+    slot = slot + 1;
+  )
+  if (count * 4096 <= 8388608) () else (
+    => doom_texture_flat_error["map flat atlas exceeds 8 MiB"];
+  )
+  let names = doom_texture_copy_prefix[scratch_names, count * 8];
+  let pixels = bytes_new[count * 4096];
+  let sky = 0 - 1;
+  let flat = 0;
+  while (flat < count) (
+    let lump = doom_texture_find_lump_raw[
+      directory, lump_count, names, flat * 8
+    ];
+    let entry = doom_texture_entry[directory, lump];
+    let data = doom_texture_read_range[path, entry\offset, 4096];
+    if (bytes_len[data] == 4096) () else (
+      => doom_texture_flat_error["short sector flat read"];
+    )
+    let i = 0;
+    while (i < 4096) (
+      bytes_set[pixels, flat * 4096 + i, bytes_get[data, i]];
+      i = i + 1;
+    )
+    if (doom_texture_name_is[names, flat * 8, "F_SKY1"] == 1) (
+      sky = flat;
+    )
+    flat = flat + 1;
+  )
+  => {
+    ok: 1, error: "", count: count, names: names,
+    pixels: pixels, sky: sky
+  };
+)
+
+private op doom_texture_colour_error [message] (
+  => {
+    ok: 0, error: message, palette: bytes_new[0],
+    colormap: bytes_new[0], colours: %32[], rgbx: %32[]
+  };
+)
+
+private op doom_texture_load_colours [path, directory, lump_count,
+                                      file_bytes] (
+  let palette_lump = doom_texture_load_catalog_lump[
+    path, directory, lump_count, file_bytes, "PLAYPAL", 1
+  ];
+  if (palette_lump\ok == 1) () else (
+    => doom_texture_colour_error[palette_lump\error];
+  )
+  if ((bytes_len[palette_lump\data] >= 768) and
+      (bytes_len[palette_lump\data] <= 10752) and
+      (bytes_len[palette_lump\data] % 768 == 0)) () else (
+    => doom_texture_colour_error[
+      "PLAYPAL is not 1..14 complete palettes"
+    ];
+  )
+  let palette = doom_texture_copy_prefix[palette_lump\data, 768];
+  let colormap_lump = doom_texture_load_catalog_lump[
+    path, directory, lump_count, file_bytes, "COLORMAP", 1
+  ];
+  if (colormap_lump\ok == 1) () else (
+    => doom_texture_colour_error[colormap_lump\error];
+  )
+  if ((bytes_len[colormap_lump\data] >= 8192) and
+      (bytes_len[colormap_lump\data] <= 16384) and
+      (bytes_len[colormap_lump\data] % 256 == 0)) () else (
+    => doom_texture_colour_error[
+      "COLORMAP does not contain 32 bounded maps"
+    ];
+  )
+  let colormap = doom_texture_copy_prefix[colormap_lump\data, 8192];
+  let colours = buf_new[32, 8192];
+  let rgbx = buf_new[32, 8192];
+  let shade = 0;
+  while (shade < 32) (
+    let colour = 0;
+    while (colour < 256) (
+      let mapped = bytes_get[colormap, shade * 256 + colour];
+      let offset = mapped * 3;
+      let red = bytes_get[palette, offset];
+      let green = bytes_get[palette, offset + 1];
+      let blue = bytes_get[palette, offset + 2];
+      buf_set[
+        colours, shade * 256 + colour,
+        red * 65536 + green * 256 + blue
+      ];
+      // GUI buffers are RGBA bytes, hence little-endian 0x00BBGGRR.
+      buf_set[
+        rgbx, shade * 256 + colour,
+        red + green * 256 + blue * 65536
+      ];
+      colour = colour + 1;
+    )
+    shade = shade + 1;
+  )
+  => {
+    ok: 1, error: "", palette: palette, colormap: colormap,
+    colours: colours, rgbx: rgbx
+  };
+)
+
 // This is the cold-load asset pipeline. It validates the effective catalog
 // lumps, computes bounded atlas sizes before allocation, composes indexed
 // pixels once, then binds map side/sector names to immutable atlas slots. The
 // per-frame renderer therefore performs no filesystem access or patch parsing.
 op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
-  let palette_lump = doom_texture_load_catalog_lump[
-    path, directory, lump_count, file_bytes, "PLAYPAL", 1
+  let colour_bank = doom_texture_load_colours[
+    path, directory, lump_count, file_bytes
   ];
-  if (palette_lump\ok == 1) () else (
-    => doom_texture_bank_error[palette_lump\error];
+  if (colour_bank\ok == 1) () else (
+    => doom_texture_bank_error[colour_bank\error];
   )
-  if ((bytes_len[palette_lump\data] >= 768) and
-      (bytes_len[palette_lump\data] <= 10752) and
-      (bytes_len[palette_lump\data] % 768 == 0)) () else (
-    => doom_texture_bank_error["PLAYPAL is not 1..14 complete palettes"];
-  )
-  let palette = doom_texture_copy_prefix[palette_lump\data, 768];
-
-  let colormap_lump = doom_texture_load_catalog_lump[
-    path, directory, lump_count, file_bytes, "COLORMAP", 1
-  ];
-  if (colormap_lump\ok == 1) () else (
-    => doom_texture_bank_error[colormap_lump\error];
-  )
-  if ((bytes_len[colormap_lump\data] >= 8192) and
-      (bytes_len[colormap_lump\data] <= 16384) and
-      (bytes_len[colormap_lump\data] % 256 == 0)) () else (
-    => doom_texture_bank_error["COLORMAP does not contain 32 bounded maps"];
-  )
-  let colormap = doom_texture_copy_prefix[colormap_lump\data, 8192];
-  let colours = buf_new[32, 8192];
-  let shade = 0;
-  while (shade < 32) (
-    let colour_index = 0;
-    while (colour_index < 256) (
-      let mapped = bytes_get[colormap, shade * 256 + colour_index];
-      let po = mapped * 3;
-      buf_set[
-        colours, shade * 256 + colour_index,
-        bytes_get[palette, po] * 65536 +
-          bytes_get[palette, po + 1] * 256 +
-          bytes_get[palette, po + 2]
-      ];
-      colour_index = colour_index + 1;
-    )
-    shade = shade + 1;
-  )
-
+  let palette = colour_bank\palette;
+  let colormap = colour_bank\colormap;
+  let colours = colour_bank\colours;
+  let rgbx_colours = colour_bank\rgbx;
   let pnames_lump = doom_texture_load_catalog_lump[
     path, directory, lump_count, file_bytes, "PNAMES", 1
   ];
@@ -1597,80 +2204,16 @@ op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
     ti = ti + 1;
   )
 
-  let flat_start = doom_texture_find_lump[directory, lump_count, "F_START"];
-  let flat_end = doom_texture_find_lump[directory, lump_count, "F_END"];
-  if ((flat_start >= 0) and (flat_end > flat_start)) () else (
-    => doom_texture_bank_error["F_START/F_END do not bound a flat namespace"];
-  )
-  let maximum_flats = map\sector_count * 2;
-  let scratch_flat_names = bytes_new[maximum_flats * 8];
-  doom_texture_zero[scratch_flat_names];
-  let flat_count = 0;
-  slot = 0;
-  while (slot < maximum_flats) (
-    buf_set[map\sector_flats, slot, 0 - 1];
-    let name_offset = slot * 8;
-    if (doom_texture_name_valid_at[map\sector_names, name_offset] == 1) () else (
-      => doom_texture_bank_error[
-        "SECTORS flat slot ^{slot} is not a canonical WAD name"
-      ];
-    )
-    let flat = doom_texture_compact_find[
-      scratch_flat_names, flat_count, map\sector_names, name_offset
-    ];
-    if (flat < 0) (
-      if (flat_count < 2048) () else (
-        => doom_texture_bank_error["map requires more than 2048 flats"];
-      )
-      let lump = doom_texture_find_lump_raw[
-        directory, lump_count, map\sector_names, name_offset
-      ];
-      if ((lump > flat_start) and (lump < flat_end)) () else (
-        => doom_texture_bank_error["SECTORS references a flat outside F_START/F_END"];
-      )
-      let entry = doom_texture_entry[directory, lump];
-      if ((doom_texture_entry_fits[entry, file_bytes] == 1) and
-          (entry\bytes == 4096)) () else (
-        => doom_texture_bank_error["sector flat is not one bounded 64x64 span"];
-      )
-      flat = flat_count;
-      doom_texture_name_copy[
-        map\sector_names, name_offset, scratch_flat_names, flat * 8
-      ];
-      flat_count = flat_count + 1;
-    )
-    buf_set[map\sector_flats, slot, flat];
-    slot = slot + 1;
-  )
-  if (flat_count * 4096 <= 8388608) () else (
-    => doom_texture_bank_error["map flat atlas exceeds 8 MiB"];
-  )
-  let flat_names = doom_texture_copy_prefix[
-    scratch_flat_names, flat_count * 8
+  let flats = doom_texture_load_flats[
+    path, directory, lump_count, file_bytes, map
   ];
-  let flat_pixels = bytes_new[flat_count * 4096];
-  let sky_flat = 0 - 1;
-  let fi = 0;
-  while (fi < flat_count) (
-    let lump = doom_texture_find_lump_raw[
-      directory, lump_count, flat_names, fi * 8
-    ];
-    let entry = doom_texture_entry[directory, lump];
-    let data = doom_texture_read_range[path, entry\offset, 4096];
-    if (bytes_len[data] == 4096) () else (
-      => doom_texture_bank_error["short sector flat read"];
-    )
-    let j = 0;
-    while (j < 4096) (
-      bytes_set[flat_pixels, fi * 4096 + j, bytes_get[data, j]];
-      j = j + 1;
-    )
-    if (doom_texture_name_is[flat_names, fi * 8, "F_SKY1"] == 1) (
-      sky_flat = fi;
-    )
-    fi = fi + 1;
+  if (flats\ok == 1) () else (
+    => doom_texture_bank_error[flats\error];
   )
-
+  let flat_count = flats\count;
+  let flat_names = flats\names;
+  let flat_pixels = flats\pixels;
+  let sky_flat = flats\sky;
   let sprites = doom_texture_load_sprites[
     path, directory, lump_count, file_bytes, map
   ];
@@ -1695,7 +2238,8 @@ op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
     sprite_pixels: sprites\pixels, sprite_opaque: sprites\opaque,
     ui_ready: 1, ui_slots: ui\slots, ui_meta: ui\meta,
     ui_pixels: ui\pixels, ui_opaque: ui\opaque,
-    palette: palette, colormap: colormap, colours: colours
+    palette: palette, colormap: colormap,
+    colours: colours, rgbx_colours: rgbx_colours
   };
 )
 

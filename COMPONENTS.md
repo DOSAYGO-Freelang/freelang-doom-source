@@ -29,7 +29,7 @@ component.
 ## Sidecar source and dependency audit
 
 This audit closes the sidecar set reachable by Freelang Doom Source at the
-extraction checkpoint `ed99f6782255e0ec136928e173afab0121edd19a`.
+current synchronization checkpoint `373ab2781ac3` (`v6.4.0`).
 
 A focused native ARM64 build with an exact compiler size report retained only
 these payloads:
@@ -37,7 +37,7 @@ these payloads:
 | Payload | Bytes | SHA-256 |
 | --- | ---: | --- |
 | macOS GUI presenter | 91,728 | `717e570d7593cd66f08828639fd6c7f4ce9974dee99a0c9a2482d4d1d78700c6` |
-| macOS PCM speaker | 53,632 | `0b3a635030a1d4797f5edcb1a0b69f32d7c24ab21366f935753e2dab26f59e4e` |
+| macOS PCM speaker | 53,632 | `0f75cf13c3572c3c412dc574e1e7286b20c0e056011f188fec5289de98144250` |
 
 No TLS, Bluetooth, Wi-Fi or RTL-SDR sidecar was reachable or retained. The
 relevant source and dependency findings are:
@@ -49,7 +49,7 @@ relevant source and dependency findings are:
   CoreFoundation, CoreGraphics, CoreServices, `libobjc` and `libSystem`.
 - The macOS PCM speaker is a single DOSAYGO Objective-C source file. Its source
   SHA-256 is
-  `fe212b2ec9c27d0053883b232ecc31c405d964c6a09c749c80c030d6c5587410`.
+  `4abc988dd2fb7f35421f08b9fccf7c75063d13bed2e259cc4b229560d48fe298`.
   It dynamically imports Apple AudioToolbox, CoreFoundation, Foundation,
   `libobjc` and `libSystem`.
 - The Windows GUI presenter is a single DOSAYGO C source file. Its source

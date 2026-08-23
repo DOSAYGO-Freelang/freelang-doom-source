@@ -1,0 +1,160 @@
+// Closed stock THINGS policy shared by map admission, simulation and assets.
+// Numeric WAD identities are interpreted once here; geometry, combat and
+// texture modules retain their own compatibility operations but do not carry
+// parallel copies of this catalog.
+
+op doom_stock_thing_is_enemy [kind] (
+  if ((kind == 7) or (kind == 9) or (kind == 16) or (kind == 58) or
+      (kind == 65) or (kind == 66) or (kind == 67) or (kind == 68) or
+      (kind == 69) or (kind == 71) or (kind == 84) or
+      ((kind >= 3001) and (kind <= 3006))) ( => 1; )
+  => 0;
+)
+
+// The admitted Doom One cast. Spectres deliberately share the demon family;
+// their visual distinction remains renderer policy.
+op doom_stock_actor_family [kind] (
+  if (kind == 3004) ( => 0; ) // POSS: former human
+  if (kind == 9) ( => 1; )    // SPOS: shotgun guy
+  if (kind == 3001) ( => 2; ) // TROO: imp
+  if ((kind == 3002) or (kind == 58)) ( => 3; ) // SARG: demon/spectre
+  if (kind == 3005) ( => 4; ) // HEAD: cacodemon
+  if (kind == 3006) ( => 5; ) // SKUL: lost soul
+  if (kind == 3003) ( => 6; ) // BOSS: baron of Hell
+  if (kind == 16) ( => 7; )   // CYBR: cyberdemon
+  if (kind == 7) ( => 8; )    // SPID: spider mastermind
+  => 0 - 1;
+)
+
+op doom_stock_actor_max_health [kind] (
+  if (kind == 3004) ( => 20; )
+  if (kind == 9) ( => 30; )
+  if (kind == 3001) ( => 60; )
+  if ((kind == 3002) or (kind == 58)) ( => 150; )
+  if (kind == 3005) ( => 400; )
+  if (kind == 3006) ( => 100; )
+  if (kind == 3003) ( => 1000; )
+  if (kind == 16) ( => 4000; )
+  if (kind == 7) ( => 3000; )
+  => 0;
+)
+
+op doom_stock_actor_attack_range [kind] (
+  if ((kind == 3004) or (kind == 9) or (kind == 3001)) ( => 320; )
+  if ((kind == 3002) or (kind == 58)) ( => 80; )
+  if ((kind == 3005) or (kind == 3006) or (kind == 3003)) ( => 320; )
+  if ((kind == 16) or (kind == 7)) ( => 512; )
+  => 80;
+)
+
+op doom_stock_pickup_family [kind] (
+  if (kind == 2007) ( => 0; )  // CLIP
+  if (kind == 2048) ( => 1; )  // AMMO
+  if (kind == 2011) ( => 2; )  // STIM
+  if (kind == 2012) ( => 3; )  // MEDI
+  if (kind == 2014) ( => 4; )  // BON1
+  if (kind == 2015) ( => 5; )  // BON2
+  if (kind == 2018) ( => 6; )  // ARM1
+  if (kind == 2019) ( => 7; )  // ARM2
+  if (kind == 2001) ( => 8; )  // SHOT
+  if (kind == 2002) ( => 9; )  // MGUN
+  if (kind == 2003) ( => 10; ) // LAUN
+  if (kind == 2008) ( => 11; ) // SHEL
+  if (kind == 2049) ( => 12; ) // SBOX
+  if (kind == 2046) ( => 13; ) // BROK
+  if (kind == 13) ( => 14; )   // RKEY
+  if (kind == 2013) ( => 15; ) // SOUL
+  if (kind == 2005) ( => 16; ) // CSAW
+  if (kind == 5) ( => 17; )    // BKEY
+  if (kind == 6) ( => 18; )    // YKEY
+  if (kind == 38) ( => 19; )   // RSKU
+  if (kind == 39) ( => 20; )   // YSKU
+  if (kind == 40) ( => 21; )   // BSKU
+  if (kind == 2004) ( => 22; ) // PLAS
+  if (kind == 2006) ( => 23; ) // BFUG
+  if (kind == 2010) ( => 24; ) // ROCK
+  if (kind == 2047) ( => 25; ) // CELL
+  if (kind == 17) ( => 26; )   // CELP
+  if (kind == 8) ( => 27; )    // BPAK
+  if (kind == 2022) ( => 28; ) // PINV
+  if (kind == 2023) ( => 29; ) // PSTR
+  if (kind == 2024) ( => 30; ) // PINS
+  if (kind == 2025) ( => 31; ) // SUIT
+  if (kind == 2026) ( => 32; ) // PMAP
+  if (kind == 2045) ( => 33; ) // PVIS
+  => 0 - 1;
+)
+
+op doom_stock_prop_family [kind] (
+  if (kind == 2035) ( => 0; ) // BAR1: explosive barrel
+  if ((kind == 10) or (kind == 12)) ( => 1; ) // PLAY: bloody mess
+  if (kind == 15) ( => 2; ) // PLAY: dead player
+  if (kind == 18) ( => 3; ) // POSS: dead former human
+  if (kind == 19) ( => 4; ) // SPOS: dead sergeant
+  if (kind == 20) ( => 5; ) // TROO: dead imp
+  if (kind == 21) ( => 6; ) // SARG: dead demon
+  if (kind == 22) ( => 7; ) // HEAD: dead cacodemon
+  if (kind == 23) ( => 8; ) // SKUL: dead lost soul
+  if (kind == 24) ( => 9; ) // POL5: blood pool
+  if (kind == 25) ( => 10; ) // POL1: impaled human
+  if (kind == 26) ( => 11; ) // POL6: twitching impaled human
+  if (kind == 27) ( => 12; ) // POL4: skull on pole
+  if (kind == 28) ( => 13; ) // POL2: heads on a stick
+  if (kind == 29) ( => 14; ) // POL3: skull pile with candles
+  if (kind == 30) ( => 15; ) // COL1: tall green pillar
+  if (kind == 31) ( => 16; ) // COL2: short green pillar
+  if (kind == 32) ( => 17; ) // COL3: tall red pillar
+  if (kind == 33) ( => 18; ) // COL4: short red pillar
+  if (kind == 34) ( => 19; ) // CAND: candle
+  if (kind == 35) ( => 20; ) // CBRA: candelabra
+  if (kind == 36) ( => 21; ) // COL5: beating-heart pillar
+  if (kind == 37) ( => 22; ) // COL6: skull pillar
+  if (kind == 41) ( => 23; ) // CEYE: evil eye
+  if (kind == 42) ( => 24; ) // FSKU: floating skull
+  if (kind == 43) ( => 25; ) // TRE1: burnt tree
+  if (kind == 44) ( => 26; ) // TBLU: tall blue torch
+  if (kind == 45) ( => 27; ) // TGRN: tall green torch
+  if (kind == 46) ( => 28; ) // TRED: tall red torch
+  if (kind == 47) ( => 29; ) // SMIT: brown stump
+  if (kind == 48) ( => 30; ) // ELEC: tech pillar
+  if ((kind == 49) or (kind == 63)) ( => 31; ) // GOR1
+  if ((kind == 50) or (kind == 59)) ( => 32; ) // GOR2
+  if ((kind == 51) or (kind == 61)) ( => 33; ) // GOR3
+  if ((kind == 52) or (kind == 60)) ( => 34; ) // GOR4
+  if ((kind == 53) or (kind == 62)) ( => 35; ) // GOR5
+  if (kind == 54) ( => 36; ) // TRE2: large tree
+  if (kind == 55) ( => 37; ) // SMBT: short blue torch
+  if (kind == 56) ( => 38; ) // SMGT: short green torch
+  if (kind == 57) ( => 39; ) // SMRT: short red torch
+  if (kind == 2028) ( => 40; ) // COLU: floor lamp
+  => 0 - 1;
+)
+
+op doom_stock_prop_solid [kind] (
+  if ((kind >= 25) and (kind <= 33)) ( => 1; )
+  if ((kind >= 35) and (kind <= 37)) ( => 1; )
+  if ((kind >= 41) and (kind <= 57)) ( => 1; )
+  if ((kind >= 59) and (kind <= 63)) ( => 0; )
+  => (kind == 2028) or (kind == 2035);
+)
+
+op doom_stock_prop_radius [kind] (
+  if (kind == 2035) ( => 10; )
+  if (kind == 54) ( => 32; )
+  if (doom_stock_prop_solid[kind] == 1) ( => 16; )
+  => 20;
+)
+
+op doom_stock_prop_hangs [kind] (
+  => ((kind >= 49) and (kind <= 53)) or
+    ((kind >= 59) and (kind <= 63));
+)
+
+op doom_stock_prop_world_height [kind] (
+  if ((kind == 49) or (kind == 63)) ( => 68; )
+  if ((kind == 50) or (kind == 51) or (kind == 59)) ( => 84; )
+  if ((kind == 52) or (kind == 60)) ( => 68; )
+  if ((kind == 53) or (kind == 61) or (kind == 62)) ( => 52; )
+  if (kind == 2035) ( => 42; )
+  => 16;
+)

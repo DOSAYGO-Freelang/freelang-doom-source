@@ -65,6 +65,14 @@ trace = doom_input_trace_contact[
   },
   probe, 1
 ];
+trace = doom_input_trace_vertical[
+  trace, 20, 320, 448, 324, 448,
+  29, 27, 32, 39, 8, 7, 1, 0,
+  {
+    x: 324, y: 448, moved: 1, blocked: 1,
+    blocker_kind: 2, blocker_index: 9
+  }
+];
 trace = doom_input_trace_resume[
   trace, 21, 324, 448, 24, 8, 4, 1234, controls,
   {
@@ -77,9 +85,9 @@ doom_input_trace_finish[trace, 21];
 let evidence = read[path] with chaos { _ => "" };
 remove[path] with chaos { _ => 0 };
 
-doom_trace_expect[trace\records == 7, "full and partial collision records"];
+doom_trace_expect[trace\records == 8, "collision and vertical records"];
 doom_trace_expect[
-  (string_index_of[evidence, "freelang-doom-input/3", 0] >= 0) and
+  (string_index_of[evidence, "freelang-doom-input/4", 0] >= 0) and
   (string_index_of[evidence, "session map=E2M3", 0] >= 0) and
   (string_index_of[evidence, "raw=1,119,0,0", 0] >= 0) and
   (string_index_of[evidence, "before{focus=1 capture=0 w=0", 0] >= 0) and
@@ -100,6 +108,8 @@ doom_trace_expect[
   (string_index_of[evidence, "contact frame=20", 0] >= 0) and
   (string_index_of[evidence, "motion=8,4 actual=4,0", 0] >= 0) and
   (string_index_of[evidence, "forward_dot=32 request_sq=80 actual_sq=16", 0] >= 0) and
+  (string_index_of[evidence, "vertical frame=20", 0] >= 0) and
+  (string_index_of[evidence, "sector=29,27 vz=8,7 grounded=1,0", 0] >= 0) and
   (string_index_of[evidence, "resume frame=21", 0] >= 0),
   "raw held state is adjacent to exact persisted movement rejection"
 ];

@@ -4,7 +4,8 @@
 // are the copied authorities that rendering, collision and actor sight share
 // during play.
 
-credits: <../games/doom-combat.flx> <f/arrays> <f/buffers> <f/bytes> <f/trig>;
+credits: <../games/doom-combat.flx> <f/arrays> <f/buffers> <f/bytes>
+         <f/strings> <f/trig>;
 
 states DoomDoorPhase {
   Closed
@@ -17,6 +18,13 @@ states DoomMoverPhase {
   Idle
   Lowering
   Waiting
+  Raising
+  Done
+}
+
+states DoomCeilingPhase {
+  Idle
+  Lowering
   Raising
   Done
 }
@@ -55,6 +63,26 @@ private op doom_world_copy_side_textures [map] (
   => textures;
 )
 
+private op doom_world_copy_sides [map] (
+  let sides = buf_new[32, map\side_count * 3];
+  let i = 0;
+  while (i < map\side_count * 3) (
+    buf_set[sides, i, buf_get[map\sides, i]];
+    i = i + 1;
+  )
+  => sides;
+)
+
+private op doom_world_copy_sector_flats [map] (
+  let flats = buf_new[32, map\sector_count * 2];
+  let i = 0;
+  while (i < map\sector_count * 2) (
+    buf_set[flats, i, buf_get[map\sector_flats, i]];
+    i = i + 1;
+  )
+  => flats;
+)
+
 private op doom_world_other_sector [map, line, sector] (
   let lb = line * 4;
   let right = buf_get[map\line_sides, lb + 2];
@@ -65,10 +93,24 @@ private op doom_world_other_sector [map, line, sector] (
   => 0 - 1;
 )
 
+private op doom_world_neighbor_except [map, sector, excluded] (
+  let line = 0;
+  while (line < map\line_count) (
+    let other = doom_world_other_sector[map, line, sector];
+    if ((other >= 0) and (other != excluded)) ( => other; )
+    line = line + 1;
+  )
+  => 0 - 1;
+)
+
 private op doom_world_door_sector [map, line] (
   let lb = line * 4;
   let right = buf_get[map\line_sides, lb + 2];
   let left = buf_get[map\line_sides, lb + 3];
+  // Doom manual doors always operate on the linedef's back sector. Height is
+  // mutable state, not reliable action identity: an already open stay-open
+  // door must still be addressable by another manual line.
+  if (left >= 0) ( => left; )
   if ((right >= 0) and
       (buf_get[map\sectors, right * 5 + 1] <=
        buf_get[map\sectors, right * 5])) ( => right; )
@@ -79,20 +121,21 @@ private op doom_world_door_sector [map, line] (
 )
 
 private op doom_world_door_top [map, sector] (
-  let bottom = buf_get[map\sectors, sector * 5];
   let top = 2147483647;
   let i = 0;
   while (i < map\line_count) (
     let other = doom_world_other_sector[map, i, sector];
     if (other >= 0) (
       let ceiling = buf_get[map\sectors, other * 5 + 1];
-      if ((ceiling > bottom) and (ceiling < top)) ( top = ceiling; )
+      if (ceiling < top) ( top = ceiling; )
     )
     i = i + 1;
   )
-  if (top < 2147483647) () else ( => 0 - 1; )
+  // Negative map heights are ordinary Doom coordinates.  Keep absence at the
+  // opposite i32 extreme so a legal top such as -4 is never mistaken for a
+  // failed setup result.
+  if (top < 2147483647) () else ( => 0 - 2147483648; )
   top = top - 4;
-  if (top - bottom >= 56) () else ( => 0 - 1; )
   => top;
 )
 
@@ -106,41 +149,159 @@ private op doom_world_find_door [doors, sector] (
   => 0 - 1;
 )
 
-private op doom_world_tag_sector [map, tag] (
-  let found = 0 - 1;
-  let i = 0;
-  while (i < map\sector_count) (
-    if (buf_get[map\sectors, i * 5 + 4] == tag) (
-      if (found < 0) () else ( => 0 - 1; )
-      found = i;
-    )
-    i = i + 1;
-  )
-  => found;
+private op doom_world_door_stays_open [special] (
+  => (special == 2) or (special == 16) or (special == 31) or
+    (special == 32) or (special == 33) or (special == 34) or
+    (special == 46) or (special == 61) or (special == 76) or
+    (special == 86) or (special == 103);
 )
 
 private op doom_world_floor_target [map, sector, special] (
+  let current = buf_get[map\sectors, sector * 5];
   let target = 2147483647;
-  if ((special == 36) or (special == 102)) (
+  let lower_highest = (special == 19) or (special == 36) or
+    (special == 70) or (special == 98) or (special == 102);
+  let lower_lowest = (special == 23) or (special == 37) or
+    (special == 38) or (special == 82);
+  let raise_nearest = (special == 18) or (special == 20) or
+    (special == 22);
+  let down_wait_up = (special == 10) or (special == 21) or
+    (special == 62) or (special == 88);
+  let raise_ceiling = (special == 5) or (special == 24) or (special == 56) or
+    (special == 91);
+  if (lower_highest == 1) (
     target = 0 - 2147483648;
   )
+  if ((lower_lowest == 1) or (down_wait_up == 1)) (
+    target = current;
+  )
+  if (raise_ceiling == 1) ( target = buf_get[map\sectors, sector * 5 + 1]; )
   let i = 0;
   while (i < map\line_count) (
     let other = doom_world_other_sector[map, i, sector];
     if (other >= 0) (
       let floor = buf_get[map\sectors, other * 5];
-      if (((special == 36) or (special == 102)) and
-          (floor > target)) ( target = floor; )
-      if ((special == 37) and (floor < target)) ( target = floor; )
-      if (((special == 62) or (special == 88)) and (floor < target)) (
+      if ((lower_highest == 1) and (floor > target)) ( target = floor; )
+      if (((lower_lowest == 1) or (down_wait_up == 1)) and
+          (floor < target)) (
         target = floor;
+      )
+      if ((raise_nearest == 1) and (floor > current) and
+          (floor < target)) ( target = floor; )
+      if (raise_ceiling == 1) (
+        let ceiling = buf_get[map\sectors, other * 5 + 1];
+        if (ceiling < target) ( target = ceiling; )
       )
     )
     i = i + 1;
   )
+  if ((raise_nearest == 1) and (target == 2147483647)) (
+    target = current;
+  )
+  if (special == 30) (
+    let shortest = 2147483647;
+    i = 0;
+    while (i < map\line_count) (
+      if (doom_world_other_sector[map, i, sector] >= 0) (
+        let side_slot = 0;
+        while (side_slot < 2) (
+          let side = buf_get[map\line_sides, i * 4 + side_slot];
+          if ((side >= 0) and (side < map\side_count)) (
+            let texture = buf_get[map\side_textures, side * 3 + 1];
+            if ((map\texture_bank\ready == 1) and (texture >= 0) and
+                (texture < map\texture_bank\texture_count)) (
+              let height = buf_get[
+                map\texture_bank\texture_meta, texture * 3 + 1
+              ];
+              if ((height > 0) and (height < shortest)) ( shortest = height; )
+            )
+          )
+          side_slot = side_slot + 1;
+        )
+      )
+      i = i + 1;
+    )
+    if (shortest < 2147483647) ( target = current + shortest; )
+  )
+  if (special == 14) ( target = current + 32; )
+  if ((special == 58) or (special == 59)) ( target = current + 24; )
   if ((target > 0 - 2147483648) and (target < 2147483647)) () else ( => target; )
-  if (special == 36) ( target = target + 8; )
+  if ((special == 36) or (special == 70) or (special == 98)) (
+    if (target != current) ( target = target + 8; )
+  )
+  if (special == 56) ( target = target - 8; )
   => target;
+)
+
+private op doom_world_floor_limit [map, sector, highest] (
+  let limit = buf_get[map\sectors, sector * 5];
+  let line = 0;
+  while (line < map\line_count) (
+    let other = doom_world_other_sector[map, line, sector];
+    if (other >= 0) (
+      let floor = buf_get[map\sectors, other * 5];
+      if ((highest == 1) and (floor > limit)) ( limit = floor; )
+      if ((highest == 0) and (floor < limit)) ( limit = floor; )
+    )
+    line = line + 1;
+  )
+  => limit;
+)
+
+private op doom_world_ceiling_limit [map, sector, highest] (
+  let limit = buf_get[map\sectors, sector * 5 + 1];
+  let line = 0;
+  while (line < map\line_count) (
+    let other = doom_world_other_sector[map, line, sector];
+    if (other >= 0) (
+      let ceiling = buf_get[map\sectors, other * 5 + 1];
+      if ((highest == 1) and (ceiling > limit)) ( limit = ceiling; )
+      if ((highest == 0) and (ceiling < limit)) ( limit = ceiling; )
+    )
+    line = line + 1;
+  )
+  => limit;
+)
+
+private op doom_world_mover_special [special] (
+  => (special == 5) or (special == 10) or (special == 14) or
+    (special == 18) or (special == 19) or (special == 20) or
+    (special == 21) or (special == 22) or (special == 23) or
+    (special == 24) or (special == 30) or
+    (special == 36) or (special == 37) or (special == 38) or
+    (special == 53) or (special == 56) or (special == 58) or
+    (special == 59) or (special == 62) or (special == 70) or
+    (special == 82) or (special == 87) or
+    (special == 88) or (special == 91) or (special == 98) or
+    (special == 102);
+)
+
+private op doom_world_mover_returns [special] (
+  => (special == 10) or (special == 21) or
+    (special == 62) or (special == 88);
+)
+
+private op doom_world_mover_line_repeats [special] (
+  => (special == 62) or (special == 70) or (special == 82) or
+    (special == 87) or (special == 88) or (special == 91) or
+    (special == 98);
+)
+
+private op doom_world_light_special [special] (
+  => (special == 12) or (special == 13) or (special == 35) or
+    (special == 79) or (special == 80) or (special == 81) or
+    (special == 104);
+)
+
+private op doom_world_light_line_repeats [special] (
+  => (special == 79) or (special == 80) or (special == 81);
+)
+
+private op doom_world_ambient_light_special [special] (
+  => (special == 1) or (special == 2) or (special == 3) or
+    (special == 4) or
+    (special == 8) or (special == 12) or (special == 13) or
+    (special == 17);
 )
 
 private op doom_world_find_mover [movers, sector, special] (
@@ -148,6 +309,24 @@ private op doom_world_find_mover [movers, sector, special] (
   while (i < arr_len[movers]) (
     let mover = movers\\i;
     if ((mover\sector == sector) and (mover\special == special)) ( => i; )
+    i = i + 1;
+  )
+  => 0 - 1;
+)
+
+private op doom_world_ceiling_start_special [special] (
+  => (special == 6) or (special == 25) or (special == 44) or
+    (special == 72) or (special == 73) or (special == 77);
+)
+
+private op doom_world_ceiling_line_repeats [special] (
+  => (special == 72) or (special == 73) or (special == 77);
+)
+
+private op doom_world_find_ceiling [ceilings, sector] (
+  let i = 0;
+  while (i < arr_len[ceilings]) (
+    if (ceilings\\i\sector == sector) ( => i; )
     i = i + 1;
   )
   => 0 - 1;
@@ -179,164 +358,471 @@ private op doom_world_teleport_destination [map, tag] (
   => 0 - 1;
 )
 
+private op doom_world_door_special [special] (
+  => (special == 1) or (special == 26) or (special == 27) or
+    (special == 28) or (special == 31) or (special == 32) or
+    (special == 33) or (special == 34) or (special == 29) or
+    (special == 46) or (special == 63) or (special == 103) or
+    (special == 2) or (special == 3) or (special == 42) or
+    (special == 61) or (special == 75) or (special == 76) or
+    (special == 86) or (special == 90) or (special == 16);
+)
+
+private op doom_world_compile_donut [map, line, tag,
+                                     movers, links, changes, line_movers] (
+  let special = 9;
+  let supported = tag > 0;
+  let found = 0;
+  let sector = 0;
+  while ((supported == 1) and (sector < map\sector_count)) (
+    if (buf_get[map\sectors, sector * 5 + 4] == tag) (
+      let ring = doom_world_neighbor_except[map, sector, 0 - 1];
+      let outside = 0 - 1;
+      if (ring >= 0) (
+        outside = doom_world_neighbor_except[map, ring, sector];
+      )
+      if (outside >= 0) (
+        let target = buf_get[map\sectors, outside * 5];
+        let part = 0;
+        while (part < 2) (
+          let moving_sector = sector;
+          if (part == 1) ( moving_sector = ring; )
+          let current = buf_get[map\sectors, moving_sector * 5];
+          if (current != target) (
+            let mover = doom_world_find_mover[
+              movers, moving_sector, special
+            ];
+            if ((mover < 0) and (arr_len[movers] < 256)) (
+              let top = current;
+              let bottom = target;
+              let direction = 0 - 1;
+              if (target > current) (
+                top = target;
+                bottom = current;
+                direction = 1;
+              )
+              mover = arr_len[movers];
+              movers = movers + [{
+                sector: moving_sector, special: special,
+                top: top, bottom: bottom, direction: direction,
+                one_shot: 1, cycle: 0, paused: 0,
+                phase: DoomMoverPhase\Idle, phase_tick: 0
+              }];
+            )
+            if ((mover >= 0) and (arr_len[links] < 2048)) (
+              if (buf_get[line_movers, line] < 0) (
+                buf_set[line_movers, line, mover];
+              )
+              links = links + [{ line: line, target: mover }];
+              found = found + 1;
+            ) else (
+              supported = 0;
+            )
+          )
+          part = part + 1;
+        )
+        if (arr_len[changes] < 256) (
+          changes = changes + [{
+            line: line, sector: ring,
+            flat: buf_get[map\sector_flats, outside * 2]
+          }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      ) else (
+        supported = 0;
+      )
+    )
+    sector = sector + 1;
+  )
+  => {
+    supported: supported and (found > 0), movers: movers,
+    links: links, changes: changes
+  };
+)
+
+private op doom_world_compile_door [map, line, special, tag,
+                                    doors, links, line_doors,
+                                    line_door_directions] (
+  let tagged = (special == 29) or (special == 46) or
+    (special == 63) or (special == 103) or (special == 2) or
+    (special == 3) or (special == 42) or (special == 61) or
+    (special == 75) or (special == 76) or (special == 86) or
+    (special == 90) or (special == 16);
+  let supported = 1;
+  if ((tagged == 1) and (tag <= 0)) ( supported = 0; )
+  let direct_sector = 0 - 1;
+  if (tagged == 0) (
+    direct_sector = doom_world_door_sector[map, line];
+  )
+  let found = 0;
+  let sector = 0;
+  while ((supported == 1) and (sector < map\sector_count)) (
+    let selected = 0;
+    if ((tagged == 1) and
+        (buf_get[map\sectors, sector * 5 + 4] == tag)) (
+      selected = 1;
+    )
+    if ((tagged == 0) and (sector == direct_sector)) ( selected = 1; )
+    if (selected == 1) (
+      let door = doom_world_find_door[doors, sector];
+      if (door < 0) (
+        let top = doom_world_door_top[map, sector];
+        if ((arr_len[doors] < 256) and (top > 0 - 2147483648)) (
+          door = arr_len[doors];
+          doors = doors + [{
+            sector: sector,
+            bottom: buf_get[map\sectors, sector * 5], top: top,
+            stay_open: doom_world_door_stays_open[special],
+            delayed_open: (special == 16) or (special == 76),
+            waiting_to_open: 0,
+            phase: DoomDoorPhase\Closed, phase_tick: 0
+          }];
+        ) else (
+          supported = 0;
+        )
+      )
+      if (door >= 0) (
+        if (found == 0) ( buf_set[line_doors, line, door]; )
+        if (arr_len[links] < 2048) (
+          links = links + [{
+            line: line, target: door,
+            stay_open: doom_world_door_stays_open[special],
+            delayed_open: (special == 16) or (special == 76)
+          }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      )
+    )
+    sector = sector + 1;
+  )
+  if ((special == 3) or (special == 16) or (special == 42) or
+      (special == 75) or (special == 76)) (
+    buf_set[line_door_directions, line, 0 - 1];
+  )
+  => {
+    supported: supported and (found > 0),
+    doors: doors, links: links
+  };
+)
+
+private op doom_world_compile_stairs [map, line, special, tag,
+                                      movers, links, line_movers] (
+  let found = 0;
+  let selected = bytes_new[map\sector_count];
+  let root = 0;
+  while (root < map\sector_count) (
+    if ((buf_get[map\sectors, root * 5 + 4] == tag) and
+        (bytes_get[selected, root] == 0)) (
+      let sector = root;
+      let base_floor = buf_get[map\sectors, sector * 5];
+      let flat = buf_get[map\sector_flats, sector * 2];
+      let step = 1;
+      while ((sector >= 0) and (arr_len[movers] < 256)) (
+        bytes_set[selected, sector, 1];
+        let mover = arr_len[movers];
+        movers = movers + [{
+          sector: sector, special: special,
+          top: base_floor + step * 8, bottom: base_floor,
+          direction: 1, one_shot: 1, cycle: 0, paused: 0,
+          phase: DoomMoverPhase\Idle, phase_tick: 0
+        }];
+        if (found == 0) ( buf_set[line_movers, line, mover]; )
+        if (arr_len[links] < 2048) (
+          links = links + [{ line: line, target: mover }];
+          found = found + 1;
+        )
+        sector = doom_world_stair_next[
+          map, selected, sector, base_floor, flat
+        ];
+        step = step + 1;
+      )
+    )
+    root = root + 1;
+  )
+  => { supported: found > 0, movers: movers, links: links };
+)
+
+private op doom_world_compile_floor_mover [map, line, special, tag,
+                                           movers, links, line_movers] (
+  let found = 0;
+  // Tag zero is real stock map data (including reachable E3M5 triggers), not
+  // an implicit opt-out. The same finite mover/link caps still bound fan-out.
+  let supported = 1;
+  let sector = 0;
+  while ((supported == 1) and (sector < map\sector_count)) (
+    if (buf_get[map\sectors, sector * 5 + 4] == tag) (
+      let target = doom_world_floor_target[map, sector, special];
+      let current = buf_get[map\sectors, sector * 5];
+      let top = current;
+      let bottom = target;
+      let direction = 0 - 1;
+      let cycle = (special == 53) or (special == 87);
+      // Equal-height targets remain legal bounded no-ops for stock texture
+      // changes and redundant trigger faces.
+      let valid_target = (target > 0 - 2147483648) and
+        (target < 2147483647);
+      if (cycle == 1) (
+        bottom = doom_world_floor_limit[map, sector, 0];
+        top = doom_world_floor_limit[map, sector, 1];
+        valid_target = top > bottom;
+        if (current <= bottom) (
+          direction = 1;
+        ) else (
+          direction = 0 - 1;
+        )
+      ) else if (target > current) (
+        top = target;
+        bottom = current;
+        direction = 1;
+      )
+      if (valid_target == 1) (
+        let mover = doom_world_find_mover[movers, sector, special];
+        if ((mover < 0) and (arr_len[movers] < 256)) (
+          mover = arr_len[movers];
+          movers = movers + [{
+            sector: sector, special: special,
+            top: top, bottom: bottom, direction: direction,
+            one_shot: (1 - doom_world_mover_returns[special]) and
+              (1 - cycle),
+            cycle: cycle, paused: 0,
+            phase: DoomMoverPhase\Idle, phase_tick: 0
+          }];
+        )
+        if (mover >= 0) () else ( supported = 0; )
+        if (found == 0) ( buf_set[line_movers, line, mover]; )
+        if ((mover >= 0) and (arr_len[links] < 2048)) (
+          links = links + [{ line: line, target: mover }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      )
+    )
+    sector = sector + 1;
+  )
+  => {
+    supported: supported and (found > 0),
+    movers: movers, links: links
+  };
+)
+
+private op doom_world_compile_ceiling [map, line, special, tag,
+                                       ceilings, links, line_ceilings] (
+  let found = 0;
+  let supported = tag > 0;
+  let sector = 0;
+  while ((supported == 1) and (sector < map\sector_count)) (
+    if (buf_get[map\sectors, sector * 5 + 4] == tag) (
+      let ceiling = doom_world_find_ceiling[ceilings, sector];
+      if ((ceiling < 0) and (arr_len[ceilings] < 256)) (
+        ceiling = arr_len[ceilings];
+        ceilings = ceilings + [{
+          sector: sector, special: special,
+          top: buf_get[map\sectors, sector * 5 + 1],
+          bottom: buf_get[map\sectors, sector * 5] + 8,
+          speed: 4, cycle: 1, paused: 0,
+          phase: DoomCeilingPhase\Idle
+        }];
+      )
+      if (ceiling >= 0) (
+        if (found == 0) ( buf_set[line_ceilings, line, ceiling]; )
+        if (arr_len[links] < 2048) (
+          links = links + [{
+            line: line, target: ceiling, special: special,
+            top: buf_get[map\sectors, sector * 5 + 1]
+          }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      ) else (
+        supported = 0;
+      )
+    )
+    sector = sector + 1;
+  )
+  => {
+    supported: supported and (found > 0),
+    ceilings: ceilings, links: links
+  };
+)
+
+private op doom_world_compile_floor_ceiling [map, line, tag,
+                                             movers, mover_links,
+                                             ceilings, ceiling_links,
+                                             line_movers, line_ceilings] (
+  let special = 40;
+  let found = 0;
+  let supported = tag > 0;
+  let sector = 0;
+  while ((supported == 1) and (sector < map\sector_count)) (
+    if (buf_get[map\sectors, sector * 5 + 4] == tag) (
+      let current_floor = buf_get[map\sectors, sector * 5];
+      let floor_target = doom_world_floor_limit[map, sector, 0];
+      if (floor_target < current_floor) (
+        let mover = doom_world_find_mover[movers, sector, special];
+        if ((mover < 0) and (arr_len[movers] < 256)) (
+          mover = arr_len[movers];
+          movers = movers + [{
+            sector: sector, special: special,
+            top: current_floor, bottom: floor_target,
+            direction: 0 - 1, one_shot: 1,
+            cycle: 0, paused: 0,
+            phase: DoomMoverPhase\Idle, phase_tick: 0
+          }];
+        )
+        if ((mover >= 0) and (arr_len[mover_links] < 2048)) (
+          if (buf_get[line_movers, line] < 0) (
+            buf_set[line_movers, line, mover];
+          )
+          mover_links = mover_links + [{ line: line, target: mover }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      )
+      let current_ceiling = buf_get[map\sectors, sector * 5 + 1];
+      let ceiling_target = doom_world_ceiling_limit[map, sector, 1];
+      if (ceiling_target > current_ceiling) (
+        let ceiling = doom_world_find_ceiling[ceilings, sector];
+        if ((ceiling < 0) and (arr_len[ceilings] < 256)) (
+          ceiling = arr_len[ceilings];
+          ceilings = ceilings + [{
+            sector: sector, special: special,
+            top: ceiling_target, bottom: current_floor + 8,
+            speed: 4, cycle: 0, paused: 0,
+            phase: DoomCeilingPhase\Idle
+          }];
+        )
+        if ((ceiling >= 0) and (arr_len[ceiling_links] < 2048)) (
+          if (buf_get[line_ceilings, line] < 0) (
+            buf_set[line_ceilings, line, ceiling];
+          )
+          ceiling_links = ceiling_links + [{
+            line: line, target: ceiling, special: special,
+            top: ceiling_target
+          }];
+          found = found + 1;
+        ) else (
+          supported = 0;
+        )
+      )
+    )
+    sector = sector + 1;
+  )
+  => {
+    supported: supported and (found > 0),
+    movers: movers, mover_links: mover_links,
+    ceilings: ceilings, ceiling_links: ceiling_links
+  };
+)
+
 op doom_world_new [map] (
   if ((map\bsp_ready == 1) and
       (buf_len[map\line_actions] == map\line_count * 2)) () else (
     fall "doom_world_new: map has no validated linedef actions";
   )
   let sectors = doom_world_copy_sectors[map];
+  let sides = doom_world_copy_sides[map];
+  let sector_flats = doom_world_copy_sector_flats[map];
   let side_textures = doom_world_copy_side_textures[map];
   let line_doors = buf_new[32, map\line_count];
-  let line_door_masks = buf_new[32, map\line_count];
+  let line_door_directions = buf_new[32, map\line_count];
   let line_movers = buf_new[32, map\line_count];
-  let line_mover_masks = buf_new[32, map\line_count];
+  let line_ceilings = buf_new[32, map\line_count];
   let line_teleports = buf_new[32, map\line_count];
   let teleport_guard = bytes_new[map\line_count];
   let line_used = bytes_new[map\line_count];
   doom_world_fill[line_doors, 0 - 1];
-  doom_world_fill[line_door_masks, 0];
+  doom_world_fill[line_door_directions, 1];
   doom_world_fill[line_movers, 0 - 1];
-  doom_world_fill[line_mover_masks, 0];
+  doom_world_fill[line_ceilings, 0 - 1];
   doom_world_fill[line_teleports, 0 - 1];
   let doors = [];
   let movers = [];
+  let ceilings = [];
+  let door_links = [];
+  let mover_links = [];
+  let ceiling_links = [];
+  let scroll_sides = [];
+  let donut_changes = [];
   let unsupported_actions = 0;
   let i = 0;
   while (i < map\line_count) (
     let special = buf_get[map\line_actions, i * 2];
     let tag = buf_get[map\line_actions, i * 2 + 1];
-    if ((special == 0) or (special == 11)) (
-      // No setup: the exit is use-activated.
-    ) else if ((special == 9) or (special == 48)) (
-      // Donut floors and scrolling walls are retained as explicit inert
-      // actions until their world transitions are admitted.
-      unsupported_actions = unsupported_actions + 1;
-    ) else if ((special == 1) or (special == 26) or (special == 27) or
-               (special == 28) or (special == 31) or (special == 32) or
-               (special == 33) or (special == 34) or (special == 29) or
-               (special == 46) or (special == 63) or (special == 103)) (
-      let tagged = (special == 29) or (special == 46) or
-        (special == 63) or (special == 103);
-      let action_supported = 1;
-      if ((tagged == 1) and (tag <= 0)) ( action_supported = 0; )
-      let direct_sector = 0 - 1;
-      if (tagged == 0) ( direct_sector = doom_world_door_sector[map, i]; )
-      let found = 0;
-      let sector_cursor = 0;
-      while ((action_supported == 1) and
-             (sector_cursor < map\sector_count)) (
-        let selected = 0;
-        if ((tagged == 1) and
-            (buf_get[map\sectors, sector_cursor * 5 + 4] == tag)) (
-          selected = 1;
-        )
-        if ((tagged == 0) and (sector_cursor == direct_sector)) ( selected = 1; )
-        if (selected == 1) (
-          let door = doom_world_find_door[doors, sector_cursor];
-          if (door < 0) (
-            let door_top = doom_world_door_top[map, sector_cursor];
-            if ((arr_len[doors] < 31) and (door_top >= 0)) (
-              door = arr_len[doors];
-              doors = doors + [{
-                sector: sector_cursor,
-                bottom: buf_get[map\sectors, sector_cursor * 5],
-                top: door_top,
-                stay_open: (special == 31) or (special == 32) or
-                  (special == 33) or (special == 34) or
-                  (special == 46) or (special == 103),
-                phase: DoomDoorPhase\Closed, phase_tick: 0
-              }];
-            ) else (
-              action_supported = 0;
-            )
-          )
-          if ((door >= 0) and
-              ((special == 31) or (special == 32) or (special == 33) or
-               (special == 34) or (special == 46) or (special == 103))) (
-            let existing_door = doors\\door;
-            existing_door\stay_open = 1;
-          )
-          if (door >= 0) (
-            if (found == 0) ( buf_set[line_doors, i, door]; )
-            let mask = buf_get[line_door_masks, i] + (1 *< door);
-            buf_set[line_door_masks, i, mask];
-            found = found + 1;
-          )
-        )
-        sector_cursor = sector_cursor + 1;
-      )
-      if ((action_supported == 1) and (found > 0)) () else (
+    if ((special == 0) or (special == 11) or
+        (special == 51) or (special == 52)) (
+      // No setup: exits activate directly from use/cross transitions.
+    ) else if (special == 9) (
+      let compiled = doom_world_compile_donut[
+        map, i, tag, movers, mover_links, donut_changes, line_movers
+      ];
+      movers = compiled\movers;
+      mover_links = compiled\links;
+      donut_changes = compiled\changes;
+      if (compiled\supported == 1) () else (
         unsupported_actions = unsupported_actions + 1;
       )
-    ) else if ((special == 7) and (tag > 0)) (
-      let sector = doom_world_tag_sector[map, tag];
-      let found = 0;
-      if (sector >= 0) (
-        let selected = bytes_new[map\sector_count];
-        let base_floor = buf_get[map\sectors, sector * 5];
-        let flat = buf_get[map\sector_flats, sector * 2];
-        let step = 1;
-        while ((sector >= 0) and (arr_len[movers] < 31)) (
-          bytes_set[selected, sector, 1];
-          let mover = arr_len[movers];
-          movers = movers + [{
-            sector: sector, special: special,
-            top: base_floor + step * 8, bottom: base_floor,
-            direction: 1, one_shot: 1,
-            phase: DoomMoverPhase\Idle, phase_tick: 0
-          }];
-          if (found == 0) ( buf_set[line_movers, i, mover]; )
-          buf_set[line_mover_masks, i,
-            buf_get[line_mover_masks, i] + (1 *< mover)];
-          found = found + 1;
-          sector = doom_world_stair_next[
-            map, selected, sector, base_floor, flat
-          ];
-          step = step + 1;
-        )
-      )
-      if (found > 0) () else ( unsupported_actions = unsupported_actions + 1; )
-    ) else if ((special == 14) or (special == 36) or (special == 37) or
-               (special == 62) or (special == 88) or (special == 102)) (
-      let sector = 0 - 1;
-      if (tag > 0) ( sector = doom_world_tag_sector[map, tag]; )
-      let target = 2147483647;
-      if (sector >= 0) (
-        if (special == 14) (
-          target = buf_get[map\sectors, sector * 5] + 32;
-        ) else (
-          target = doom_world_floor_target[map, sector, special];
-        )
-      )
-      if ((sector >= 0) and (target > 0 - 2147483648) and
-          (target < 2147483647)) (
-        let mover = doom_world_find_mover[movers, sector, special];
-        if ((mover < 0) and (arr_len[movers] < 31)) (
-          let mover_top = buf_get[map\sectors, sector * 5];
-          let mover_bottom = target;
-          let mover_direction = 0 - 1;
-          if (special == 14) (
-            mover_top = target;
-            mover_bottom = buf_get[map\sectors, sector * 5];
-            mover_direction = 1;
-          )
-          mover = arr_len[movers];
-          movers = movers + [{
-            sector: sector, special: special,
-            top: mover_top, bottom: mover_bottom,
-            direction: mover_direction,
-            one_shot: (special == 14) or (special == 36) or
-              (special == 37) or (special == 102),
-            phase: DoomMoverPhase\Idle, phase_tick: 0
-          }];
-        )
-        if (mover >= 0) (
-          buf_set[line_movers, i, mover];
-          buf_set[line_mover_masks, i, 1 *< mover];
-        ) else (
-          unsupported_actions = unsupported_actions + 1;
-        )
+    ) else if (special == 48) (
+      let side = buf_get[map\line_sides, i * 4];
+      if ((side >= 0) and (side < map\side_count) and
+          (arr_len[scroll_sides] < 256)) (
+        scroll_sides = scroll_sides + [side];
       ) else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if (doom_world_door_special[special] == 1) (
+      let compiled = doom_world_compile_door[
+        map, i, special, tag, doors, door_links,
+        line_doors, line_door_directions
+      ];
+      doors = compiled\doors;
+      door_links = compiled\links;
+      if (compiled\supported == 1) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if (((special == 7) or (special == 8)) and (tag > 0)) (
+      let compiled = doom_world_compile_stairs[
+        map, i, special, tag, movers, mover_links, line_movers
+      ];
+      movers = compiled\movers;
+      mover_links = compiled\links;
+      if (compiled\supported == 1) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if (special == 40) (
+      let compiled = doom_world_compile_floor_ceiling[
+        map, i, tag, movers, mover_links, ceilings, ceiling_links,
+        line_movers, line_ceilings
+      ];
+      movers = compiled\movers;
+      mover_links = compiled\mover_links;
+      ceilings = compiled\ceilings;
+      ceiling_links = compiled\ceiling_links;
+      if (compiled\supported == 1) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if (doom_world_mover_special[special] == 1) (
+      let compiled = doom_world_compile_floor_mover[
+        map, i, special, tag, movers, mover_links, line_movers
+      ];
+      movers = compiled\movers;
+      mover_links = compiled\links;
+      if (compiled\supported == 1) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if (doom_world_ceiling_start_special[special] == 1) (
+      let compiled = doom_world_compile_ceiling[
+        map, i, special, tag, ceilings, ceiling_links, line_ceilings
+      ];
+      ceilings = compiled\ceilings;
+      ceiling_links = compiled\links;
+      if (compiled\supported == 1) () else (
         unsupported_actions = unsupported_actions + 1;
       )
     ) else if ((special == 39) or (special == 97)) (
@@ -347,6 +833,33 @@ op doom_world_new [map] (
       ) else (
         unsupported_actions = unsupported_actions + 1;
       )
+    ) else if (doom_world_light_special[special] == 1) (
+      let found = 0;
+      let sector = 0;
+      while (sector < map\sector_count) (
+        if ((tag > 0) and
+            (buf_get[map\sectors, sector * 5 + 4] == tag)) (
+          found = found + 1;
+        )
+        sector = sector + 1;
+      )
+      if (found > 0) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
+    ) else if ((special == 54) or (special == 57) or
+               (special == 74) or (special == 89)) (
+      let found = 0;
+      let sector = 0;
+      while (sector < map\sector_count) (
+        if ((tag > 0) and
+            (buf_get[map\sectors, sector * 5 + 4] == tag)) (
+          found = found + 1;
+        )
+        sector = sector + 1;
+      )
+      if (found > 0) () else (
+        unsupported_actions = unsupported_actions + 1;
+      )
     ) else (
       unsupported_actions = unsupported_actions + 1;
     )
@@ -355,6 +868,7 @@ op doom_world_new [map] (
 
   let pickup_alive = bytes_new[map\thing_count];
   let pickup_total = 0;
+  let solid_props = [];
   i = 0;
   while (i < map\thing_count) (
     let kind = buf_get[map\things, i * 4 + 2];
@@ -362,21 +876,43 @@ op doom_world_new [map] (
       bytes_set[pickup_alive, i, 1];
       pickup_total = pickup_total + 1;
     )
+    let prop_family = doom_texture_prop_family[kind];
+    if ((prop_family > 0) and (doom_texture_prop_solid[kind] == 1)) (
+      solid_props = solid_props + [{
+        thing: i, kind: kind,
+        x: buf_get[map\things, i * 4],
+        y: buf_get[map\things, i * 4 + 1],
+        radius: doom_texture_prop_radius[kind],
+        height: doom_texture_prop_world_height[kind]
+      }];
+    )
     i = i + 1;
   )
   let player_sector = doom_map_point_sector[map, map\player_x, map\player_y];
-  => {
-    sectors: sectors, side_textures: side_textures,
-    doors: doors, movers: movers, switch_buttons: [],
+  let world = {
+    sectors: sectors, sides: sides, sector_flats: sector_flats,
+    side_textures: side_textures,
+    doors: doors, movers: movers, ceilings: ceilings, switch_buttons: [],
     unsupported_actions: unsupported_actions,
-    line_doors: line_doors, line_door_masks: line_door_masks,
-    line_movers: line_movers, line_mover_masks: line_mover_masks,
+    line_doors: line_doors, door_links: door_links,
+    line_door_directions: line_door_directions,
+    line_movers: line_movers, mover_links: mover_links,
+    line_ceilings: line_ceilings, ceiling_links: ceiling_links,
+    scroll_sides: scroll_sides,
+    donut_changes: donut_changes,
     line_teleports: line_teleports, line_used: line_used,
     teleport_guard: teleport_guard,
     pickup_alive: pickup_alive, pickup_total: pickup_total, picked: 0,
+    solid_props: solid_props,
+    ambient_lights: [],
+    secret_seen: bytes_new[map\sector_count],
+    secret_total: 0, secrets_found: 0, secret_serial: 0,
+    boss_action_done: 0, boss_action_serial: 0,
     pickup_kind: 0 - 1, pickup_tick: 0, pickup_message: "",
     hazard_hits: 0, hazard_damage: 0,
     blue_key: 0, yellow_key: 0, red_key: 0,
+    blue_skull: 0, yellow_skull: 0, red_skull: 0,
+    computer_map: 0,
     sound_serial: 0, sound_kind: 0,
     teleport_serial: 0, teleport_x: 0, teleport_y: 0, teleport_angle: 0,
     teleport_fog_tick: 0,
@@ -385,6 +921,135 @@ op doom_world_new [map] (
     player_z: buf_get[sectors, player_sector * 5], player_vz: 0,
     grounded: 1, exited: 0, exit_tick: 0, tick: 0
   };
+  let sector = 0;
+  while (sector < map\sector_count) (
+    let special = buf_get[sectors, sector * 5 + 3];
+    if (doom_world_ambient_light_special[special] == 1) (
+      world\ambient_lights = world\ambient_lights + [{
+        sector: sector, special: special,
+        maximum: buf_get[sectors, sector * 5 + 2],
+        minimum: doom_world_surrounding_light[map, world, sector, 0]
+      }];
+    )
+    if (special == 9) ( world\secret_total = world\secret_total + 1; )
+    sector = sector + 1;
+  )
+  doom_world_validate[map, world];
+  => world;
+)
+
+// Validate the complete mutable authority at its construction boundary. The
+// hot frame path does not pay for this walk; focused tests and diagnostic
+// callers may invoke it again after a transition sequence.
+op doom_world_validate [map, world] (
+  if ((buf_len[world\sectors] == map\sector_count * 5) and
+      (buf_len[world\sides] == map\side_count * 3) and
+      (buf_len[world\sector_flats] == map\sector_count * 2) and
+      (buf_len[world\side_textures] == map\side_count * 3) and
+      (buf_len[world\line_doors] == map\line_count) and
+      (buf_len[world\line_door_directions] == map\line_count) and
+      (buf_len[world\line_movers] == map\line_count) and
+      (buf_len[world\line_ceilings] == map\line_count) and
+      (buf_len[world\line_teleports] == map\line_count) and
+      (bytes_len[world\teleport_guard] == map\line_count) and
+      (bytes_len[world\line_used] == map\line_count) and
+      (bytes_len[world\pickup_alive] == map\thing_count) and
+      (bytes_len[world\secret_seen] == map\sector_count) and
+      (arr_len[world\doors] <= 256) and
+      (arr_len[world\movers] <= 256) and
+      (arr_len[world\ceilings] <= 256) and
+      (arr_len[world\door_links] <= 2048) and
+      (arr_len[world\mover_links] <= 2048) and
+      (arr_len[world\ceiling_links] <= 2048) and
+      (world\pickup_total >= 0) and
+      (world\pickup_total <= map\thing_count) and
+      (world\picked >= 0) and (world\picked <= world\pickup_total) and
+      (world\secret_total >= 0) and
+      (world\secret_total <= map\sector_count) and
+      (world\secrets_found >= 0) and
+      (world\secrets_found <= world\secret_total) and
+      ((world\grounded == 0) or (world\grounded == 1)) and
+      ((world\exited == 0) or (world\exited == 1)) and
+      ((world\boss_action_done == 0) or
+       (world\boss_action_done == 1))) () else (
+    fall "doom_world_validate: table or scalar invariant violated";
+  )
+  let i = 0;
+  while (i < arr_len[world\doors]) (
+    let door = world\doors\\i;
+    let phase_valid = door\phase with states DoomDoorPhase {
+      Closed => 1
+      Opening => 1
+      Waiting => 1
+      Closing => 1
+    };
+    if ((door\sector >= 0) and (door\sector < map\sector_count) and
+        // The canonical four-unit headroom subtraction may turn a closed
+        // zero-travel door into [bottom - 4, bottom]. It remains a bounded
+        // inert action rather than a malformed record.
+        (door\top >= door\bottom - 4) and
+        ((door\stay_open == 0) or (door\stay_open == 1)) and
+        ((door\delayed_open == 0) or (door\delayed_open == 1)) and
+        ((door\waiting_to_open == 0) or (door\waiting_to_open == 1)) and
+        (door\phase_tick >= 0) and (door\phase_tick <= 1800) and
+        (phase_valid == 1)) () else (
+      fall "doom_world_validate: door invariant violated";
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[world\movers]) (
+    let mover = world\movers\\i;
+    let phase_valid = mover\phase with states DoomMoverPhase {
+      Idle => 1
+      Lowering => 1
+      Waiting => 1
+      Raising => 1
+      Done => 1
+    };
+    if ((mover\sector >= 0) and (mover\sector < map\sector_count) and
+        (mover\top >= mover\bottom) and
+        ((mover\direction == 1) or (mover\direction == 0 - 1)) and
+        ((mover\one_shot == 0) or (mover\one_shot == 1)) and
+        ((mover\cycle == 0) or (mover\cycle == 1)) and
+        ((mover\paused == 0) or (mover\paused == 1)) and
+        (mover\phase_tick >= 0) and (mover\phase_tick <= 90) and
+        (phase_valid == 1)) () else (
+      fall "doom_world_validate: mover invariant violated";
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[world\ceilings]) (
+    let ceiling = world\ceilings\\i;
+    let phase_valid = ceiling\phase with states DoomCeilingPhase {
+      Idle => 1
+      Lowering => 1
+      Raising => 1
+      Done => 1
+    };
+    if ((ceiling\sector >= 0) and
+        (ceiling\sector < map\sector_count) and
+        (ceiling\top >= ceiling\bottom) and
+        (ceiling\speed > 0) and (ceiling\speed <= 8) and
+        ((ceiling\cycle == 0) or (ceiling\cycle == 1)) and
+        ((ceiling\paused == 0) or (ceiling\paused == 1)) and
+        (phase_valid == 1)) () else (
+      fall "doom_world_validate: ceiling invariant violated";
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[world\solid_props]) (
+    let prop = world\solid_props\\i;
+    if ((prop\thing >= 0) and (prop\thing < map\thing_count) and
+        (prop\radius > 0) and (prop\radius <= 64) and
+        (prop\height > 0) and (prop\height <= 128)) () else (
+      fall "doom_world_validate: solid prop invariant violated";
+    )
+    i = i + 1;
+  )
+  => 1;
 )
 
 // World transitions report only a small semantic event. Doom-play owns the
@@ -396,13 +1061,21 @@ private op doom_world_emit_sound [world, kind] (
 )
 
 private op doom_world_activate_line_doors [world, line] (
-  let mask = buf_get[world\line_door_masks, line];
+  let direction = buf_get[world\line_door_directions, line];
   let activated = 0;
   let i = 0;
-  while (i < arr_len[world\doors]) (
-    if ((mask / (1 *< i)) % 2 == 1) (
-      let door = world\doors\\i;
-      door\phase = DoomDoorPhase\Opening;
+  while (i < arr_len[world\door_links]) (
+    let link = world\door_links\\i;
+    if (link\line == line) (
+      let door = world\doors\@(link\target);
+      door\stay_open = link\stay_open;
+      door\delayed_open = link\delayed_open;
+      if (direction > 0) (
+        door\phase = DoomDoorPhase\Opening;
+      ) else (
+        door\phase = DoomDoorPhase\Closing;
+      )
+      door\waiting_to_open = 0;
       door\phase_tick = 0;
       activated = activated + 1;
     )
@@ -413,18 +1086,148 @@ private op doom_world_activate_line_doors [world, line] (
 )
 
 private op doom_world_activate_line_movers [world, line] (
-  let mask = buf_get[world\line_mover_masks, line];
   let activated = 0;
   let i = 0;
-  while (i < arr_len[world\movers]) (
-    if ((mask / (1 *< i)) % 2 == 1) (
-      let mover = world\movers\\i;
+  while (i < arr_len[world\mover_links]) (
+    let link = world\mover_links\\i;
+    if (link\line == line) (
+      let mover = world\movers\@(link\target);
+      let was_paused = mover\paused;
+      mover\paused = 0;
       if (mover\phase == DoomMoverPhase\Idle) (
         doom_world_activate_mover[mover];
+        activated = activated + 1;
+      ) else if (was_paused == 1) (
         activated = activated + 1;
       )
     )
     i = i + 1;
+  )
+  => activated;
+)
+
+private op doom_world_activate_donut [world, line] (
+  let activated = 0;
+  let i = 0;
+  while (i < arr_len[world\donut_changes]) (
+    let change = world\donut_changes\\i;
+    if (change\line == line) (
+      buf_set[world\sector_flats, change\sector * 2, change\flat];
+      activated = activated + 1;
+    )
+    i = i + 1;
+  )
+  activated = activated + doom_world_activate_line_movers[world, line];
+  => activated;
+)
+
+private op doom_world_stop_tagged_platforms [map, world, line] (
+  let tag = buf_get[map\line_actions, line * 2 + 1];
+  let stopped = 0;
+  let i = 0;
+  while (i < arr_len[world\movers]) (
+    let mover = world\movers\\i;
+    if ((mover\cycle == 1) and (mover\phase != DoomMoverPhase\Idle) and
+        (mover\phase != DoomMoverPhase\Done) and
+        (buf_get[map\sectors, mover\sector * 5 + 4] == tag) and
+        (mover\paused == 0)) (
+      mover\paused = 1;
+      stopped = stopped + 1;
+    )
+    i = i + 1;
+  )
+  => stopped;
+)
+
+private op doom_world_activate_line_ceilings [map, world, line] (
+  let activated = 0;
+  let i = 0;
+  while (i < arr_len[world\ceiling_links]) (
+    let link = world\ceiling_links\\i;
+    if (link\line == line) (
+      let ceiling = world\ceilings\@(link\target);
+      if (ceiling\paused == 1) (
+        ceiling\paused = 0;
+        activated = activated + 1;
+      ) else if ((ceiling\phase == DoomCeilingPhase\Idle) or
+                 (ceiling\phase == DoomCeilingPhase\Done)) (
+        ceiling\special = link\special;
+        ceiling\bottom = buf_get[world\sectors, ceiling\sector * 5] + 8;
+        ceiling\speed = 4;
+        ceiling\cycle = 0;
+        if (link\special == 40) (
+          ceiling\top = link\top;
+          ceiling\phase = DoomCeilingPhase\Raising;
+        ) else (
+          ceiling\top = buf_get[world\sectors, ceiling\sector * 5 + 1];
+          ceiling\cycle = (link\special != 44) and
+            (link\special != 72);
+          ceiling\phase = DoomCeilingPhase\Lowering;
+        )
+        if ((link\special == 6) or (link\special == 77)) (
+          ceiling\speed = 8;
+        )
+        ceiling\paused = 0;
+        activated = activated + 1;
+      )
+    )
+    i = i + 1;
+  )
+  => activated;
+)
+
+private op doom_world_stop_tagged_ceilings [map, world, line] (
+  let tag = buf_get[map\line_actions, line * 2 + 1];
+  let stopped = 0;
+  let i = 0;
+  while (i < arr_len[world\ceilings]) (
+    let ceiling = world\ceilings\\i;
+    if ((ceiling\phase != DoomCeilingPhase\Idle) and
+        (ceiling\phase != DoomCeilingPhase\Done) and
+        (buf_get[map\sectors, ceiling\sector * 5 + 4] == tag) and
+        (ceiling\paused == 0)) (
+      ceiling\paused = 1;
+      stopped = stopped + 1;
+    )
+    i = i + 1;
+  )
+  => stopped;
+)
+
+private op doom_world_surrounding_light [map, world, sector, highest] (
+  let light = buf_get[world\sectors, sector * 5 + 2];
+  let line = 0;
+  while (line < map\line_count) (
+    let other = doom_world_other_sector[map, line, sector];
+    if (other >= 0) (
+      let candidate = buf_get[world\sectors, other * 5 + 2];
+      if ((highest == 1) and (candidate > light)) ( light = candidate; )
+      if ((highest == 0) and (candidate < light)) ( light = candidate; )
+    )
+    line = line + 1;
+  )
+  => light;
+)
+
+private op doom_world_activate_line_lights [map, world, line] (
+  let special = buf_get[map\line_actions, line * 2];
+  let tag = buf_get[map\line_actions, line * 2 + 1];
+  let activated = 0;
+  let sector = 0;
+  while (sector < map\sector_count) (
+    if (buf_get[map\sectors, sector * 5 + 4] == tag) (
+      let light = 35;
+      if ((special == 13) or (special == 81)) ( light = 255; )
+      if ((special == 12) or (special == 80)) (
+        light = doom_world_surrounding_light[map, world, sector, 1];
+      )
+      if (special == 104) (
+        light = doom_world_surrounding_light[map, world, sector, 0];
+      )
+      buf_set[world\sectors, sector * 5 + 2, light];
+      activated = activated + 1;
+    )
+    sector = sector + 1;
   )
   => activated;
 )
@@ -466,11 +1269,15 @@ private op doom_world_flip_switch [map, world, line, use_again] (
 
 op doom_world_map [map, world] (
   if ((buf_len[world\sectors] == map\sector_count * 5) and
+      (buf_len[world\sides] == map\side_count * 3) and
+      (buf_len[world\sector_flats] == map\sector_count * 2) and
       (buf_len[world\side_textures] == map\side_count * 3)) () else (
     fall "doom_world_map: mutable world authority disagrees with map";
   )
   => map + {
-    sectors: world\sectors, side_textures: world\side_textures
+    sectors: world\sectors, sides: world\sides,
+    sector_flats: world\sector_flats,
+    side_textures: world\side_textures
   };
 )
 
@@ -483,11 +1290,16 @@ private op doom_world_aim_line [map, player_x, player_y, angle, maximum] (
   while (i < map\line_count) (
     let special = buf_get[map\line_actions, i * 2];
     if ((special == 1) or (special == 7) or (special == 9) or
-        (special == 11) or (special == 14) or (special == 26) or
+        (special == 11) or (special == 14) or (special == 18) or
+        (special == 20) or (special == 21) or (special == 23) or
+        (special == 24) or
+        (special == 26) or
         (special == 27) or (special == 28) or (special == 29) or
         (special == 31) or (special == 32) or (special == 33) or
-        (special == 34) or (special == 46) or (special == 62) or
-        (special == 63) or (special == 102) or (special == 103)) (
+        (special == 34) or (special == 42) or (special == 46) or
+        (special == 51) or (special == 61) or (special == 62) or
+        (special == 63) or (special == 70) or
+        (special == 102) or (special == 103)) (
       let lb = i * 4;
       let va = buf_get[map\lines, lb] * 2;
       let vb = buf_get[map\lines, lb + 1] * 2;
@@ -535,43 +1347,63 @@ op doom_world_use [map, world, player_x, player_y, angle] (
     world\exit_tick = 0;
     => 1;
   )
-  if (special == 9) (
-    world\pickup_message = "DONUT SWITCH IS NOT YET ACTIVE";
-    world\pickup_tick = 90;
-    => 0;
+  if (special == 51) (
+    doom_world_flip_switch[map, world, line, 0];
+    doom_world_emit_sound[world, 4];
+    world\exited = 1;
+    world\exit_tick = 0;
+    => 1;
   )
-  if (special == 46) ( => 0; )
-  if ((special == 7) or (special == 14) or (special == 62) or
-      (special == 102)) (
-    if (doom_world_activate_line_movers[world, line] > 0) (
-      doom_world_flip_switch[map, world, line, special == 62];
+  if (special == 9) (
+    if (doom_world_activate_donut[world, line] > 0) (
+      doom_world_flip_switch[map, world, line, 0];
       => 1;
     )
     => 0;
   )
-  if (((special == 26) or (special == 32)) and (world\blue_key == 0)) (
-    world\pickup_message = "YOU NEED THE BLUE KEYCARD";
+  if (special == 46) ( => 0; )
+  if ((special == 7) or (special == 14) or (special == 18) or
+      (special == 20) or (special == 21) or (special == 23) or
+      (special == 62) or (special == 70) or (special == 102)) (
+    if (doom_world_activate_line_movers[world, line] > 0) (
+      doom_world_flip_switch[
+        map, world, line, (special == 62) or (special == 70)
+      ];
+      => 1;
+    )
+    => 0;
+  )
+  if (((special == 26) or (special == 32)) and
+      (world\blue_key == 0) and (world\blue_skull == 0)) (
+    world\pickup_message = "YOU NEED THE BLUE KEY";
     world\pickup_tick = 90;
     => 0;
   )
-  if (((special == 27) or (special == 34)) and (world\yellow_key == 0)) (
-    world\pickup_message = "YOU NEED THE YELLOW KEYCARD";
+  if (((special == 27) or (special == 34)) and
+      (world\yellow_key == 0) and (world\yellow_skull == 0)) (
+    world\pickup_message = "YOU NEED THE YELLOW KEY";
     world\pickup_tick = 90;
     => 0;
   )
-  if ((special == 28) and (world\red_key == 0)) (
-    world\pickup_message = "YOU NEED THE RED KEYCARD";
+  if ((special == 28) and
+      (world\red_key == 0) and (world\red_skull == 0)) (
+    world\pickup_message = "YOU NEED THE RED KEY";
     world\pickup_tick = 90;
     => 0;
   )
-  if ((special == 33) and (world\red_key == 0)) (
-    world\pickup_message = "YOU NEED THE RED KEYCARD";
+  if ((special == 33) and
+      (world\red_key == 0) and (world\red_skull == 0)) (
+    world\pickup_message = "YOU NEED THE RED KEY";
     world\pickup_tick = 90;
     => 0;
   )
   if (doom_world_activate_line_doors[world, line] > 0) (
-    if ((special == 29) or (special == 63) or (special == 103)) (
-      doom_world_flip_switch[map, world, line, special == 63];
+    if ((special == 29) or (special == 42) or (special == 61) or
+        (special == 63) or (special == 103)) (
+      doom_world_flip_switch[
+        map, world, line,
+        (special == 42) or (special == 61) or (special == 63)
+      ];
     )
     => 1;
   )
@@ -582,9 +1414,15 @@ op doom_world_shoot [map, world, player_x, player_y, angle] (
   let line = doom_world_aim_line[
     map, player_x, player_y, angle, 1024
   ];
-  if ((line >= 0) and
-      (buf_get[map\line_actions, line * 2] == 46)) () else ( => 0; )
-  if (doom_world_activate_line_doors[world, line] > 0) (
+  if (line >= 0) () else ( => 0; )
+  let special = buf_get[map\line_actions, line * 2];
+  if ((special == 24) and
+      (doom_world_activate_line_movers[world, line] > 0)) (
+    doom_world_flip_switch[map, world, line, 0];
+    => 1;
+  )
+  if ((special == 46) and
+      (doom_world_activate_line_doors[world, line] > 0)) (
     doom_world_flip_switch[map, world, line, 1];
     => 1;
   )
@@ -592,6 +1430,7 @@ op doom_world_shoot [map, world, player_x, player_y, angle] (
 )
 
 private op doom_world_activate_mover [mover] (
+  mover\paused = 0;
   mover\phase with states DoomMoverPhase {
     Idle => (
       if (mover\direction > 0) (
@@ -707,7 +1546,21 @@ private op doom_world_rearm_destination_teleports [map, world, x, y] (
 // action by rereading the WAD. Doom places the destination fog twenty map
 // units in front of the type-14 marker, which also keeps it visible after the
 // camera is moved to the marker itself.
+private op doom_world_teleport_active [map, world, line] (
+  let destination = buf_get[world\line_teleports, line];
+  if (destination >= 0) () else ( => 0; )
+  let destination_x = buf_get[map\things, destination * 4];
+  let destination_y = buf_get[map\things, destination * 4 + 1];
+  let sector = doom_map_point_sector[map, destination_x, destination_y];
+  let floor = buf_get[world\sectors, sector * 5];
+  let ceiling = buf_get[world\sectors, sector * 5 + 1];
+  => ceiling - floor >= 56;
+)
+
 private op doom_world_activate_teleport [map, world, line, from_x, from_y] (
+  // An inactive destination is inert: no placement, guard, sound, fog,
+  // serial or vertical state may imply that a teleport happened.
+  if (doom_world_teleport_active[map, world, line] == 1) () else ( => 0; )
   let destination = buf_get[world\line_teleports, line];
   if (destination >= 0) () else ( => 0; )
   world\teleport_x = buf_get[map\things, destination * 4];
@@ -798,11 +1651,81 @@ op doom_world_cross [map, world, from_x, from_y, to_x, to_y] (
     let crossed = doom_map_path_crosses_line[
       map, line, from_x, from_y, to_x, to_y
     ];
-    if (((special == 36) or (special == 37) or (special == 88)) and
+    if ((special == 40) and (crossed == 1) and
+        (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_movers[world, line];
+      activated = activated + doom_world_activate_line_ceilings[
+        map, world, line
+      ];
+      bytes_set[world\line_used, line, 1];
+    )
+    if (((special == 5) or (special == 10) or (special == 19) or
+         (special == 22) or (special == 36) or (special == 37) or
+         (special == 30) or (special == 38) or (special == 53) or
+         (special == 56) or
+         (special == 58) or (special == 59) or (special == 82) or
+         (special == 87) or (special == 88) or (special == 91) or
+         (special == 98)) and
         (mover_index >= 0) and
         (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
       activated = activated + doom_world_activate_line_movers[world, line];
-      if ((special == 36) or (special == 37)) (
+      if (doom_world_mover_line_repeats[special] == 0) (
+        bytes_set[world\line_used, line, 1];
+      )
+    )
+    if (((special == 54) or (special == 89)) and (crossed == 1) and
+        (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_stop_tagged_platforms[
+        map, world, line
+      ];
+      if (special == 54) ( bytes_set[world\line_used, line, 1]; )
+    )
+    if ((doom_world_ceiling_start_special[special] == 1) and
+        (buf_get[world\line_ceilings, line] >= 0) and
+        (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_ceilings[
+        map, world, line
+      ];
+      if (doom_world_ceiling_line_repeats[special] == 0) (
+        bytes_set[world\line_used, line, 1];
+      )
+    )
+    if (((special == 57) or (special == 74)) and (crossed == 1) and
+        (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_stop_tagged_ceilings[
+        map, world, line
+      ];
+      if (special == 57) ( bytes_set[world\line_used, line, 1]; )
+    )
+    if ((special == 8) and (mover_index >= 0) and
+        (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_movers[world, line];
+      bytes_set[world\line_used, line, 1];
+    )
+    if (((special == 2) or (special == 3) or (special == 16) or
+         (special == 75) or (special == 76) or (special == 86) or
+         (special == 90)) and
+        (buf_get[world\line_doors, line] >= 0) and
+        (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_doors[world, line];
+      if ((special == 2) or (special == 3) or (special == 16)) (
+        bytes_set[world\line_used, line, 1];
+      )
+    )
+    if ((special == 52) and (crossed == 1) and
+        (bytes_get[world\line_used, line] == 0)) (
+      bytes_set[world\line_used, line, 1];
+      world\exited = 1;
+      world\exit_tick = 0;
+      doom_world_emit_sound[world, 4];
+      => activated + 1;
+    )
+    if ((doom_world_light_special[special] == 1) and
+        (crossed == 1) and (bytes_get[world\line_used, line] == 0)) (
+      activated = activated + doom_world_activate_line_lights[
+        map, world, line
+      ];
+      if (doom_world_light_line_repeats[special] == 0) (
         bytes_set[world\line_used, line, 1];
       )
     )
@@ -832,12 +1755,21 @@ private op doom_world_tick_door [map, world, door, player_x, player_y] (
       if (ceiling >= door\top) (
         ceiling = door\top;
         door\phase = DoomDoorPhase\Waiting;
+        door\waiting_to_open = 0;
         door\phase_tick = 0;
       )
       buf_set[world\sectors, ceiling_index, ceiling];
     )
     Waiting => (
-      if (door\stay_open == 0) (
+      if (door\waiting_to_open == 1) (
+        door\phase_tick = door\phase_tick + 1;
+        if (door\phase_tick >= 1800) (
+          door\phase = DoomDoorPhase\Opening;
+          door\waiting_to_open = 0;
+          door\phase_tick = 0;
+          doom_world_emit_sound[world, 1];
+        )
+      ) else if (door\stay_open == 0) (
         door\phase_tick = door\phase_tick + 1;
         if (door\phase_tick >= 120) (
           door\phase = DoomDoorPhase\Closing;
@@ -855,7 +1787,13 @@ private op doom_world_tick_door [map, world, door, player_x, player_y] (
         let ceiling = buf_get[world\sectors, ceiling_index] - 4;
         if (ceiling <= door\bottom) (
           ceiling = door\bottom;
-          door\phase = DoomDoorPhase\Closed;
+          if (door\delayed_open == 1) (
+            door\phase = DoomDoorPhase\Waiting;
+            door\waiting_to_open = 1;
+            door\phase_tick = 0;
+          ) else (
+            door\phase = DoomDoorPhase\Closed;
+          )
         )
         buf_set[world\sectors, ceiling_index, ceiling];
       )
@@ -865,6 +1803,7 @@ private op doom_world_tick_door [map, world, door, player_x, player_y] (
 )
 
 private op doom_world_tick_mover [world, mover] (
+  if (mover\paused == 1) ( => 0; )
   let floor_index = mover\sector * 5;
   mover\phase with states DoomMoverPhase {
     Idle => ()
@@ -875,6 +1814,7 @@ private op doom_world_tick_mover [world, mover] (
         if (mover\one_shot == 1) (
           mover\phase = DoomMoverPhase\Done;
         ) else (
+          mover\direction = 1;
           mover\phase = DoomMoverPhase\Waiting;
           mover\phase_tick = 0;
         )
@@ -884,7 +1824,11 @@ private op doom_world_tick_mover [world, mover] (
     Waiting => (
       mover\phase_tick = mover\phase_tick + 1;
       if (mover\phase_tick >= 90) (
-        mover\phase = DoomMoverPhase\Raising;
+        if (mover\direction > 0) (
+          mover\phase = DoomMoverPhase\Raising;
+        ) else (
+          mover\phase = DoomMoverPhase\Lowering;
+        )
         mover\phase_tick = 0;
       )
     )
@@ -894,6 +1838,10 @@ private op doom_world_tick_mover [world, mover] (
         floor = mover\top;
         if (mover\one_shot == 1) (
           mover\phase = DoomMoverPhase\Done;
+        ) else if (mover\cycle == 1) (
+          mover\direction = 0 - 1;
+          mover\phase = DoomMoverPhase\Waiting;
+          mover\phase_tick = 0;
         ) else (
           mover\phase = DoomMoverPhase\Idle;
         )
@@ -902,6 +1850,108 @@ private op doom_world_tick_mover [world, mover] (
     )
     Done => ()
   };
+  => 0;
+)
+
+private op doom_world_tick_ceiling [world, ceiling] (
+  if (ceiling\paused == 1) ( => 0; )
+  let ceiling_index = ceiling\sector * 5 + 1;
+  ceiling\phase with states DoomCeilingPhase {
+    Idle => ()
+    Lowering => (
+      let floor = buf_get[world\sectors, ceiling\sector * 5];
+      let bottom = ceiling\bottom;
+      if (floor + 8 > bottom) ( bottom = floor + 8; )
+      let height = buf_get[world\sectors, ceiling_index] - ceiling\speed;
+      if (height <= bottom) (
+        height = bottom;
+        if (ceiling\cycle == 1) (
+          ceiling\phase = DoomCeilingPhase\Raising;
+        ) else (
+          ceiling\phase = DoomCeilingPhase\Done;
+        )
+      )
+      buf_set[world\sectors, ceiling_index, height];
+    )
+    Raising => (
+      let height = buf_get[world\sectors, ceiling_index] + ceiling\speed;
+      if (height >= ceiling\top) (
+        height = ceiling\top;
+        if (ceiling\cycle == 1) (
+          ceiling\phase = DoomCeilingPhase\Lowering;
+        ) else (
+          ceiling\phase = DoomCeilingPhase\Done;
+        )
+      )
+      buf_set[world\sectors, ceiling_index, height];
+    )
+    Done => ()
+  };
+  => 0;
+)
+
+private op doom_world_tick_scrolls [world] (
+  let i = 0;
+  while (i < arr_len[world\scroll_sides]) (
+    let side = world\scroll_sides\\i;
+    let slot = side * 3;
+    let offset = buf_get[world\sides, slot] + 1;
+    // Keep the long-running mutable offset bounded without changing the
+    // texture-periodic result.
+    if (offset >= 65536) ( offset = offset - 65536; )
+    buf_set[world\sides, slot, offset];
+    i = i + 1;
+  )
+  => 0;
+)
+
+// Sector-light thinkers are deterministic world state. Timing is translated
+// to the application's 60 Hz loop, while each admitted special retains its
+// distinct flash, strobe, glow or fire-flicker character.
+private op doom_world_tick_ambient_lights [world] (
+  let i = 0;
+  while (i < arr_len[world\ambient_lights]) (
+    let ambient = world\ambient_lights\\i;
+    let maximum = ambient\maximum;
+    let minimum = ambient\minimum;
+    let level = maximum;
+    let phase = world\tick + ambient\sector * 17;
+    if (ambient\special == 8) (
+      let span = maximum - minimum;
+      if (span > 0) (
+        let progress = (world\tick * 4) % (span * 2);
+        if (progress > span) ( progress = span * 2 - progress; )
+        level = minimum + progress;
+      )
+    ) else if ((ambient\special == 2) or (ambient\special == 4) or
+               (ambient\special == 13)) (
+      if (ambient\special == 13) ( phase = world\tick; )
+      if (phase % 35 >= 9) ( level = minimum; )
+    ) else if ((ambient\special == 3) or (ambient\special == 12)) (
+      if (ambient\special == 12) ( phase = world\tick; )
+      if (phase % 69 >= 9) ( level = minimum; )
+    ) else if (ambient\special == 1) (
+      let cycle = phase % 91;
+      if ((cycle >= 9) and (cycle < 78)) ( level = minimum; )
+    ) else if (ambient\special == 17) (
+      let drop = (((world\tick / 7) * 3 + ambient\sector * 5) % 4) * 16;
+      level = maximum - drop;
+      if (level < minimum) ( level = minimum; )
+    )
+    buf_set[world\sectors, ambient\sector * 5 + 2, level];
+    i = i + 1;
+  )
+  => 0;
+)
+
+private op doom_world_tick_secret [map, world, player_x, player_y] (
+  let sector = doom_map_point_sector[map, player_x, player_y];
+  if ((buf_get[world\sectors, sector * 5 + 3] == 9) and
+      (bytes_get[world\secret_seen, sector] == 0)) (
+    bytes_set[world\secret_seen, sector, 1];
+    world\secrets_found = world\secrets_found + 1;
+    world\secret_serial = world\secret_serial + 1;
+  )
   => 0;
 )
 
@@ -940,35 +1990,49 @@ op doom_world_jump [map, world, player_x, player_y] (
 // by actors so every accepted camera position remains in front of near clip.
 op doom_world_player_move_blocked [map, world,
                                    from_x, from_y, to_x, to_y] (
-  => doom_world_player_geometry_blocker[
+  if (doom_world_player_geometry_blocker[
+    map, world, from_x, from_y, to_x, to_y
+  ] != 0) ( => 1; )
+  => doom_world_player_prop_blocker[
     map, world, from_x, from_y, to_x, to_y
   ] != 0;
 )
 
 // Zero is clear; positive is linedef+1 and negative is -(target sector+1).
 // Each support sweep retains the map layer's exact compact blocker code.
+private op doom_world_player_support_blocker [map, world,
+                                               from_x, from_y, to_x, to_y,
+                                               offset_x, offset_y] (
+  => doom_map_move_blocker_at_radius[
+    map,
+    from_x + offset_x, from_y + offset_y,
+    to_x + offset_x, to_y + offset_y,
+    world\player_z, 56, 24,
+    from_x, from_y, to_x, to_y, 16
+  ];
+)
+
 private op doom_world_player_geometry_blocker [map, world,
                                                 from_x, from_y, to_x, to_y] (
-  let z = world\player_z;
-  let blocker = doom_map_move_blocker_at[
-    map, from_x, from_y, to_x, to_y, z, 56, 24
+  let blocker = doom_world_player_support_blocker[
+    map, world, from_x, from_y, to_x, to_y, 0, 0
   ];
   if (blocker != 0) ( => blocker; )
   let radius = 16;
-  blocker = doom_map_move_blocker_at[
-    map, from_x + radius, from_y, to_x + radius, to_y, z, 56, 24
+  blocker = doom_world_player_support_blocker[
+    map, world, from_x, from_y, to_x, to_y, radius, 0
   ];
   if (blocker != 0) ( => blocker; )
-  blocker = doom_map_move_blocker_at[
-    map, from_x - radius, from_y, to_x - radius, to_y, z, 56, 24
+  blocker = doom_world_player_support_blocker[
+    map, world, from_x, from_y, to_x, to_y, 0 - radius, 0
   ];
   if (blocker != 0) ( => blocker; )
-  blocker = doom_map_move_blocker_at[
-    map, from_x, from_y + radius, to_x, to_y + radius, z, 56, 24
+  blocker = doom_world_player_support_blocker[
+    map, world, from_x, from_y, to_x, to_y, 0, radius
   ];
   if (blocker != 0) ( => blocker; )
-  blocker = doom_map_move_blocker_at[
-    map, from_x, from_y - radius, to_x, to_y - radius, z, 56, 24
+  blocker = doom_world_player_support_blocker[
+    map, world, from_x, from_y, to_x, to_y, 0, 0 - radius
   ];
   if (blocker != 0) ( => blocker; )
   => 0;
@@ -980,13 +2044,50 @@ private op doom_world_player_geometry_blocker [map, world,
 // 42-unit barrel below a ledge cannot stop an airborne player above it.
 private op doom_world_contact_escape [from_x, from_y, to_x, to_y,
                                       blocker_x, blocker_y] (
+  => doom_world_contact_escape_radius[
+    from_x, from_y, to_x, to_y, blocker_x, blocker_y, 32
+  ];
+)
+
+private op doom_world_contact_escape_radius [from_x, from_y, to_x, to_y,
+                                             blocker_x, blocker_y, radius] (
   let from_dx = doom_world_abs[from_x - blocker_x];
   let from_dy = doom_world_abs[from_y - blocker_y];
-  if ((from_dx < 32) and (from_dy < 32)) () else ( => 0; )
+  if ((from_dx < radius) and (from_dy < radius)) () else ( => 0; )
   let to_dx = doom_world_abs[to_x - blocker_x];
   let to_dy = doom_world_abs[to_y - blocker_y];
   => to_dx * to_dx + to_dy * to_dy >
      from_dx * from_dx + from_dy * from_dy;
+)
+
+// Static map things participate in the same explicit body authority as actors
+// and barrels. Their vertical origin follows a moving floor or ceiling every
+// frame, so a raised platform cannot leave an invisible stale blocker behind.
+private op doom_world_player_prop_blocker [map, world,
+                                            from_x, from_y, to_x, to_y] (
+  let i = 0;
+  while (i < arr_len[world\solid_props]) (
+    let prop = world\solid_props\\i;
+    let contact = 16 + prop\radius;
+    if ((doom_world_abs[to_x - prop\x] < contact) and
+        (doom_world_abs[to_y - prop\y] < contact)) (
+      let sector = doom_map_point_sector[map, prop\x, prop\y];
+      let prop_z = buf_get[world\sectors, sector * 5];
+      if (doom_texture_prop_hangs[prop\kind] == 1) (
+        prop_z = buf_get[world\sectors, sector * 5 + 1] - prop\height;
+      )
+      if (doom_combat_vertical_overlap[
+            world\player_z, 56, prop_z, prop\height
+          ] == 1) (
+        if (doom_world_contact_escape_radius[
+              from_x, from_y, to_x, to_y,
+              prop\x, prop\y, contact
+            ] == 0) ( => prop\thing + 1; )
+      )
+    )
+    i = i + 1;
+  )
+  => 0;
 )
 
 // Positive is actor+1, negative is -(barrel+1), zero is clear. If two bodies
@@ -1060,6 +2161,10 @@ private op doom_world_player_move_blocker_mode [
   ];
   if (geometry > 0) ( => { kind: 2, index: geometry - 1 }; )
   if (geometry < 0) ( => { kind: 5, index: 0 - geometry - 1 }; )
+  let prop = doom_world_player_prop_blocker[
+    map, world, from_x, from_y, to_x, to_y
+  ];
+  if (prop > 0) ( => { kind: 6, index: prop - 1 }; )
   if (combat_mode == 1) (
     let body = doom_world_player_actor_blocker[
       map, world, combat, from_x, from_y, to_x, to_y
@@ -1077,6 +2182,7 @@ op doom_world_blocker_name [kind] (
   if (kind == 3) ( => "actor"; )
   if (kind == 4) ( => "barrel"; )
   if (kind == 5) ( => "sector"; )
+  if (kind == 6) ( => "prop"; )
   => "unknown";
 )
 
@@ -1108,27 +2214,22 @@ private op doom_world_stall_support_mask [map, world,
   if ((kind == 2) or (kind == 5)) () else ( => 0; )
   let wanted = index + 1;
   if (kind == 5) ( wanted = 0 - wanted; )
-  let z = world\player_z;
   let mask = 0;
-  if (doom_map_move_blocker_at[
-        map, from_x, from_y, to_x, to_y, z, 56, 24
+  if (doom_world_player_support_blocker[
+        map, world, from_x, from_y, to_x, to_y, 0, 0
       ] == wanted) ( mask = mask + 1; )
   let radius = 16;
-  if (doom_map_move_blocker_at[
-        map, from_x + radius, from_y, to_x + radius, to_y,
-        z, 56, 24
+  if (doom_world_player_support_blocker[
+        map, world, from_x, from_y, to_x, to_y, radius, 0
       ] == wanted) ( mask = mask + 2; )
-  if (doom_map_move_blocker_at[
-        map, from_x - radius, from_y, to_x - radius, to_y,
-        z, 56, 24
+  if (doom_world_player_support_blocker[
+        map, world, from_x, from_y, to_x, to_y, 0 - radius, 0
       ] == wanted) ( mask = mask + 4; )
-  if (doom_map_move_blocker_at[
-        map, from_x, from_y + radius, to_x, to_y + radius,
-        z, 56, 24
+  if (doom_world_player_support_blocker[
+        map, world, from_x, from_y, to_x, to_y, 0, radius
       ] == wanted) ( mask = mask + 8; )
-  if (doom_map_move_blocker_at[
-        map, from_x, from_y - radius, to_x, to_y - radius,
-        z, 56, 24
+  if (doom_world_player_support_blocker[
+        map, world, from_x, from_y, to_x, to_y, 0, 0 - radius
       ] == wanted) ( mask = mask + 16; )
   => mask;
 )
@@ -1432,9 +2533,37 @@ op doom_world_slide_move_combat [map, world, combat,
   ];
 )
 
+// Horizontal collision sweeps the centre and four cardinal points of the
+// player's 16-unit body. While grounded, retain a floor under any of those
+// same support points until the body has actually cleared a drop. Without
+// this shared horizon the centre can start falling first, land below the
+// ledge, and leave a support point permanently trapped behind the high step.
+private op doom_world_grounded_floor [map, world, player_x, player_y,
+                                      centre_floor] (
+  if (world\grounded == 1) () else ( => centre_floor; )
+  let floor = centre_floor;
+  let radius = 16;
+  let sector = doom_map_point_sector[map, player_x + radius, player_y];
+  let support = buf_get[world\sectors, sector * 5];
+  if ((support == world\player_z) and (support > floor)) ( floor = support; )
+  sector = doom_map_point_sector[map, player_x - radius, player_y];
+  support = buf_get[world\sectors, sector * 5];
+  if ((support == world\player_z) and (support > floor)) ( floor = support; )
+  sector = doom_map_point_sector[map, player_x, player_y + radius];
+  support = buf_get[world\sectors, sector * 5];
+  if ((support == world\player_z) and (support > floor)) ( floor = support; )
+  sector = doom_map_point_sector[map, player_x, player_y - radius];
+  support = buf_get[world\sectors, sector * 5];
+  if ((support == world\player_z) and (support > floor)) ( floor = support; )
+  => floor;
+)
+
 private op doom_world_tick_player [map, world, player_x, player_y] (
   let sector = doom_map_point_sector[map, player_x, player_y];
   let floor = buf_get[world\sectors, sector * 5];
+  floor = doom_world_grounded_floor[
+    map, world, player_x, player_y, floor
+  ];
   let ceiling = buf_get[world\sectors, sector * 5 + 1];
   let z = world\player_z + world\player_vz;
   let velocity = world\player_vz - 1;
@@ -1465,107 +2594,42 @@ private op doom_world_take_pickup [world, combat, kind] (
   ) else if (kind == 13) (
     if (world\red_key == 1) ( => 0; )
     world\red_key = 1;
-  ) else if (kind == 2005) (
-    let fresh = 1 - doom_combat_weapon_owned[combat, 1];
-    if (fresh == 0) ( => 0; )
-    bytes_set[combat\weapons, 1, 1];
-    doom_combat_select_weapon[combat, 1];
-  ) else if (kind == 2001) (
-    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
-    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
-    bytes_set[combat\weapons, 3, 1];
-    combat\shells = combat\shells + 8;
-    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
-  ) else if (kind == 2002) (
-    let fresh = 1 - doom_combat_weapon_owned[combat, 4];
-    if ((fresh == 0) and (combat\ammo >= combat\max_ammo)) ( => 0; )
-    bytes_set[combat\weapons, 4, 1];
-    combat\ammo = combat\ammo + 20;
-    if (fresh == 1) ( doom_combat_select_weapon[combat, 4]; )
-  ) else if (kind == 2003) (
-    let fresh = 1 - doom_combat_weapon_owned[combat, 5];
-    if ((fresh == 0) and (combat\rockets >= combat\max_rockets)) ( => 0; )
-    bytes_set[combat\weapons, 5, 1];
-    combat\rockets = combat\rockets + 2;
-    if (fresh == 1) ( doom_combat_select_weapon[combat, 5]; )
-  ) else if (kind == 2007) (
-    if (combat\ammo >= combat\max_ammo) ( => 0; )
-    combat\ammo = combat\ammo + 10;
-  ) else if (kind == 2048) (
-    if (combat\ammo >= combat\max_ammo) ( => 0; )
-    combat\ammo = combat\ammo + 50;
-  ) else if (kind == 2008) (
-    if (combat\shells >= combat\max_shells) ( => 0; )
-    combat\shells = combat\shells + 4;
-  ) else if (kind == 2049) (
-    if (combat\shells >= combat\max_shells) ( => 0; )
-    combat\shells = combat\shells + 20;
-  ) else if (kind == 2046) (
-    if (combat\rockets >= combat\max_rockets) ( => 0; )
-    combat\rockets = combat\rockets + 5;
-  ) else if (kind == 2011) (
-    if (combat\health >= combat\max_health) ( => 0; )
-    combat\health = combat\health + 10;
-    if (combat\health > combat\max_health) ( combat\health = combat\max_health; )
-  ) else if (kind == 2012) (
-    if (combat\health >= combat\max_health) ( => 0; )
-    combat\health = combat\health + 25;
-    if (combat\health > combat\max_health) ( combat\health = combat\max_health; )
-  ) else if (kind == 2013) (
-    if (combat\health >= combat\health_cap) ( => 0; )
-    combat\health = combat\health + 100;
-    if (combat\health > combat\health_cap) ( combat\health = combat\health_cap; )
-  ) else if (kind == 2014) (
-    if (combat\health >= combat\health_cap) ( => 0; )
-    combat\health = combat\health + 1;
-  ) else if (kind == 2015) (
-    if (combat\armor >= combat\max_armor) ( => 0; )
-    combat\armor = combat\armor + 1;
-  ) else if (kind == 2018) (
-    if (combat\armor >= 100) ( => 0; )
-    combat\armor = 100;
-  ) else if (kind == 2019) (
-    if (combat\armor >= 200) ( => 0; )
-    combat\armor = 200;
-  ) else ( => 0; )
-  if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
-  if (combat\shells > combat\max_shells) ( combat\shells = combat\max_shells; )
-  if (combat\rockets > combat\max_rockets) ( combat\rockets = combat\max_rockets; )
+  ) else if (kind == 38) (
+    if (world\red_skull == 1) ( => 0; )
+    world\red_skull = 1;
+  ) else if (kind == 39) (
+    if (world\yellow_skull == 1) ( => 0; )
+    world\yellow_skull = 1;
+  ) else if (kind == 40) (
+    if (world\blue_skull == 1) ( => 0; )
+    world\blue_skull = 1;
+  ) else if (kind == 2026) (
+    if (world\computer_map == 1) ( => 0; )
+    world\computer_map = 1;
+  ) else (
+    => doom_combat_take_pickup[combat, kind];
+  )
   => 1;
 )
-
-private op doom_world_take_drop [combat, kind] (
-  if (kind == 2007) (
-    if (combat\ammo >= combat\max_ammo) ( => 0; )
-    combat\ammo = combat\ammo + 5;
-    if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
-    => 1;
-  )
-  if (kind == 2001) (
-    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
-    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
-    bytes_set[combat\weapons, 3, 1];
-    combat\shells = combat\shells + 4;
-    if (combat\shells > combat\max_shells) (
-      combat\shells = combat\max_shells;
-    )
-    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
-    => 1;
-  )
-  => 0;
-)
-
 op doom_world_pickup_message [kind] (
   if (kind == 5) ( => "PICKED UP THE BLUE KEYCARD"; )
   if (kind == 6) ( => "PICKED UP THE YELLOW KEYCARD"; )
   if (kind == 13) ( => "PICKED UP THE RED KEYCARD"; )
+  if (kind == 38) ( => "PICKED UP THE RED SKULL KEY"; )
+  if (kind == 39) ( => "PICKED UP THE YELLOW SKULL KEY"; )
+  if (kind == 40) ( => "PICKED UP THE BLUE SKULL KEY"; )
   if (kind == 2005) ( => "A CHAINSAW! FIND SOME MEAT"; )
   if (kind == 2001) ( => "YOU GOT THE SHOTGUN"; )
   if (kind == 2002) ( => "YOU GOT THE CHAINGUN"; )
   if (kind == 2003) ( => "YOU GOT THE ROCKET LAUNCHER"; )
+  if (kind == 2004) ( => "YOU GOT THE PLASMA GUN"; )
+  if (kind == 2006) ( => "YOU GOT THE BFG9000"; )
   if ((kind == 2007) or (kind == 2048)) ( => "PICKED UP BULLETS"; )
   if ((kind == 2008) or (kind == 2049)) ( => "PICKED UP SHELLS"; )
   if (kind == 2046) ( => "PICKED UP ROCKETS"; )
+  if (kind == 2010) ( => "PICKED UP A ROCKET"; )
+  if ((kind == 2047) or (kind == 17)) ( => "PICKED UP ENERGY CELLS"; )
+  if (kind == 8) ( => "PICKED UP A BACKPACK FULL OF AMMO"; )
   if ((kind == 2011) or (kind == 2012) or (kind == 2013) or
       (kind == 2014)) (
     => "PICKED UP HEALTH";
@@ -1573,11 +2637,22 @@ op doom_world_pickup_message [kind] (
   if ((kind == 2015) or (kind == 2018) or (kind == 2019)) (
     => "PICKED UP ARMOR";
   )
+  if (kind == 2022) ( => "INVULNERABILITY"; )
+  if (kind == 2023) ( => "BERSERK"; )
+  if (kind == 2024) ( => "PARTIAL INVISIBILITY"; )
+  if (kind == 2025) ( => "RADIATION SHIELDING SUIT"; )
+  if (kind == 2026) ( => "COMPUTER AREA MAP"; )
+  if (kind == 2045) ( => "LIGHT AMPLIFICATION VISOR"; )
   => "PICKED UP ITEM";
 )
 
 op doom_world_pickup_is_weapon [kind] (
-  => (kind == 2001) or (kind == 2002) or (kind == 2003) or (kind == 2005);
+  => (kind == 2001) or (kind == 2002) or (kind == 2003) or
+    (kind == 2004) or (kind == 2005) or (kind == 2006);
+)
+
+op doom_world_pickup_is_power [kind] (
+  => ((kind >= 2022) and (kind <= 2026)) or (kind == 2045);
 )
 
 op doom_world_collect [map, world, combat, player_x, player_y] (
@@ -1613,7 +2688,7 @@ op doom_world_collect [map, world, combat, player_x, player_y] (
         (doom_map_sight_blocked[
           map, player_x, player_y, drop\x, drop\y
         ] == 0) and
-        (doom_world_take_drop[combat, drop\kind] == 1)) (
+        (doom_combat_take_drop[combat, drop\kind] == 1)) (
       drop\alive = 0;
       combat\drops_picked = combat\drops_picked + 1;
       world\picked = world\picked + 1;
@@ -1628,27 +2703,131 @@ op doom_world_collect [map, world, combat, player_x, player_y] (
   => collected;
 )
 
-// Classic damaging-floor specials are already part of each validated SECTOR.
-// Damage is applied once per second only while the player's feet touch the
-// authoritative floor; jumping genuinely clears the hazard for that tick.
+// Classic damaging-floor specials and admitted crushers share one bounded
+// damage seam into combat. Floor damage applies only while the player's feet
+// touch authoritative floor state; crusher contact follows the live sector
+// clearance and therefore cannot be escaped merely by jumping.
 op doom_world_apply_hazard [map, world, combat, player_x, player_y] (
-  if ((combat\health == 0) or (world\tick == 0) or
-      (world\tick % 60 != 0)) ( => combat; )
+  if ((combat\health == 0) or (world\tick == 0)) ( => combat; )
   let sector = doom_map_point_sector[map, player_x, player_y];
   let floor = buf_get[world\sectors, sector * 5];
+  if (world\tick % 30 == 0) (
+    let crushed = 0;
+    let i = 0;
+    while ((crushed == 0) and (i < arr_len[world\ceilings])) (
+      let ceiling = world\ceilings\\i;
+      if ((ceiling\sector == sector) and (ceiling\paused == 0) and
+          (ceiling\phase != DoomCeilingPhase\Idle) and
+          (ceiling\phase != DoomCeilingPhase\Done) and
+          (buf_get[world\sectors, sector * 5 + 1] - floor < 56)) (
+        crushed = 1;
+      )
+      i = i + 1;
+    )
+    if (crushed == 1) (
+      let before = combat\health;
+      combat = doom_combat_hurt_player[map, combat, 10];
+      world\hazard_hits = world\hazard_hits + 1;
+      world\hazard_damage = world\hazard_damage + before - combat\health;
+    )
+  )
+  if ((combat\health == 0) or (world\tick % 60 != 0)) ( => combat; )
   if (world\player_z <= floor) () else ( => combat; )
   let special = buf_get[world\sectors, sector * 5 + 3];
+  if ((combat\radiation_tick > 0) and (special != 11)) ( => combat; )
   let damage = 0;
   if (special == 7) ( damage = 5; )
   if (special == 5) ( damage = 10; )
   if ((special == 4) or (special == 16)) ( damage = 20; )
+  if (special == 11) ( damage = 20; )
   if (damage > 0) (
     let before = combat\health;
-    combat = doom_combat_hurt_player[map, combat, damage];
+    if (special == 11) (
+      combat = doom_combat_hurt_player_forced[map, combat, damage];
+    ) else (
+      combat = doom_combat_hurt_player[map, combat, damage];
+    )
     world\hazard_hits = world\hazard_hits + 1;
     world\hazard_damage = world\hazard_damage + before - combat\health;
+    if ((special == 11) and (combat\health <= 10)) (
+      world\exited = 1;
+      world\exit_tick = 0;
+    )
   )
   => combat;
+)
+
+// Registered Doom's episode finales are map-owned world transitions, not
+// generic monster-death side effects. E1M8 lowers tag 666 after every baron is
+// dead; E2M8 and E3M8 complete after their sole boss family is exhausted.
+op doom_world_apply_boss_actions [map, world, combat] (
+  if ((world\boss_action_done == 1) or (world\exited == 1)) ( => 0; )
+  let target_kind = 0;
+  let lower_tag = 0;
+  if (string_eq[map\name, "E1M8"] == 1) (
+    target_kind = 3003;
+    lower_tag = 666;
+  ) else if (string_eq[map\name, "E2M8"] == 1) (
+    target_kind = 16;
+  ) else if (string_eq[map\name, "E3M8"] == 1) (
+    target_kind = 7;
+  ) else ( => 0; )
+
+  let present = 0;
+  let alive = 0;
+  let i = 0;
+  while (i < combat\enemy_count) (
+    let actor = combat\actors\\i;
+    if (actor\kind == target_kind) (
+      present = present + 1;
+      if (doom_combat_actor_targetable[actor] == 1) ( alive = alive + 1; )
+    )
+    i = i + 1;
+  )
+  if ((present == 0) or (alive > 0)) ( => 0; )
+
+  if (lower_tag == 666) (
+    let sector = 0;
+    while (sector < map\sector_count) (
+      if (buf_get[map\sectors, sector * 5 + 4] == lower_tag) (
+        let current = buf_get[world\sectors, sector * 5];
+        let target = doom_world_floor_limit[map, sector, 0];
+        if (target < current) (
+          let mover = doom_world_find_mover[
+            world\movers, sector, lower_tag
+          ];
+          if (mover < 0) (
+            if (arr_len[world\movers] < 256) () else (
+              fall "doom_world_apply_boss_actions: mover table full";
+            )
+            world\movers = world\movers + [{
+              sector: sector, special: lower_tag,
+              top: current, bottom: target, direction: 0 - 1,
+              one_shot: 1, cycle: 0, paused: 0,
+              phase: DoomMoverPhase\Lowering, phase_tick: 0
+            }];
+          ) else (
+            let existing = world\movers\@mover;
+            existing\top = current;
+            existing\bottom = target;
+            existing\direction = 0 - 1;
+            existing\one_shot = 1;
+            existing\cycle = 0;
+            existing\paused = 0;
+            existing\phase = DoomMoverPhase\Lowering;
+            existing\phase_tick = 0;
+          )
+        )
+      )
+      sector = sector + 1;
+    )
+  ) else (
+    world\exited = 1;
+    world\exit_tick = 0;
+  )
+  world\boss_action_done = 1;
+  world\boss_action_serial = world\boss_action_serial + 1;
+  => 1;
 )
 
 op doom_world_tick [map, world, player_x, player_y] (
@@ -1664,8 +2843,17 @@ op doom_world_tick [map, world, player_x, player_y] (
     doom_world_tick_mover[world, mover];
     i = i + 1;
   )
+  i = 0;
+  while (i < arr_len[world\ceilings]) (
+    let ceiling = world\ceilings\\i;
+    doom_world_tick_ceiling[world, ceiling];
+    i = i + 1;
+  )
+  doom_world_tick_scrolls[world];
+  doom_world_tick_ambient_lights[world];
   doom_world_tick_switch_buttons[world];
   doom_world_tick_player[map, world, player_x, player_y];
+  doom_world_tick_secret[map, world, player_x, player_y];
   if (world\teleport_fog_tick > 0) (
     world\teleport_fog_tick = world\teleport_fog_tick - 1;
   )

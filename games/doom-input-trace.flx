@@ -4,7 +4,9 @@
 // result and exact blocker identity, separating producer/state errors from the
 // later gameplay consumer after the process has exited. Version 3 retains
 // partial collision response too: requested and accepted vectors, held state,
-// resolver probes and the first clean frame after contact.
+// resolver probes and the first clean frame after contact. Version 4 adds
+// sector/vertical transitions so ledge entry, falling and landing remain
+// adjacent to that horizontal collision evidence.
 
 credits: <../games/doom-input.flx> <f/files-chaos> <f/bytes> <f/strings>;
 
@@ -40,7 +42,7 @@ private op doom_input_trace_active [st] (
 op doom_input_trace_reset [path] (
   if (str_len[path] == 0) ( => 1; )
   => write_utf8_atomic[
-    path, "freelang-doom-input/3" + doom_input_trace_newline[]
+    path, "freelang-doom-input/4" + doom_input_trace_newline[]
   ];
 )
 
@@ -164,6 +166,39 @@ op doom_input_trace_movement [trace, frame, from_x, from_y, player_z,
     " moved=^{movement\moved} blocked=^{movement\blocked}" +
     " blocker=^{movement\blocker_kind},^{movement\blocker_index}" +
     " streak=^{blocked_streak} contact_streak=^{contact_streak}" +
+    doom_input_trace_newline[];
+  let appended = append[trace\path, line] with chaos { _ => 1 };
+  if (appended == 0) (
+    trace\records = trace\records + 1;
+  ) else (
+    trace\enabled = 0;
+    trace\error = "input trace append failed";
+  )
+  => trace;
+)
+
+// Record every sector/grounded transition and a bounded eight-frame cadence
+// while airborne. Accepted ledge crossings therefore retain both horizontal
+// movement and the vertical state that made the crossing legal.
+op doom_input_trace_vertical [trace, frame,
+                              from_x, from_y, to_x, to_y,
+                              from_sector, to_sector,
+                              from_z, to_z, from_vz, to_vz,
+                              from_grounded, to_grounded, movement] (
+  if (trace\enabled == 1) () else ( => trace; )
+  let milestone = (from_sector != to_sector) or
+    (from_grounded != to_grounded);
+  if ((to_grounded == 0) and (frame % 8 == 0)) ( milestone = 1; )
+  if (milestone == 1) () else ( => trace; )
+  if (doom_input_trace_has_room[trace] == 1) () else ( => trace; )
+  let line = "vertical frame=^{frame}" +
+    " from=^{from_x},^{from_y},^{from_z}" +
+    " to=^{to_x},^{to_y},^{to_z}" +
+    " sector=^{from_sector},^{to_sector}" +
+    " vz=^{from_vz},^{to_vz}" +
+    " grounded=^{from_grounded},^{to_grounded}" +
+    " moved=^{movement\moved} blocked=^{movement\blocked}" +
+    " blocker=^{movement\blocker_kind},^{movement\blocker_index}" +
     doom_input_trace_newline[];
   let appended = append[trace\path, line] with chaos { _ => 1 };
   if (appended == 0) (

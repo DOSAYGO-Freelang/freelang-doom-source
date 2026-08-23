@@ -1,8 +1,9 @@
 // Bounded deterministic combat state for the classic-map application.
 // Map geometry and WAD assets stay immutable; each admitted enemy owns one
-// explicit phase-bearing record, and at most 64 records are updated per tick.
+// explicit phase-bearing record under one published application bound.
 
 credits: <../games/doom-map.flx> <../games/doom-texture.flx>
+         <../games/doom-stock.flx>
          <f/arrays> <f/bytes> <f/trig>;
 
 states DoomEnemyPhase {
@@ -12,6 +13,10 @@ states DoomEnemyPhase {
   Pain
   Death
 }
+
+// The registered Doom 1.9 E1--E3 maximum is 177 admitted actors (E1M6).
+// Keep deliberate headroom while retaining a loud finite simulation table.
+op doom_combat_enemy_limit [] ( => 256; )
 
 op doom_combat_actor_phase_name [actor] (
   => actor\phase with states DoomEnemyPhase {
@@ -35,13 +40,39 @@ op doom_combat_actor_targetable [actor] (
 
 private op doom_combat_attack_sprite_slot [actor, rotation] (
   let frame = 4 + (actor\phase_tick / 5) % 2;
-  if (actor\family == 2) ( frame = 4 + (actor\phase_tick / 5) % 3; )
+  if ((actor\family == 2) or (actor\family == 3) or
+      (actor\family == 6)) (
+    frame = 4 + (actor\phase_tick / 5) % 3;
+  )
+  if (actor\family == 4) ( frame = 1 + (actor\phase_tick / 5) % 3; )
+  if (actor\family == 5) ( frame = 2 + (actor\phase_tick / 5) % 2; )
+  if (actor\family == 7) ( frame = 4 + (actor\phase_tick / 5) % 2; )
+  if (actor\family == 8) ( frame = 6; )
   => doom_texture_sprite_directional_slot[actor\family, frame, rotation];
 )
 
 private op doom_combat_pain_sprite_slot [actor, rotation] (
   let frame = 6;
-  if (actor\family == 2) ( frame = 7; )
+  if ((actor\family == 2) or (actor\family == 3) or
+      (actor\family == 6)) ( frame = 7; )
+  if (actor\family == 4) ( frame = 4 + (actor\phase_tick / 4) % 2; )
+  if (actor\family == 5) ( frame = 4; )
+  if (actor\family == 7) ( frame = 6; )
+  if (actor\family == 8) ( frame = 7; )
+  => doom_texture_sprite_directional_slot[actor\family, frame, rotation];
+)
+
+private op doom_combat_walk_sprite_slot [actor, rotation, dormant] (
+  let frame = (actor\phase_tick / 6) % 4;
+  if (dormant == 1) ( frame = (actor\phase_tick / 30) % 2; )
+  if (actor\family == 4) ( frame = 0; )
+  if (actor\family == 5) (
+    frame = (actor\phase_tick / 6) % 2;
+    if (dormant == 1) ( frame = (actor\phase_tick / 30) % 2; )
+  )
+  if ((actor\family == 8) and (dormant == 0)) (
+    frame = (actor\phase_tick / 6) % 6;
+  )
   => doom_texture_sprite_directional_slot[actor\family, frame, rotation];
 )
 
@@ -53,12 +84,8 @@ private op doom_combat_death_sprite_slot [actor] (
 
 op doom_combat_actor_sprite_slot [actor, rotation] (
   => actor\phase with states DoomEnemyPhase {
-    Dormant => doom_texture_sprite_directional_slot[
-      actor\family, (actor\phase_tick / 30) % 2, rotation
-    ]
-    Chase => doom_texture_sprite_directional_slot[
-      actor\family, (actor\phase_tick / 6) % 4, rotation
-    ]
+    Dormant => doom_combat_walk_sprite_slot[actor, rotation, 1]
+    Chase => doom_combat_walk_sprite_slot[actor, rotation, 0]
     Attack => doom_combat_attack_sprite_slot[actor, rotation]
     Pain => doom_combat_pain_sprite_slot[actor, rotation]
     Death => doom_combat_death_sprite_slot[actor]
@@ -87,6 +114,13 @@ op doom_combat_weapon_frame [combat] (
   if ((combat\selected_weapon == 5) and (cooldown >= 16)) (
     => 1;
   )
+  if ((combat\selected_weapon == 6) and (cooldown > 0)) (
+    => combat\shots % 2;
+  )
+  if (combat\selected_weapon == 7) (
+    if (cooldown >= 20) ( => 1; )
+    if (cooldown >= 10) ( => 2; )
+  )
   => 0;
 )
 
@@ -94,6 +128,36 @@ op doom_combat_weapon_slot [combat] (
   => doom_texture_weapon_slot_for[
     combat\selected_weapon, doom_combat_weapon_frame[combat]
   ];
+)
+
+// Doom draws the weapon body and muzzle fire as separate psprites. A negative
+// slot is explicit absence; callers never infer a flash from weapon movement.
+op doom_combat_muzzle_slot [combat] (
+  let cooldown = combat\shot_cooldown;
+  let weapon = combat\selected_weapon;
+  if ((weapon == 2) and (cooldown >= 8)) (
+    => doom_texture_muzzle_slot_for[2, 0];
+  )
+  if ((weapon == 3) and (cooldown >= 17)) (
+    let frame = 0;
+    if (cooldown < 21) ( frame = 1; )
+    => doom_texture_muzzle_slot_for[3, frame];
+  )
+  if ((weapon == 4) and (cooldown > 0)) (
+    => doom_texture_muzzle_slot_for[4, combat\shots % 2];
+  )
+  if ((weapon == 5) and (cooldown >= 22)) (
+    let frame = (30 - cooldown) / 2;
+    if (frame > 3) ( frame = 3; )
+    => doom_texture_muzzle_slot_for[5, frame];
+  )
+  if ((weapon == 6) and (cooldown > 0)) (
+    => doom_texture_muzzle_slot_for[6, combat\shots % 2];
+  )
+  if ((weapon == 7) and (cooldown >= 18)) (
+    => doom_texture_muzzle_slot_for[7, (30 - cooldown) % 2];
+  )
+  => 0 - 1;
 )
 
 op doom_combat_weapon_owned [combat, weapon] (
@@ -108,11 +172,19 @@ op doom_combat_current_ammo [combat] (
   )
   if (combat\selected_weapon == 3) ( => combat\shells; )
   if (combat\selected_weapon == 5) ( => combat\rockets; )
+  if ((combat\selected_weapon == 6) or (combat\selected_weapon == 7)) (
+    => combat\cells;
+  )
   => 0;
 )
 
+op doom_combat_can_fire [combat] (
+  if (combat\selected_weapon == 7) ( => combat\cells >= 40; )
+  => doom_combat_current_ammo[combat] > 0;
+)
+
 op doom_combat_select_weapon [combat, weapon] (
-  if ((weapon >= 1) and (weapon <= 5) and
+  if ((weapon >= 1) and (weapon <= 7) and
       (doom_combat_weapon_owned[combat, weapon] == 1)) (
     if (combat\selected_weapon != weapon) (
       combat\selected_weapon = weapon;
@@ -127,10 +199,10 @@ op doom_combat_cycle_weapon [combat, direction] (
   if ((direction == 1) or (direction == 0 - 1)) () else ( => combat; )
   let candidate = combat\selected_weapon;
   let attempts = 0;
-  while (attempts < 5) (
+  while (attempts < 7) (
     candidate = candidate + direction;
-    if (candidate > 5) ( candidate = 1; )
-    if (candidate < 1) ( candidate = 5; )
+    if (candidate > 7) ( candidate = 1; )
+    if (candidate < 1) ( candidate = 7; )
     if (doom_combat_weapon_owned[combat, candidate] == 1) (
       => doom_combat_select_weapon[combat, candidate];
     )
@@ -168,9 +240,73 @@ private op doom_combat_heading [dx, dy] (
   => 315;
 )
 
-private op doom_combat_line_of_sight [map, actor, player_x, player_y] (
-  => 1 - doom_map_sight_blocked[
-    map, actor\x, actor\y, player_x, player_y
+private op doom_combat_actor_max_health [kind] (
+  => doom_stock_actor_max_health[kind];
+)
+
+private op doom_combat_actor_attack_range [kind] (
+  => doom_stock_actor_attack_range[kind];
+)
+
+// The original uses a byte RNG. This application keeps replay authority by
+// deriving the same bounded damage bands from explicit combat state instead
+// of introducing hidden global randomness.
+private op doom_combat_human_bullet_damage [combat, actor] (
+  => 3 * (1 + (combat\tick + actor\thing) % 5);
+)
+
+private op doom_combat_attack_chance [distance] (
+  let chance = 220 - distance / 2;
+  if (chance < 48) ( chance = 48; )
+  if (chance > 220) ( chance = 220; )
+  => chance;
+)
+
+private op doom_combat_human_bullet_hits [combat, actor, distance] (
+  let roll = (combat\tick * 11 + actor\thing * 7) % 256;
+  => roll < doom_combat_attack_chance[distance];
+)
+
+private op doom_combat_shotgun_damage [combat, actor, distance] (
+  let seed = combat\tick + actor\thing;
+  let chance = doom_combat_attack_chance[distance];
+  let damage = 0;
+  let pellet = 0;
+  while (pellet < 3) (
+    let roll = (seed * (11 + pellet * 6) + pellet * 43) % 256;
+    if (roll < chance) (
+      damage = damage + 3 * (1 + (seed * (3 + pellet * 4) + pellet) % 5);
+    )
+    pellet = pellet + 1;
+  )
+  => damage;
+)
+
+private op doom_combat_imp_melee_damage [combat, actor] (
+  => 3 * (1 + (combat\tick + actor\thing) % 8);
+)
+
+private op doom_combat_demon_melee_damage [combat, actor] (
+  => 4 * (1 + (combat\tick + actor\thing) % 10);
+)
+
+private op doom_combat_lost_soul_damage [combat, actor] (
+  => 3 * (1 + (combat\tick + actor\thing) % 8);
+)
+
+private op doom_combat_monster_ball_damage [combat, actor] (
+  let factor = 5;
+  if (actor\kind == 3003) ( factor = 8; )
+  if (actor\kind == 16) ( factor = 20; )
+  => factor * (1 + (combat\tick + actor\thing) % 8);
+)
+
+private op doom_combat_line_of_sight [map, actor,
+                                      player_x, player_y, player_z] (
+  => 1 - doom_map_sight_blocked_at[
+    map,
+    actor\x, actor\y, doom_combat_floor_at[map, actor\x, actor\y] + 28,
+    player_x, player_y, player_z + 41
   ];
 )
 
@@ -301,26 +437,36 @@ private op doom_combat_move_actor [map, combat, actor,
 
 op doom_combat_validate [map, combat] (
   if ((arr_len[combat\actors] == combat\enemy_count) and
-      (combat\enemy_count >= 0) and (combat\enemy_count <= 128) and
+      (combat\enemy_count >= 0) and
+      (combat\enemy_count <= doom_combat_enemy_limit[]) and
       (bytes_len[combat\alive] == map\thing_count) and
       (combat\health >= 0) and (combat\health <= combat\health_cap) and
       (combat\max_health == 100) and
       (combat\health_cap == 200) and
       (combat\ammo >= 0) and (combat\ammo <= combat\max_ammo) and
-      (combat\max_ammo == 200) and
+      (combat\max_ammo == 200 + combat\backpack * 200) and
       (combat\shells >= 0) and (combat\shells <= combat\max_shells) and
-      (combat\max_shells == 50) and
+      (combat\max_shells == 50 + combat\backpack * 50) and
       (combat\rockets >= 0) and (combat\rockets <= combat\max_rockets) and
-      (combat\max_rockets == 50) and
+      (combat\max_rockets == 50 + combat\backpack * 50) and
       (combat\cells >= 0) and (combat\cells <= combat\max_cells) and
-      (combat\max_cells == 300) and
+      (combat\max_cells == 300 + combat\backpack * 300) and
+      ((combat\backpack == 0) or (combat\backpack == 1)) and
+      ((combat\berserk == 0) or (combat\berserk == 1)) and
+      (combat\invulnerability_tick >= 0) and
+      (combat\invulnerability_tick <= 1800) and
+      (combat\invisibility_tick >= 0) and
+      (combat\invisibility_tick <= 3600) and
+      (combat\radiation_tick >= 0) and
+      (combat\radiation_tick <= 3600) and
+      (combat\light_tick >= 0) and (combat\light_tick <= 7200) and
       (bytes_len[combat\weapons] == 8) and
-      (combat\selected_weapon >= 1) and (combat\selected_weapon <= 5) and
+      (combat\selected_weapon >= 1) and (combat\selected_weapon <= 7) and
       (bytes_get[combat\weapons, combat\selected_weapon] == 1) and
       (combat\armor >= 0) and (combat\armor <= combat\max_armor) and
       (combat\max_armor == 200) and
       (combat\shot_cooldown >= 0) and (combat\shot_cooldown <= 30) and
-      (arr_len[combat\projectiles] <= 16) and
+      (arr_len[combat\projectiles] <= 32) and
       (arr_len[combat\drops] <= combat\enemy_count) and
       (combat\kills >= 0) and (combat\kills <= combat\enemy_count)) () else (
     fall "doom_combat_validate: player or table invariant violated";
@@ -330,11 +476,11 @@ op doom_combat_validate [map, combat] (
   while (i < combat\enemy_count) (
     let actor = combat\actors\\i;
     if ((actor\thing >= 0) and (actor\thing < map\thing_count) and
-        (actor\family >= 0) and (actor\family < 3) and
+        (actor\family >= 0) and (actor\family < 9) and
         (actor\health >= 0) and (actor\health <= actor\max_health) and
-        (actor\max_health == 40) and
+        (actor\max_health == doom_combat_actor_max_health[actor\kind]) and
         (actor\phase_tick >= 0) and (actor\phase_tick <= 30) and
-        (actor\attack_cooldown >= 0) and (actor\attack_cooldown <= 30)) () else (
+        (actor\attack_cooldown >= 0) and (actor\attack_cooldown <= 60)) () else (
       fall "doom_combat_validate: enemy invariant violated";
     )
     let phase_valid = actor\phase with states DoomEnemyPhase {
@@ -363,7 +509,10 @@ op doom_combat_validate [map, combat] (
   i = 0;
   while (i < arr_len[combat\projectiles]) (
     let projectile = combat\projectiles\\i;
-    if ((projectile\state >= 0) and (projectile\state <= 2) and
+    if ((projectile\kind >= 1) and (projectile\kind <= 7) and
+        (projectile\state >= 0) and (projectile\state <= 2) and
+        (projectile\angle >= 0) and (projectile\angle < 360) and
+        (projectile\damage >= 0) and (projectile\damage <= 200) and
         (projectile\age >= 0) and (projectile\age <= 180)) () else (
       fall "doom_combat_validate: projectile invariant violated";
     )
@@ -412,12 +561,13 @@ op doom_combat_new [map] (
       unsupported_enemies = unsupported_enemies + 1;
     )
     if ((doom_map_thing_is_enemy[kind] == 1) and (family >= 0)) (
-      if (enemy_count < 128) (
+      if (enemy_count < doom_combat_enemy_limit[]) (
+        let max_health = doom_combat_actor_max_health[kind];
         actors = actors + [{
           thing: i, kind: kind, family: family,
           x: buf_get[map\things, tb], y: buf_get[map\things, tb + 1],
           angle: buf_get[map\thing_angles, i],
-          health: 40, max_health: 40,
+          health: max_health, max_health: max_health,
           phase: DoomEnemyPhase\Dormant, phase_tick: 0,
           attack_cooldown: 0
         }];
@@ -445,22 +595,184 @@ op doom_combat_new [map] (
     ammo: 50, max_ammo: 200,
     shells: 0, max_shells: 50, rockets: 0, max_rockets: 50,
     cells: 0, max_cells: 300,
+    backpack: 0, berserk: 0,
+    invulnerability_tick: 0, invisibility_tick: 0,
+    radiation_tick: 0, light_tick: 0,
     weapons: bytes_new[8], selected_weapon: 2, weapon_switches: 0,
     armor: 0, max_armor: 200,
     shot_cooldown: 0, shots: 0, dry_fires: 0,
     projectiles: [], projectile_impacts: 0,
+    monster_projectile_impacts: 0,
     explosion_serial: 0,
     monster_alert_serial: 0, monster_alert_kind: 0,
     monster_attack_serial: 0, monster_attack_kind: 0,
     monster_pain_serial: 0, monster_pain_kind: 0,
     monster_death_serial: 0, monster_death_kind: 0,
-    player_pain_serial: 0,
+    player_pain_serial: 0, player_pain_tick: 0 - 1000,
     drops: [], drops_spawned: 0, drops_picked: 0,
     kills: 0, misses: 0, damage_taken: 0, armor_absorbed: 0, tick: 0
   };
   bytes_set[combat\weapons, 2, 1];
   doom_combat_validate[map, combat];
   => combat;
+)
+
+// Player inventory is combat authority. World collection decides whether a
+// thing is reachable and retires it; this operation alone changes weapons,
+// ammunition, health, armor and timed powers.
+op doom_combat_take_pickup [combat, kind] (
+  if (kind == 2005) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 1];
+    if (fresh == 0) ( => 0; )
+    bytes_set[combat\weapons, 1, 1];
+    doom_combat_select_weapon[combat, 1];
+  ) else if (kind == 2001) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
+    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
+    bytes_set[combat\weapons, 3, 1];
+    combat\shells = combat\shells + 8;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
+  ) else if (kind == 2002) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 4];
+    if ((fresh == 0) and (combat\ammo >= combat\max_ammo)) ( => 0; )
+    bytes_set[combat\weapons, 4, 1];
+    combat\ammo = combat\ammo + 20;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 4]; )
+  ) else if (kind == 2003) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 5];
+    if ((fresh == 0) and (combat\rockets >= combat\max_rockets)) ( => 0; )
+    bytes_set[combat\weapons, 5, 1];
+    combat\rockets = combat\rockets + 2;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 5]; )
+  ) else if (kind == 2004) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 6];
+    if ((fresh == 0) and (combat\cells >= combat\max_cells)) ( => 0; )
+    bytes_set[combat\weapons, 6, 1];
+    combat\cells = combat\cells + 40;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 6]; )
+  ) else if (kind == 2006) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 7];
+    if ((fresh == 0) and (combat\cells >= combat\max_cells)) ( => 0; )
+    bytes_set[combat\weapons, 7, 1];
+    combat\cells = combat\cells + 40;
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 7]; )
+  ) else if (kind == 2007) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 10;
+  ) else if (kind == 2048) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 50;
+  ) else if (kind == 2008) (
+    if (combat\shells >= combat\max_shells) ( => 0; )
+    combat\shells = combat\shells + 4;
+  ) else if (kind == 2049) (
+    if (combat\shells >= combat\max_shells) ( => 0; )
+    combat\shells = combat\shells + 20;
+  ) else if (kind == 2046) (
+    if (combat\rockets >= combat\max_rockets) ( => 0; )
+    combat\rockets = combat\rockets + 5;
+  ) else if (kind == 2010) (
+    if (combat\rockets >= combat\max_rockets) ( => 0; )
+    combat\rockets = combat\rockets + 1;
+  ) else if (kind == 2047) (
+    if (combat\cells >= combat\max_cells) ( => 0; )
+    combat\cells = combat\cells + 20;
+  ) else if (kind == 17) (
+    if (combat\cells >= combat\max_cells) ( => 0; )
+    combat\cells = combat\cells + 100;
+  ) else if (kind == 8) (
+    let fresh = 1 - combat\backpack;
+    if ((fresh == 0) and
+        (combat\ammo >= combat\max_ammo) and
+        (combat\shells >= combat\max_shells) and
+        (combat\rockets >= combat\max_rockets) and
+        (combat\cells >= combat\max_cells)) ( => 0; )
+    if (fresh == 1) (
+      combat\backpack = 1;
+      combat\max_ammo = 400;
+      combat\max_shells = 100;
+      combat\max_rockets = 100;
+      combat\max_cells = 600;
+    )
+    combat\ammo = combat\ammo + 10;
+    combat\shells = combat\shells + 4;
+    combat\rockets = combat\rockets + 1;
+    combat\cells = combat\cells + 20;
+  ) else if (kind == 2011) (
+    if (combat\health >= combat\max_health) ( => 0; )
+    combat\health = combat\health + 10;
+    if (combat\health > combat\max_health) (
+      combat\health = combat\max_health;
+    )
+  ) else if (kind == 2012) (
+    if (combat\health >= combat\max_health) ( => 0; )
+    combat\health = combat\health + 25;
+    if (combat\health > combat\max_health) (
+      combat\health = combat\max_health;
+    )
+  ) else if (kind == 2013) (
+    if (combat\health >= combat\health_cap) ( => 0; )
+    combat\health = combat\health + 100;
+    if (combat\health > combat\health_cap) (
+      combat\health = combat\health_cap;
+    )
+  ) else if (kind == 2014) (
+    if (combat\health >= combat\health_cap) ( => 0; )
+    combat\health = combat\health + 1;
+  ) else if (kind == 2015) (
+    if (combat\armor >= combat\max_armor) ( => 0; )
+    combat\armor = combat\armor + 1;
+  ) else if (kind == 2018) (
+    if (combat\armor >= 100) ( => 0; )
+    combat\armor = 100;
+  ) else if (kind == 2019) (
+    if (combat\armor >= 200) ( => 0; )
+    combat\armor = 200;
+  ) else if (kind == 2022) (
+    combat\invulnerability_tick = 1800;
+  ) else if (kind == 2023) (
+    if ((combat\berserk == 1) and (combat\health >= 100)) ( => 0; )
+    combat\berserk = 1;
+    if (combat\health < 100) ( combat\health = 100; )
+    bytes_set[combat\weapons, 1, 1];
+    doom_combat_select_weapon[combat, 1];
+  ) else if (kind == 2024) (
+    combat\invisibility_tick = 3600;
+  ) else if (kind == 2025) (
+    combat\radiation_tick = 3600;
+  ) else if (kind == 2045) (
+    combat\light_tick = 7200;
+  ) else ( => 0; )
+  if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
+  if (combat\shells > combat\max_shells) (
+    combat\shells = combat\max_shells;
+  )
+  if (combat\rockets > combat\max_rockets) (
+    combat\rockets = combat\max_rockets;
+  )
+  if (combat\cells > combat\max_cells) ( combat\cells = combat\max_cells; )
+  => 1;
+)
+
+op doom_combat_take_drop [combat, kind] (
+  if (kind == 2007) (
+    if (combat\ammo >= combat\max_ammo) ( => 0; )
+    combat\ammo = combat\ammo + 5;
+    if (combat\ammo > combat\max_ammo) ( combat\ammo = combat\max_ammo; )
+    => 1;
+  )
+  if (kind == 2001) (
+    let fresh = 1 - doom_combat_weapon_owned[combat, 3];
+    if ((fresh == 0) and (combat\shells >= combat\max_shells)) ( => 0; )
+    bytes_set[combat\weapons, 3, 1];
+    combat\shells = combat\shells + 4;
+    if (combat\shells > combat\max_shells) (
+      combat\shells = combat\max_shells;
+    )
+    if (fresh == 1) ( doom_combat_select_weapon[combat, 3]; )
+    => 1;
+  )
+  => 0;
 )
 
 private op doom_combat_spawn_drop [combat, actor] (
@@ -611,8 +923,12 @@ op doom_combat_telefrag [map, combat, x, y] (
   => hits;
 )
 
-op doom_combat_hurt_player [map, combat, damage] (
+private op doom_combat_hurt_player_mode [map, combat, damage, forced] (
   if ((damage <= 0) or (combat\health == 0)) ( => combat; )
+  if ((forced == 0) and (combat\invulnerability_tick > 0)) ( => combat; )
+  if (combat\invisibility_tick > 0) (
+    damage = (damage + 1) / 2;
+  )
   let absorbed = 0;
   if (combat\armor > 0) (
     absorbed = (damage + 1) / 2;
@@ -624,16 +940,37 @@ op doom_combat_hurt_player [map, combat, damage] (
   if (damage > combat\health) ( damage = combat\health; )
   combat\health = combat\health - damage;
   combat\damage_taken = combat\damage_taken + damage;
-  if (damage > 0) ( combat\player_pain_serial = combat\player_pain_serial + 1; )
+  if (damage > 0) (
+    combat\player_pain_serial = combat\player_pain_serial + 1;
+    combat\player_pain_tick = combat\tick;
+  )
   doom_combat_validate[map, combat];
   => combat;
 )
 
-private op doom_combat_spawn_rocket [map, combat, player_x, player_y, angle] (
+op doom_combat_hurt_player [map, combat, damage] (
+  => doom_combat_hurt_player_mode[map, combat, damage, 0];
+)
+
+// Sector 11 is the episode-completion damage floor. It deliberately bypasses
+// temporary invulnerability so the explicit map exit cannot become stranded.
+op doom_combat_hurt_player_forced [map, combat, damage] (
+  => doom_combat_hurt_player_mode[map, combat, damage, 1];
+)
+
+private op doom_combat_spawn_player_projectile [map, combat,
+                                                 player_x, player_y, angle,
+                                                 kind, speed, damage] (
+  if ((kind >= 1) and (kind <= 7) and
+      ((kind == 1) or (kind >= 6)) and
+      (speed > 0) and (speed <= 32) and
+      (damage >= 0) and (damage <= 200)) () else (
+    fall "doom_combat_spawn_player_projectile: invalid bounded projectile";
+  )
   let direction = trig_sincos[angle];
   let q31 = 2147483648;
-  let vx = direction\cos * 16 / q31;
-  let vy = direction\sin * 16 / q31;
+  let vx = direction\cos * speed / q31;
+  let vy = direction\sin * speed / q31;
   let sector = doom_map_point_sector[map, player_x, player_y];
   let projectile = 0;
   let slot = 0 - 1;
@@ -645,20 +982,85 @@ private op doom_combat_spawn_rocket [map, combat, player_x, player_y, angle] (
   )
   if (slot >= 0) (
     projectile = combat\projectiles\\slot;
-  ) else if (arr_len[combat\projectiles] < 16) (
+  ) else if (arr_len[combat\projectiles] < 32) (
     projectile = {
-      state: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, age: 0, hits: 0
+      kind: 1, state: 0, x: 0, y: 0, z: 0,
+      vx: 0, vy: 0, angle: 0, damage: 0, age: 0, hits: 0
     };
     combat\projectiles = combat\projectiles + [projectile];
   ) else (
     => 0;
   )
+  projectile\kind = kind;
   projectile\state = 1;
   projectile\x = player_x + vx / 2;
   projectile\y = player_y + vy / 2;
   projectile\z = buf_get[map\sectors, sector * 5] + 32;
   projectile\vx = vx;
   projectile\vy = vy;
+  projectile\angle = doom_combat_heading[vx, vy];
+  projectile\damage = damage;
+  projectile\age = 0;
+  projectile\hits = 0;
+  => 1;
+)
+
+private op doom_combat_spawn_rocket [map, combat,
+                                     player_x, player_y, angle] (
+  => doom_combat_spawn_player_projectile[
+    map, combat, player_x, player_y, angle, 1, 16, 0
+  ];
+)
+
+private op doom_combat_spawn_monster_projectile [map, combat, actor,
+                                                  player_x, player_y] (
+  let heading = doom_combat_heading[
+    player_x - actor\x, player_y - actor\y
+  ];
+  let direction = trig_sincos[trig_from_degrees[heading]];
+  let q31 = 2147483648;
+  let projectile_kind = 2;
+  let speed = 10;
+  if (actor\kind == 3005) ( projectile_kind = 3; speed = 8; )
+  if (actor\kind == 3003) ( projectile_kind = 4; speed = 15; )
+  if (actor\kind == 16) ( projectile_kind = 5; speed = 20; )
+  if ((actor\kind == 3001) or (actor\kind == 3005) or
+      (actor\kind == 3003) or (actor\kind == 16)) () else (
+    fall "doom_combat_spawn_monster_projectile: unsupported actor kind";
+  )
+  let vx = direction\cos * speed / q31;
+  let vy = direction\sin * speed / q31;
+  let projectile = 0;
+  let slot = 0 - 1;
+  let i = 0;
+  while ((i < arr_len[combat\projectiles]) and (slot < 0)) (
+    let existing = combat\projectiles\\i;
+    if (existing\state == 0) ( slot = i; )
+    i = i + 1;
+  )
+  if (slot >= 0) (
+    projectile = combat\projectiles\\slot;
+  ) else if (arr_len[combat\projectiles] < 32) (
+    projectile = {
+      kind: projectile_kind, state: 0, x: 0, y: 0, z: 0,
+      vx: 0, vy: 0, angle: 0, damage: 0, age: 0, hits: 0
+    };
+    combat\projectiles = combat\projectiles + [projectile];
+  ) else (
+    => 0;
+  )
+  projectile\kind = projectile_kind;
+  projectile\state = 1;
+  projectile\x = actor\x + vx / 2;
+  projectile\y = actor\y + vy / 2;
+  projectile\z = doom_combat_floor_at[map, actor\x, actor\y] + 32;
+  projectile\vx = vx;
+  projectile\vy = vy;
+  projectile\angle = heading;
+  projectile\damage = doom_combat_imp_melee_damage[combat, actor];
+  if (actor\kind != 3001) (
+    projectile\damage = doom_combat_monster_ball_damage[combat, actor];
+  )
   projectile\age = 0;
   projectile\hits = 0;
   => 1;
@@ -712,7 +1114,87 @@ private op doom_combat_explode_rocket [map, combat, projectile] (
   => hits;
 )
 
-private op doom_combat_tick_projectiles [map, combat] (
+private op doom_combat_impact_player_energy [map, combat, projectile] (
+  if ((projectile\kind == 6) or (projectile\kind == 7)) () else (
+    fall "doom_combat_impact_player_energy: non-energy projectile";
+  )
+  let radius = 32;
+  if (projectile\kind == 7) ( radius = 256; )
+  let hits = 0;
+  let i = 0;
+  while (i < combat\enemy_count) (
+    let actor = combat\actors\\i;
+    let distance = doom_combat_abs[actor\x - projectile\x];
+    let dy = doom_combat_abs[actor\y - projectile\y];
+    if (dy > distance) ( distance = dy; )
+    if ((doom_combat_actor_targetable[actor] == 1) and
+        (distance <= radius) and
+        ((projectile\kind == 7) or (hits == 0)) and
+        (doom_map_sight_blocked_at[
+           map, projectile\x, projectile\y, projectile\z,
+           actor\x, actor\y,
+           doom_combat_floor_at[map, actor\x, actor\y] + 28
+         ] == 0)) (
+      let damage = projectile\damage;
+      if (projectile\kind == 7) (
+        damage = 200 - distance * 5 / 8;
+        if (damage < 40) ( damage = 40; )
+      )
+      if (doom_combat_hurt_actor[combat, actor, damage] > 0) (
+        hits = hits + 1;
+      )
+    )
+    i = i + 1;
+  )
+  i = 0;
+  while (i < arr_len[combat\barrels]) (
+    let barrel = combat\barrels\\i;
+    let distance = doom_combat_abs[barrel\x - projectile\x];
+    let dy = doom_combat_abs[barrel\y - projectile\y];
+    if (dy > distance) ( distance = dy; )
+    if ((barrel\state == 1) and (distance <= radius) and
+        ((projectile\kind == 7) or (hits == 0)) and
+        (doom_map_sight_blocked_at[
+           map, projectile\x, projectile\y, projectile\z,
+           barrel\x, barrel\y,
+           doom_combat_floor_at[map, barrel\x, barrel\y] + 21
+         ] == 0)) (
+      let damage = projectile\damage;
+      if (projectile\kind == 7) (
+        damage = 200 - distance * 5 / 8;
+        if (damage < 40) ( damage = 40; )
+      )
+      if (doom_combat_hurt_barrel[barrel, damage] > 0) (
+        hits = hits + 1;
+      )
+    )
+    i = i + 1;
+  )
+  hits = hits + doom_combat_resolve_barrel_explosions[map, combat];
+  projectile\state = 2;
+  projectile\age = 0;
+  projectile\hits = hits;
+  combat\projectile_impacts = combat\projectile_impacts + 1;
+  if (hits == 0) ( combat\misses = combat\misses + 1; )
+  => hits;
+)
+
+private op doom_combat_impact_monster_projectile [map, combat, projectile,
+                                                   hit_player] (
+  if ((hit_player == 1) and (combat\health > 0)) (
+    doom_combat_hurt_player[map, combat, projectile\damage];
+    projectile\hits = 1;
+  ) else (
+    projectile\hits = 0;
+  )
+  projectile\state = 2;
+  projectile\age = 0;
+  combat\monster_projectile_impacts = combat\monster_projectile_impacts + 1;
+  => projectile\hits;
+)
+
+private op doom_combat_tick_projectiles [map, combat,
+                                         player_x, player_y, player_z] (
   let i = 0;
   while (i < arr_len[combat\projectiles]) (
     let projectile = combat\projectiles\\i;
@@ -723,53 +1205,81 @@ private op doom_combat_tick_projectiles [map, combat] (
         map, projectile\x, projectile\y, next_x, next_y,
         projectile\z - 4, 8, 0
       ];
-      let ai = 0;
-      while ((ai < combat\enemy_count) and (impact == 0)) (
-        let actor = combat\actors\\ai;
-        if ((doom_combat_actor_targetable[actor] == 1) and
-            (doom_combat_abs[actor\x - next_x] <= 24) and
-            (doom_combat_abs[actor\y - next_y] <= 24)) (
-          let actor_z = doom_combat_floor_at[map, actor\x, actor\y];
-          if (doom_combat_vertical_overlap[
-                projectile\z - 4, 8, actor_z, 56
-              ] == 1) (
-            impact = 1;
-            projectile\x = next_x;
-            projectile\y = next_y;
+      let world_impact = impact;
+      let hit_player = 0;
+      if ((projectile\kind == 1) or (projectile\kind >= 6)) (
+        let ai = 0;
+        while ((ai < combat\enemy_count) and (impact == 0)) (
+          let actor = combat\actors\\ai;
+          if ((doom_combat_actor_targetable[actor] == 1) and
+              (doom_combat_abs[actor\x - next_x] <= 24) and
+              (doom_combat_abs[actor\y - next_y] <= 24)) (
+            let actor_z = doom_combat_floor_at[map, actor\x, actor\y];
+            if (doom_combat_vertical_overlap[
+                  projectile\z - 4, 8, actor_z, 56
+                ] == 1) (
+              impact = 1;
+            )
           )
+          ai = ai + 1;
         )
-        ai = ai + 1;
-      )
-      let bi = 0;
-      while ((bi < arr_len[combat\barrels]) and (impact == 0)) (
-        let barrel = combat\barrels\\bi;
-        if ((barrel\state == 1) and
-            (doom_combat_abs[barrel\x - next_x] <= 24) and
-            (doom_combat_abs[barrel\y - next_y] <= 24)) (
-          let barrel_z = doom_combat_floor_at[map, barrel\x, barrel\y];
-          if (doom_combat_vertical_overlap[
-                projectile\z - 4, 8, barrel_z, 42
-              ] == 1) (
-            impact = 1;
-            projectile\x = next_x;
-            projectile\y = next_y;
+        let bi = 0;
+        while ((bi < arr_len[combat\barrels]) and (impact == 0)) (
+          let barrel = combat\barrels\\bi;
+          if ((barrel\state == 1) and
+              (doom_combat_abs[barrel\x - next_x] <= 24) and
+              (doom_combat_abs[barrel\y - next_y] <= 24)) (
+            let barrel_z = doom_combat_floor_at[map, barrel\x, barrel\y];
+            if (doom_combat_vertical_overlap[
+                  projectile\z - 4, 8, barrel_z, 42
+                ] == 1) (
+              impact = 1;
+            )
           )
+          bi = bi + 1;
         )
-        bi = bi + 1;
+      ) else if ((doom_combat_abs[player_x - next_x] <= 20) and
+                 (doom_combat_abs[player_y - next_y] <= 20) and
+                 (doom_combat_vertical_overlap[
+                    projectile\z - 4, 8, player_z, 56
+                  ] == 1)) (
+        impact = 1;
+        hit_player = 1;
       )
       if (impact == 1) (
-        doom_combat_explode_rocket[map, combat, projectile];
+        if (world_impact == 0) (
+          projectile\x = next_x;
+          projectile\y = next_y;
+        )
+        if (projectile\kind == 1) (
+          doom_combat_explode_rocket[map, combat, projectile];
+        ) else if (projectile\kind >= 6) (
+          doom_combat_impact_player_energy[map, combat, projectile];
+        ) else (
+          doom_combat_impact_monster_projectile[
+            map, combat, projectile, hit_player
+          ];
+        )
       ) else (
         projectile\x = next_x;
         projectile\y = next_y;
         projectile\age = projectile\age + 1;
         if (projectile\age >= 180) (
-          doom_combat_explode_rocket[map, combat, projectile];
+          if (projectile\kind == 1) (
+            doom_combat_explode_rocket[map, combat, projectile];
+          ) else if (projectile\kind >= 6) (
+            doom_combat_impact_player_energy[map, combat, projectile];
+          ) else (
+            projectile\state = 0;
+          )
         )
       )
     ) else if (projectile\state == 2) (
       projectile\age = projectile\age + 1;
-      if (projectile\age >= 8) ( projectile\state = 0; )
+      let retire = 8;
+      if (projectile\kind >= 2) ( retire = 15; )
+      if (projectile\kind == 7) ( retire = 24; )
+      if (projectile\age >= retire) ( projectile\state = 0; )
     )
     i = i + 1;
   )
@@ -778,7 +1288,8 @@ private op doom_combat_tick_projectiles [map, combat] (
 
 // Select one nearest bounded shootable. Keeping its kind explicit prevents a
 // barrel in front of an enemy from becoming transparent to weapon authority.
-op doom_combat_hitscan [map, combat, player_x, player_y, angle, maximum] (
+op doom_combat_hitscan_at [map, combat, player_x, player_y, player_z,
+                           angle, maximum] (
   let direction = trig_sincos[angle];
   let q31 = 2147483648;
   let best_kind = 0;
@@ -795,8 +1306,10 @@ op doom_combat_hitscan [map, combat, player_x, player_y, angle, maximum] (
       if (sideways < 0) ( sideways = 0 - sideways; )
       if ((forward > 0) and (forward <= maximum) and
           (sideways <= 32) and (forward < best_distance) and
-          (doom_map_sight_blocked[
-             map, player_x, player_y, actor\x, actor\y
+          (doom_map_sight_blocked_at[
+             map, player_x, player_y, player_z + 41,
+             actor\x, actor\y,
+             doom_combat_floor_at[map, actor\x, actor\y] + 28
            ] == 0)) (
         best_kind = 1;
         best_index = i;
@@ -816,8 +1329,10 @@ op doom_combat_hitscan [map, combat, player_x, player_y, angle, maximum] (
       if (sideways < 0) ( sideways = 0 - sideways; )
       if ((forward > 0) and (forward <= maximum) and
           (sideways <= 24) and (forward < best_distance) and
-          (doom_map_sight_blocked[
-             map, player_x, player_y, barrel\x, barrel\y
+          (doom_map_sight_blocked_at[
+             map, player_x, player_y, player_z + 41,
+             barrel\x, barrel\y,
+             doom_combat_floor_at[map, barrel\x, barrel\y] + 21
            ] == 0)) (
         best_kind = 2;
         best_index = i;
@@ -827,6 +1342,13 @@ op doom_combat_hitscan [map, combat, player_x, player_y, angle, maximum] (
     i = i + 1;
   )
   => { kind: best_kind, index: best_index, distance: best_distance };
+)
+
+op doom_combat_hitscan [map, combat, player_x, player_y, angle, maximum] (
+  => doom_combat_hitscan_at[
+    map, combat, player_x, player_y,
+    doom_combat_floor_at[map, player_x, player_y], angle, maximum
+  ];
 )
 
 op doom_combat_hitscan_target [map, combat, player_x, player_y,
@@ -843,13 +1365,16 @@ op doom_combat_hitscan_target [map, combat, player_x, player_y,
 // then exhaustively chooses the best of the closed 360-degree command domain.
 // This runs only when a demo aim phase begins, never in the interactive loop.
 op doom_combat_demo_heading [map, combat, player_x, player_y, fallback] (
+  let player_z = doom_combat_floor_at[map, player_x, player_y];
   let target = 0 - 1;
   let best_distance = 2147483647;
   let i = 0;
   while (i < combat\enemy_count) (
     let actor = combat\actors\\i;
     if ((doom_combat_actor_targetable[actor] == 1) and
-        (doom_combat_line_of_sight[map, actor, player_x, player_y] == 1)) (
+        (doom_combat_line_of_sight[
+           map, actor, player_x, player_y, player_z
+         ] == 1)) (
       let dx = doom_combat_abs[actor\x - player_x];
       let dy = doom_combat_abs[actor\y - player_y];
       let distance = dx + dy;
@@ -865,7 +1390,9 @@ op doom_combat_demo_heading [map, combat, player_x, player_y, fallback] (
     while (i < combat\enemy_count) (
       let actor = combat\actors\\i;
       if ((doom_combat_actor_targetable[actor] == 1) and
-          (doom_combat_line_of_sight[map, actor, player_x, player_y] == 1)) (
+          (doom_combat_line_of_sight[
+             map, actor, player_x, player_y, player_z
+           ] == 1)) (
         let distance = doom_combat_abs[actor\x - player_x] +
           doom_combat_abs[actor\y - player_y];
         if (distance < best_distance) (
@@ -895,18 +1422,18 @@ op doom_combat_demo_heading [map, combat, player_x, player_y, fallback] (
   => heading;
 )
 
-op doom_combat_fire [map, combat, player_x, player_y, angle] (
+op doom_combat_fire_at [map, combat, player_x, player_y, player_z, angle] (
   if (combat\health > 0) () else ( => combat; )
   if (combat\shot_cooldown == 0) () else ( => combat; )
   let weapon = combat\selected_weapon;
-  let available = doom_combat_current_ammo[combat];
-  if (available > 0) () else (
+  if (doom_combat_can_fire[combat] == 1) () else (
     combat\dry_fires = combat\dry_fires + 1;
     => combat;
   )
-  let damage = 20;
+  let damage = 10;
   if (weapon == 1) (
     damage = 20;
+    if (combat\berserk == 1) ( damage = 60; )
   ) else if ((weapon == 2) or (weapon == 4)) (
     combat\ammo = combat\ammo - 1;
   ) else if (weapon == 3) (
@@ -915,6 +1442,12 @@ op doom_combat_fire [map, combat, player_x, player_y, angle] (
   ) else if (weapon == 5) (
     combat\rockets = combat\rockets - 1;
     damage = 100;
+  ) else if (weapon == 6) (
+    combat\cells = combat\cells - 1;
+    damage = 20;
+  ) else if (weapon == 7) (
+    combat\cells = combat\cells - 40;
+    damage = 200;
   ) else (
     fall "doom_combat_fire: selected weapon is outside bounded arsenal";
   )
@@ -924,13 +1457,25 @@ op doom_combat_fire [map, combat, player_x, player_y, angle] (
   if (weapon == 3) ( combat\shot_cooldown = 24; )
   if (weapon == 4) ( combat\shot_cooldown = 4; )
   if (weapon == 5) ( combat\shot_cooldown = 30; )
+  if (weapon == 6) ( combat\shot_cooldown = 4; )
+  if (weapon == 7) ( combat\shot_cooldown = 30; )
   if (weapon == 5) (
     doom_combat_spawn_rocket[map, combat, player_x, player_y, angle];
     doom_combat_validate[map, combat];
     => combat;
   )
-  let target = doom_combat_hitscan[
-    map, combat, player_x, player_y, angle, 1024
+  if ((weapon == 6) or (weapon == 7)) (
+    let kind = 6;
+    let speed = 25;
+    if (weapon == 7) ( kind = 7; speed = 18; )
+    doom_combat_spawn_player_projectile[
+      map, combat, player_x, player_y, angle, kind, speed, damage
+    ];
+    doom_combat_validate[map, combat];
+    => combat;
+  )
+  let target = doom_combat_hitscan_at[
+    map, combat, player_x, player_y, player_z, angle, 1024
   ];
   if (target\kind == 0) (
     combat\misses = combat\misses + 1;
@@ -951,6 +1496,13 @@ op doom_combat_fire [map, combat, player_x, player_y, angle] (
   => combat;
 )
 
+op doom_combat_fire [map, combat, player_x, player_y, angle] (
+  => doom_combat_fire_at[
+    map, combat, player_x, player_y,
+    doom_combat_floor_at[map, player_x, player_y], angle
+  ];
+)
+
 private op doom_combat_tick_barrels [combat] (
   let i = 0;
   while (i < arr_len[combat\barrels]) (
@@ -968,10 +1520,24 @@ private op doom_combat_tick_barrels [combat] (
 )
 
 op doom_combat_tick_at [map, combat, player_x, player_y, player_z] (
+  if (combat\invulnerability_tick > 0) (
+    combat\invulnerability_tick = combat\invulnerability_tick - 1;
+  )
+  if (combat\invisibility_tick > 0) (
+    combat\invisibility_tick = combat\invisibility_tick - 1;
+  )
+  if (combat\radiation_tick > 0) (
+    combat\radiation_tick = combat\radiation_tick - 1;
+  )
+  if (combat\light_tick > 0) (
+    combat\light_tick = combat\light_tick - 1;
+  )
   if (combat\shot_cooldown > 0) (
     combat\shot_cooldown = combat\shot_cooldown - 1;
   )
-  doom_combat_tick_projectiles[map, combat];
+  doom_combat_tick_projectiles[
+    map, combat, player_x, player_y, player_z
+  ];
   doom_combat_tick_barrels[combat];
   let i = 0;
   while (i < combat\enemy_count) (
@@ -985,7 +1551,9 @@ op doom_combat_tick_at [map, combat, player_x, player_y, player_z] (
         if (actor\phase_tick > 30) ( actor\phase_tick = 0; )
         if ((combat\health > 0) and
             (doom_combat_distance[actor, player_x, player_y] <= 640) and
-            (doom_combat_line_of_sight[map, actor, player_x, player_y] == 1)) (
+            (doom_combat_line_of_sight[
+               map, actor, player_x, player_y, player_z
+             ] == 1)) (
           actor\phase = DoomEnemyPhase\Chase;
           actor\phase_tick = 0;
           combat\monster_alert_kind = actor\kind;
@@ -1000,9 +1568,11 @@ op doom_combat_tick_at [map, combat, player_x, player_y, player_z] (
         ];
         let distance = doom_combat_distance[actor, player_x, player_y];
         let visible = doom_combat_line_of_sight[
-          map, actor, player_x, player_y
+          map, actor, player_x, player_y, player_z
         ];
-        if ((combat\health > 0) and (distance <= 80) and (visible == 1) and
+        let attack_range = doom_combat_actor_attack_range[actor\kind];
+        if ((combat\health > 0) and (distance <= attack_range) and
+            (visible == 1) and
             (actor\attack_cooldown == 0)) (
           actor\phase = DoomEnemyPhase\Attack;
           actor\phase_tick = 0;
@@ -1018,17 +1588,77 @@ op doom_combat_tick_at [map, combat, player_x, player_y, player_z] (
         actor\phase_tick = actor\phase_tick + 1;
         let distance = doom_combat_distance[actor, player_x, player_y];
         let visible = doom_combat_line_of_sight[
-          map, actor, player_x, player_y
+          map, actor, player_x, player_y, player_z
         ];
-        if ((combat\health == 0) or (distance > 112) or (visible == 0)) (
+        let attack_range = doom_combat_actor_attack_range[actor\kind];
+        if ((combat\health == 0) or (distance > attack_range + 128) or
+            (visible == 0)) (
           actor\phase = DoomEnemyPhase\Chase;
           actor\phase_tick = 0;
         ) else (
+          if (actor\kind == 3006) (
+            let charge_step = 0;
+            while (charge_step < 4) (
+              doom_combat_move_actor[
+                map, combat, actor, player_x, player_y, player_z
+              ];
+              charge_step = charge_step + 1;
+            )
+          )
           if ((actor\phase_tick == 8) and (actor\attack_cooldown == 0)) (
             combat\monster_attack_kind = actor\kind;
             combat\monster_attack_serial = combat\monster_attack_serial + 1;
-            doom_combat_hurt_player[map, combat, 3];
-            actor\attack_cooldown = 30;
+            if (actor\kind == 3004) (
+              if (doom_combat_human_bullet_hits[
+                    combat, actor, distance
+                  ] == 1) (
+                doom_combat_hurt_player[
+                  map, combat, doom_combat_human_bullet_damage[combat, actor]
+                ];
+              )
+            ) else if (actor\kind == 9) (
+              let damage = doom_combat_shotgun_damage[
+                combat, actor, distance
+              ];
+              if (damage > 0) (
+                doom_combat_hurt_player[map, combat, damage];
+              )
+            ) else if (actor\kind == 3001) (
+              if (distance <= 64) (
+                doom_combat_hurt_player[
+                  map, combat, doom_combat_imp_melee_damage[combat, actor]
+                ];
+              ) else (
+                doom_combat_spawn_monster_projectile[
+                  map, combat, actor, player_x, player_y
+                ];
+              )
+            ) else if ((actor\kind == 3002) or (actor\kind == 58)) (
+              doom_combat_hurt_player[
+                map, combat, doom_combat_demon_melee_damage[combat, actor]
+              ];
+            ) else if ((actor\kind == 3005) or (actor\kind == 3003) or
+                       (actor\kind == 16)) (
+              doom_combat_spawn_monster_projectile[
+                map, combat, actor, player_x, player_y
+              ];
+            ) else if (actor\kind == 3006) (
+              if (doom_combat_distance[actor, player_x, player_y] <= 48) (
+                doom_combat_hurt_player[
+                  map, combat, doom_combat_lost_soul_damage[combat, actor]
+                ];
+              )
+            ) else if (actor\kind == 7) (
+              let damage = doom_combat_shotgun_damage[
+                combat, actor, distance
+              ];
+              if (damage > 0) (
+                doom_combat_hurt_player[map, combat, damage];
+              )
+            ) else (
+              fall "doom_combat_tick_at: admitted actor has no attack";
+            )
+            actor\attack_cooldown = 60;
           )
           if (actor\phase_tick >= 18) (
             actor\phase = DoomEnemyPhase\Chase;

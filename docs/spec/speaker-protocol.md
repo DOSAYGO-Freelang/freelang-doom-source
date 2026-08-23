@@ -45,7 +45,7 @@ For v1, `length = 32 + wav_bytes`, output rate/channels agree with the WAV,
 flags is exactly 0 or 1 (`LOOP`), and the payload is one canonical WAV.
 
 For v2, output is fixed at 48000 Hz stereo, flags is zero, and `clip_count` is
-1…32. The remaining payload contains exactly `clip_count` consecutive records:
+1…64. The remaining payload contains exactly `clip_count` consecutive records:
 
 | field | type | meaning |
 |---|---|---|

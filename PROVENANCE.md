@@ -43,6 +43,19 @@ This repository's initial snapshot was extracted from the private
 The registered DOOM v1.9 IWAD (`DOOM.WAD`) was used as an external,
 caller-supplied compatibility corpus. It is not present in this repository.
 
+## Current synchronization
+
+The current source was synchronized from the same private monorepo at:
+
+- commit `373ab2781ac3`: the `v6.4.0` milestone tip;
+- implementation commit `53ebe7d`: the bounded 1280x800 raster closeout;
+- synchronization date 2026-08-23.
+
+The source boundary remains unchanged: only the Freelang Doom application,
+synthetic Doom-specific tests, source tools and supporting documentation are
+copied. Compiler, standard-library, sidecar and caller-owned WAD material are
+not copied into this repository.
+
 ## Native distribution form
 
 A native Freelang Doom Engine release may be delivered as a self-extracting

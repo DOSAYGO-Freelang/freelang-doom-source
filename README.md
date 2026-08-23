@@ -29,6 +29,11 @@ WAD through its bounded load/render/close path, with deeper interactive and
 deterministic coverage centered on E1M1, E1M2 and E2M1. The WAD is neither
 included nor downloaded by this repository.
 
+This snapshot corresponds to Freelang milestone **v6.4.0**. Native play at a
+1280x800 logical raster is accepted as fast and playable; the retained
+software renderer keeps BSP traversal and world decisions in Freelang while
+using independently bounded raster batches for repeated pixel projection.
+
 The application source is the Builder's Kit component named **Freelang Doom
 Source**. The Freelang compiler and native sidecar implementations are separate
 programs, separately licensed, and are not included in this repository. A
@@ -180,6 +185,8 @@ The principal modules are:
 | Module | Responsibility |
 | --- | --- |
 | `doom-play.flx` | Executable policy, map handoff and the explicit frame transaction |
+| `doom-stock.flx` | Central stock THING, action, sprite and sound-family policy |
+| `doom-profile.flx` | Deterministic real-WAD renderer workload and checksum harness |
 | `doom-format.flx` | Filesystem-neutral little-endian and WAD-name primitives |
 | `doom-wad.flx` | Bounded WAD/MUS inspection and effective-lump lookup |
 | `doom-map.flx` | Checked map records, BSP, collision geometry and target selection |

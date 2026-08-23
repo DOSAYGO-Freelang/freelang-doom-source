@@ -32,11 +32,12 @@ let map = {
              4, 5, 0, 4, 6, 7, 0, 4],
   line_count: 4,
   line_sides: %32[0, 0 - 1, 0, 0 - 1,
-                    0, 0, 0, 1,
                     0, 0, 0, 0,
+                    0, 0, 0, 1,
                     0, 0, 0, 0],
   line_actions: %32[102, 9, 0, 0, 97, 9, 97, 9],
-  side_count: 1, side_textures: %32[0, 0 - 1, 0 - 1],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0, 0 - 1, 0 - 1],
   sector_flats: %32[0, 0, 0, 0],
   texture_bank: { texture_count: 2, texture_names: texture_names },
   sectors: %32[64, 128, 160, 0, 9, 0, 128, 160, 0, 0],
@@ -83,8 +84,23 @@ doom_actions_expect[
 
 let combat = doom_combat_new[play_map];
 // The centre remains west of x=160; only its +X support reaches the line.
-// This is the shape used by original closed teleport pads where collision
-// would reject the centre before it could cross.
+// Close the destination sector itself: inactive teleport activation must be
+// entirely silent and leave every effect/placement authority untouched.
+buf_set[world\sectors, 1, buf_get[world\sectors, 0]];
+let inactive_sound_serial = world\sound_serial;
+let inactive_fog_tick = world\teleport_fog_tick;
+let inactive_player_z = world\player_z;
+let inactive = doom_world_slide_move_combat[
+  play_map, world, combat, 136, 50, 8, 0
+];
+doom_actions_expect[
+  (inactive\teleported == 0) and (world\teleport_serial == 0) and
+  (world\teleport_fog_tick == inactive_fog_tick) and
+  (world\sound_serial == inactive_sound_serial) and
+  (world\player_z == inactive_player_z),
+  "inactive destination produces no teleport effects"
+];
+buf_set[world\sectors, 1, 128];
 let moved = doom_world_slide_move_combat[
   play_map, world, combat, 136, 50, 8, 0
 ];
@@ -95,7 +111,7 @@ doom_actions_expect[
   (world\teleport_fog_tick == 70) and
   (world\teleport_from_x == 136) and (world\teleport_from_y == 50) and
   (world\teleport_to_x == 0 - 10) and (world\teleport_to_y == 80),
-  "front-side radius contact reaches tagged type-14 destination"
+  "front-side radius contact reaches active tagged destination"
 ];
 doom_actions_expect[
   (combat\actors\0\phase == DoomEnemyPhase\Death) and
@@ -144,6 +160,672 @@ doom_actions_expect[
   (return_to_pad\x == 10) and (return_to_pad\y == 80) and
   (world\teleport_serial == 2),
   "rearmed reusable teleport accepts a later front-side approach"
+];
+
+// One fixture exercises action families rather than one map exception:
+// walk-open door, one switch targeting two floor sectors, and walk exit.
+let family_map = {
+  ok: 1, error: "", name: "ACTION-FAMILIES",
+  vertices: %32[
+    10, 100, 10, 0, 30, 100, 30, 0, 40, 100, 40, 0,
+    60, 100, 60, 0, 70, 100, 70, 0, 80, 100, 80, 0,
+    100, 100, 100, 0
+  ],
+  vertex_count: 14,
+  lines: %32[
+    0, 1, 0, 0, 2, 3, 0, 0, 4, 5, 0, 0,
+    6, 7, 0, 0, 8, 9, 0, 0, 10, 11, 0, 0,
+    12, 13, 0, 0
+  ],
+  line_count: 7,
+  line_sides: %32[
+    0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 2,
+    0, 0, 0, 0, 0, 0, 3, 5, 0, 0, 4, 5,
+    0, 0, 0, 0
+  ],
+  line_actions: %32[
+    2, 7, 0, 0, 0, 0, 18, 8, 0, 0, 0, 0, 52, 0
+  ],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 0, 160, 0, 7,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    24, 128, 160, 0, 0
+  ],
+  sector_count: 6,
+  things: %32[50, 50, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 50, player_y: 50, player_angle: 0,
+  min_x: 0 - 20, max_x: 120, min_y: 0, max_y: 100,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+let family_world = doom_world_new[family_map];
+let family_play_map = doom_world_map[family_map, family_world];
+doom_actions_expect[
+  (family_world\unsupported_actions == 0) and
+  (arr_len[family_world\doors] == 1) and
+  (arr_len[family_world\movers] == 2),
+  "tagged action families bind every selected sector once"
+];
+doom_actions_expect[
+  (doom_world_cross[family_play_map, family_world, 0, 50, 20, 50] == 1) and
+  (bytes_get[family_world\line_used, 0] == 1),
+  "walk-open door activates and retires its linedef"
+];
+i = 0;
+while (i < 31) (
+  family_world = doom_world_tick[family_play_map, family_world, 50, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  buf_get[family_world\sectors, 6] == 124,
+  "walk-open door reaches the shared neighboring ceiling"
+];
+family_play_map = doom_world_map[family_map, family_world];
+doom_actions_expect[
+  doom_world_use[
+    family_play_map, family_world, 50, 50, trig_from_degrees[0]
+  ] == 1,
+  "one switch activates every floor with its tag"
+];
+i = 0;
+while (i < 3) (
+  family_world = doom_world_tick[family_play_map, family_world, 50, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[family_world\sectors, 15] == 24) and
+  (buf_get[family_world\sectors, 20] == 24),
+  "multi-sector nearest-floor action shares one target rule"
+];
+doom_actions_expect[
+  (doom_world_cross[
+     family_play_map, family_world, 90, 50, 110, 50
+   ] == 1) and (family_world\exited == 1),
+  "walk exit is an explicit terminal world transition"
+];
+
+// Low-clearance doors are still legal map actions.  Geometry decides whether
+// the player can pass; setup must not invent a 56-unit compatibility gate.
+let short_door_map = family_map + {
+  name: "ACTION-SHORT-DOOR",
+  line_actions: %32[
+    2, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  sectors: %32[
+    0, 40, 160, 0, 0,
+    0, 0, 160, 0, 7,
+    0, 40, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    24, 128, 160, 0, 0
+  ]
+};
+let short_door_world = doom_world_new[short_door_map];
+doom_actions_expect[
+  (short_door_world\unsupported_actions == 0) and
+  (arr_len[short_door_world\doors] == 1) and
+  (short_door_world\doors\0\top == 36) and
+  (doom_world_cross[
+     short_door_map, short_door_world, 0, 50, 20, 50
+   ] == 1),
+  "short legal door binds below ordinary player clearance"
+];
+i = 0;
+while (i < 9) (
+  short_door_world = doom_world_tick[
+    short_door_map, short_door_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[short_door_world\sectors, 6] == 36) and
+  (short_door_world\doors\0\phase == DoomDoorPhase\Waiting),
+  "short legal door reaches its map-derived ceiling"
+];
+
+// Heights below the map origin remain legitimate action targets.  Absence is
+// represented by a dedicated sentinel rather than by a sign test.
+let negative_door_map = short_door_map + {
+  name: "ACTION-NEGATIVE-DOOR",
+  sectors: %32[
+    0 - 64, 0 - 24, 160, 0, 0,
+    0 - 64, 0 - 64, 160, 0, 7,
+    0 - 64, 0 - 24, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    24, 128, 160, 0, 0
+  ]
+};
+let negative_door_world = doom_world_new[negative_door_map];
+doom_actions_expect[
+  (negative_door_world\unsupported_actions == 0) and
+  (arr_len[negative_door_world\doors] == 1) and
+  (negative_door_world\doors\0\top == 0 - 28),
+  "negative-height door binds to a legitimate neighboring ceiling"
+];
+
+// Equal-height targets are valid triggers, especially for redundant faces
+// and floor-change actions.  They retire through an explicit no-op mover.
+let noop_floor_map = family_map + {
+  name: "ACTION-NOOP-FLOOR",
+  line_actions: %32[
+    0, 0, 0, 0, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0
+  ],
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 0, 160, 0, 7,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 0
+  ]
+};
+let noop_floor_world = doom_world_new[noop_floor_map];
+doom_actions_expect[
+  (noop_floor_world\unsupported_actions == 0) and
+  (arr_len[noop_floor_world\movers] == 3) and
+  (doom_world_use[
+     noop_floor_map, noop_floor_world, 50, 50, trig_from_degrees[0]
+   ] == 1),
+  "equal-height zero-tag floor action remains admitted and bounded"
+];
+noop_floor_world = doom_world_tick[
+  noop_floor_map, noop_floor_world, 50, 50
+];
+doom_actions_expect[
+  (noop_floor_world\movers\0\phase == DoomMoverPhase\Done) and
+  (noop_floor_world\movers\1\phase == DoomMoverPhase\Done) and
+  (noop_floor_world\movers\2\phase == DoomMoverPhase\Done),
+  "equal-height movers terminate as bounded no-ops"
+];
+
+// A stair tag may name more than one root.  One selected bitmap merges roots
+// reached by an existing chain and starts any genuinely disconnected roots.
+let multi_stair_map = family_map + {
+  name: "ACTION-MULTI-STAIR",
+  line_actions: %32[
+    0, 0, 0, 0, 0, 0, 8, 8, 0, 0, 0, 0, 0, 0
+  ],
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 0, 160, 0, 7,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 0
+  ]
+};
+let multi_stair_world = doom_world_new[multi_stair_map];
+doom_actions_expect[
+  (multi_stair_world\unsupported_actions == 0) and
+  (arr_len[multi_stair_world\movers] == 3) and
+  (doom_world_cross[
+     multi_stair_map, multi_stair_world, 50, 50, 65, 50
+   ] == 3),
+  "multi-root stair tag binds each connected sector once"
+];
+i = 0;
+while (i < 6) (
+  multi_stair_world = doom_world_tick[
+    multi_stair_map, multi_stair_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[multi_stair_world\sectors, 15] == 8) and
+  (buf_get[multi_stair_world\sectors, 25] == 16) and
+  (buf_get[multi_stair_world\sectors, 20] == 24),
+  "merged stair roots receive one monotonic height sequence"
+];
+
+let timed_door_map = family_map + {
+  name: "ACTION-TIMED-DOOR",
+  line_actions: %32[
+    16, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 124, 160, 0, 7,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 8,
+    0, 128, 160, 0, 8,
+    24, 128, 160, 0, 0
+  ]
+};
+let timed_door_world = doom_world_new[timed_door_map];
+doom_actions_expect[
+  (timed_door_world\unsupported_actions == 0) and
+  (doom_world_cross[
+     timed_door_map, timed_door_world, 0, 50, 20, 50
+   ] == 1),
+  "one-shot timed door starts by closing every tagged sector"
+];
+i = 0;
+while (i < 31) (
+  timed_door_world = doom_world_tick[
+    timed_door_map, timed_door_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[timed_door_world\sectors, 6] == 0) and
+  (timed_door_world\doors\0\phase == DoomDoorPhase\Waiting) and
+  (timed_door_world\doors\0\waiting_to_open == 1) and
+  (bytes_get[timed_door_world\line_used, 0] == 1),
+  "timed door waits closed under explicit phase authority"
+];
+timed_door_world\doors\0\phase_tick = 1799;
+timed_door_world = doom_world_tick[
+  timed_door_map, timed_door_world, 50, 50
+];
+i = 0;
+while (i < 31) (
+  timed_door_world = doom_world_tick[
+    timed_door_map, timed_door_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[timed_door_world\sectors, 6] == 124) and
+  (timed_door_world\doors\0\phase == DoomDoorPhase\Waiting) and
+  (timed_door_world\doors\0\waiting_to_open == 0),
+  "timed door reopens after its bounded closed wait and stays open"
+];
+
+let shoot_floor_map = family_map + {
+  name: "ACTION-SHOOT-FLOOR",
+  line_actions: %32[
+    0, 0, 0, 0, 0, 0, 24, 8, 0, 0, 0, 0, 0, 0
+  ]
+};
+let shoot_floor_world = doom_world_new[shoot_floor_map];
+doom_actions_expect[
+  (shoot_floor_world\unsupported_actions == 0) and
+  (arr_len[shoot_floor_world\movers] == 2) and
+  (doom_world_shoot[
+     shoot_floor_map, shoot_floor_world, 50, 50, trig_from_degrees[0]
+   ] == 1) and (bytes_get[shoot_floor_world\line_used, 3] == 1),
+  "shoot-only floor action activates every tagged sector and retires"
+];
+i = 0;
+while (i < 3) (
+  shoot_floor_world = doom_world_tick[
+    shoot_floor_map, shoot_floor_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[shoot_floor_world\sectors, 15] == 24) and
+  (buf_get[shoot_floor_world\sectors, 20] == 24),
+  "shoot-only floors advance through ordinary mutable mover authority"
+];
+
+let texture_floor_map = family_map + {
+  name: "ACTION-TEXTURE-FLOOR",
+  line_actions: %32[
+    30, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  side_textures: %32[0 - 1, 0, 0 - 1],
+  texture_bank: {
+    ready: 1, texture_count: 1, texture_names: bytes_new[8],
+    texture_meta: %32[64, 24, 0]
+  }
+};
+let texture_floor_world = doom_world_new[texture_floor_map];
+doom_actions_expect[
+  (texture_floor_world\unsupported_actions == 0) and
+  (texture_floor_world\movers\0\top == 24) and
+  (doom_world_cross[
+     texture_floor_map, texture_floor_world, 0, 50, 20, 50
+   ] == 1),
+  "texture-height floor action selects the shortest adjacent lower texture"
+];
+i = 0;
+while (i < 3) (
+  texture_floor_world = doom_world_tick[
+    texture_floor_map, texture_floor_world, 50, 50
+  ];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[texture_floor_world\sectors, 5] == 24) and
+  (texture_floor_world\movers\0\phase == DoomMoverPhase\Done),
+  "texture-height floor reaches its checked atlas-derived target"
+];
+
+let donut_map = {
+  ok: 1, error: "", name: "ACTION-DONUT",
+  vertices: %32[10, 100, 10, 0, 30, 100, 30, 0],
+  vertex_count: 4,
+  lines: %32[0, 1, 0, 0, 2, 3, 0, 0], line_count: 2,
+  line_sides: %32[0, 0, 0, 1, 0, 0, 1, 2],
+  line_actions: %32[9, 7, 0, 0],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 1, 0, 2, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[
+    64, 128, 160, 0, 7,
+    0, 128, 160, 0, 0,
+    24, 128, 160, 0, 0
+  ],
+  sector_count: 3,
+  things: %32[0, 50, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 0, player_y: 50, player_angle: 0,
+  min_x: 0 - 20, max_x: 50, min_y: 0, max_y: 100,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+let donut_world = doom_world_new[donut_map];
+doom_actions_expect[
+  (donut_world\unsupported_actions == 0) and
+  (arr_len[donut_world\movers] == 2) and
+  (arr_len[donut_world\donut_changes] == 1) and
+  (doom_world_use[
+     donut_map, donut_world, 0, 50, trig_from_degrees[0]
+   ] == 1) and (bytes_get[donut_world\line_used, 0] == 1),
+  "donut switch couples hole, ring and outside sector explicitly"
+];
+i = 0;
+while (i < 5) (
+  donut_world = doom_world_tick[donut_map, donut_world, 0, 50];
+  i = i + 1;
+)
+let donut_play_map = doom_world_map[donut_map, donut_world];
+doom_actions_expect[
+  (buf_get[donut_world\sectors, 0] == 24) and
+  (buf_get[donut_world\sectors, 5] == 24) and
+  (buf_get[donut_world\sector_flats, 2] == 2) and
+  (buf_get[donut_play_map\sector_flats, 2] == 2),
+  "donut planes meet and the visible ring adopts the outside flat"
+];
+
+// Tagged light actions mutate the same copied sector authority sampled by the
+// renderer. Fixed-bright, surrounding-dark and reusable surrounding-bright
+// variants share one bounded selector without introducing a second light map.
+let light_map = {
+  ok: 1, error: "", name: "ACTION-LIGHTS",
+  vertices: %32[
+    10, 100, 10, 0, 30, 100, 30, 0, 50, 100, 50, 0,
+    70, 100, 70, 0, 80, 100, 80, 0
+  ],
+  vertex_count: 10,
+  lines: %32[
+    0, 1, 0, 0, 2, 3, 0, 0, 4, 5, 0, 0,
+    6, 7, 0, 0, 8, 9, 0, 0
+  ],
+  line_count: 5,
+  line_sides: %32[
+    0, 0, 0, 0 - 1, 0, 0, 1, 0 - 1, 0, 0, 2, 0 - 1,
+    0, 0, 1, 3, 0, 0, 2, 4
+  ],
+  line_actions: %32[13, 7, 104, 8, 80, 9, 0, 0, 0, 0],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[
+    0, 128, 50, 0, 7,
+    0, 128, 180, 0, 8,
+    0, 128, 90, 0, 9,
+    0, 128, 10, 0, 0,
+    0, 128, 220, 0, 0,
+    0, 128, 70, 0, 7
+  ],
+  sector_count: 6,
+  things: %32[0, 50, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 0, player_y: 50, player_angle: 0,
+  min_x: 0 - 20, max_x: 100, min_y: 0, max_y: 100,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+let light_world = doom_world_new[light_map];
+doom_actions_expect[
+  light_world\unsupported_actions == 0,
+  "fixed and surrounding tagged light actions are admitted"
+];
+doom_actions_expect[
+  (doom_world_cross[light_map, light_world, 0, 50, 20, 50] == 2) and
+  (buf_get[light_world\sectors, 2] == 255) and
+  (buf_get[light_world\sectors, 27] == 255) and
+  (bytes_get[light_world\line_used, 0] == 1),
+  "one-shot fixed light reaches every tagged sector"
+];
+doom_actions_expect[
+  (doom_world_cross[light_map, light_world, 20, 50, 40, 50] == 1) and
+  (buf_get[light_world\sectors, 7] == 10) and
+  (bytes_get[light_world\line_used, 1] == 1),
+  "lights-off selects the darkest surrounding sector"
+];
+doom_actions_expect[
+  (doom_world_cross[light_map, light_world, 40, 50, 60, 50] == 1) and
+  (buf_get[light_world\sectors, 12] == 220) and
+  (bytes_get[light_world\line_used, 2] == 0),
+  "reusable light-on selects the brightest surrounding sector"
+];
+
+let platform_map = light_map + {
+  name: "ACTION-PLATFORM",
+  line_actions: %32[87, 9, 89, 9, 0, 0, 0, 0, 0, 0],
+  line_sides: %32[
+    0, 0, 0, 0 - 1, 0, 0, 0, 0 - 1, 0, 0, 0, 0 - 1,
+    0, 0, 0, 1, 0, 0, 0, 2
+  ],
+  sectors: %32[
+    64, 128, 160, 0, 9,
+    0, 128, 160, 0, 0,
+    96, 128, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0
+  ]
+};
+let platform_world = doom_world_new[platform_map];
+doom_actions_expect[
+  (platform_world\unsupported_actions == 0) and
+  (arr_len[platform_world\movers] == 1) and
+  (platform_world\movers\0\bottom == 0) and
+  (platform_world\movers\0\top == 96) and
+  (platform_world\movers\0\cycle == 1),
+  "perpetual platform owns bounded neighboring floor limits"
+];
+doom_actions_expect[
+  doom_world_cross[platform_map, platform_world, 0, 50, 20, 50] == 1,
+  "reusable platform line starts its tagged cycle"
+];
+i = 0;
+while (i < 4) (
+  platform_world = doom_world_tick[platform_map, platform_world, 0, 50];
+  i = i + 1;
+)
+let platform_stopped_height = buf_get[platform_world\sectors, 0];
+doom_actions_expect[
+  (platform_stopped_height == 32) and
+  (doom_world_cross[
+     platform_map, platform_world, 20, 50, 40, 50
+   ] == 1) and (platform_world\movers\0\paused == 1),
+  "platform stop line preserves the exact in-flight position"
+];
+i = 0;
+while (i < 4) (
+  platform_world = doom_world_tick[platform_map, platform_world, 0, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  buf_get[platform_world\sectors, 0] == platform_stopped_height,
+  "paused platform has no hidden motion"
+];
+doom_actions_expect[
+  doom_world_cross[platform_map, platform_world, 0, 50, 20, 50] == 1,
+  "reusable platform line resumes in-stasis motion"
+];
+platform_world = doom_world_tick[platform_map, platform_world, 0, 50];
+doom_actions_expect[
+  buf_get[platform_world\sectors, 0] == platform_stopped_height - 8,
+  "resumed platform retains its prior direction"
+];
+
+let composite_map = platform_map + {
+  name: "ACTION-COMPOSITE-PLANES",
+  line_actions: %32[40, 9, 0, 0, 0, 0, 0, 0, 0, 0],
+  sectors: %32[
+    64, 96, 160, 0, 9,
+    0, 128, 160, 0, 0,
+    96, 160, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0
+  ]
+};
+let composite_world = doom_world_new[composite_map];
+doom_actions_expect[
+  (composite_world\unsupported_actions == 0) and
+  (arr_len[composite_world\movers] == 1) and
+  (arr_len[composite_world\ceilings] == 1) and
+  (doom_world_cross[
+     composite_map, composite_world, 0, 50, 20, 50
+   ] == 2) and (bytes_get[composite_world\line_used, 0] == 1),
+  "composite line atomically activates floor and ceiling authority"
+];
+i = 0;
+while (i < 16) (
+  composite_world = doom_world_tick[composite_map, composite_world, 0, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[composite_world\sectors, 0] == 0) and
+  (buf_get[composite_world\sectors, 1] == 160) and
+  (composite_world\movers\0\phase == DoomMoverPhase\Done) and
+  (composite_world\ceilings\0\phase == DoomCeilingPhase\Done),
+  "composite planes reach independent surrounding extrema"
+];
+
+let crusher_map = light_map + {
+  name: "ACTION-CRUSHER",
+  line_actions: %32[73, 9, 74, 9, 44, 10, 0, 0, 0, 0],
+  sectors: %32[
+    0, 128, 160, 0, 9,
+    0, 128, 160, 0, 10,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0,
+    0, 128, 160, 0, 0
+  ]
+};
+let crusher_world = doom_world_new[crusher_map];
+doom_actions_expect[
+  (crusher_world\unsupported_actions == 0) and
+  (arr_len[crusher_world\ceilings] == 2),
+  "cyclic, stop and one-way ceiling actions share bounded sector authority"
+];
+doom_actions_expect[
+  doom_world_cross[crusher_map, crusher_world, 0, 50, 20, 50] == 1,
+  "reusable crusher line starts tagged ceiling motion"
+];
+i = 0;
+while (i < 4) (
+  crusher_world = doom_world_tick[crusher_map, crusher_world, 0, 50];
+  i = i + 1;
+)
+let crusher_stopped_height = buf_get[crusher_world\sectors, 1];
+doom_actions_expect[
+  (crusher_stopped_height == 112) and
+  (doom_world_cross[
+     crusher_map, crusher_world, 20, 50, 40, 50
+   ] == 1) and (crusher_world\ceilings\0\paused == 1),
+  "crusher stop preserves in-flight ceiling height"
+];
+i = 0;
+while (i < 4) (
+  crusher_world = doom_world_tick[crusher_map, crusher_world, 0, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  buf_get[crusher_world\sectors, 1] == crusher_stopped_height,
+  "stopped crusher has no hidden motion"
+];
+doom_actions_expect[
+  doom_world_cross[crusher_map, crusher_world, 0, 50, 20, 50] == 1,
+  "reusable crusher line resumes in-stasis motion"
+];
+crusher_world = doom_world_tick[crusher_map, crusher_world, 0, 50];
+doom_actions_expect[
+  buf_get[crusher_world\sectors, 1] == crusher_stopped_height - 4,
+  "resumed crusher retains its prior direction"
+];
+doom_actions_expect[
+  doom_world_cross[crusher_map, crusher_world, 40, 50, 60, 50] == 1,
+  "one-way ceiling action starts independently"
+];
+i = 0;
+while (i < 30) (
+  crusher_world = doom_world_tick[crusher_map, crusher_world, 0, 50];
+  i = i + 1;
+)
+doom_actions_expect[
+  (buf_get[crusher_world\sectors, 6] == 8) and
+  (crusher_world\ceilings\1\phase == DoomCeilingPhase\Done) and
+  (bytes_get[crusher_world\line_used, 2] == 1),
+  "one-way crusher reaches floor clearance and retires"
+];
+
+let damage_world = doom_world_new[crusher_map];
+let damage_combat = doom_combat_new[crusher_map];
+doom_actions_expect[
+  doom_world_cross[crusher_map, damage_world, 0, 50, 20, 50] == 1,
+  "damage witness starts cyclic crusher"
+];
+i = 0;
+while (i < 30) (
+  damage_world = doom_world_tick[crusher_map, damage_world, 0, 50];
+  i = i + 1;
+)
+damage_combat = doom_world_apply_hazard[
+  crusher_map, damage_world, damage_combat, 0, 50
+];
+doom_actions_expect[
+  (damage_combat\health == 90) and
+  (damage_world\hazard_hits == 1) and
+  (damage_world\hazard_damage == 10),
+  "live crusher clearance reaches combat through one bounded hazard seam"
+];
+
+let scroll_map = light_map + {
+  name: "ACTION-SCROLL",
+  line_actions: %32[48, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+};
+let scroll_world = doom_world_new[scroll_map];
+doom_actions_expect[
+  (scroll_world\unsupported_actions == 0) and
+  (arr_len[scroll_world\scroll_sides] == 1),
+  "scrolling wall owns one bounded mutable sidedef"
+];
+i = 0;
+while (i < 3) (
+  scroll_world = doom_world_tick[scroll_map, scroll_world, 0, 50];
+  i = i + 1;
+)
+let scroll_play_map = doom_world_map[scroll_map, scroll_world];
+doom_actions_expect[
+  (buf_get[scroll_world\sides, 0] == 3) and
+  (buf_get[scroll_play_map\sides, 0] == 3),
+  "renderer map receives the live scrolling horizontal offset"
 ];
 
 print "doom actions ok";

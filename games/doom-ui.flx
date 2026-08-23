@@ -106,46 +106,101 @@ op doom_ui_next [ui, events] (
   => ui;
 )
 
-op doom_ui_draw_patch [buf, w, h, bank, slot, x, y] (
+op doom_ui_draw_patch_scaled [buf, w, h, bank, slot, x, y,
+                              scale_numerator, scale_denominator] (
+  let ui_meta = bank\ui_meta;
+  let ui_pixels = bank\ui_pixels;
+  let ui_opaque = bank\ui_opaque;
+  let rgbx_colours = bank\rgbx_colours;
   if ((bank\ui_ready == 1) and
       (bank\ui_slots == doom_texture_ui_slots[]) and
       (slot >= 0) and (slot < bank\ui_slots) and
-      (buf_len[bank\ui_meta] == bank\ui_slots * 5) and
-      (bytes_len[bank\ui_pixels] == bytes_len[bank\ui_opaque])) () else (
+      (scale_numerator > 0) and (scale_denominator > 0) and
+      (buf_len[ui_meta] == bank\ui_slots * 5) and
+      (bytes_len[ui_pixels] == bytes_len[ui_opaque])) () else (
     => 0;
   )
   let mb = slot * 5;
-  let pw = buf_get[bank\ui_meta, mb];
-  let ph = buf_get[bank\ui_meta, mb + 1];
-  let offset = buf_get[bank\ui_meta, mb + 2];
+  let pw = buf_get[ui_meta, mb];
+  let ph = buf_get[ui_meta, mb + 1];
+  let offset = buf_get[ui_meta, mb + 2];
   if ((pw > 0) and (ph > 0) and (offset >= 0) and
-      (pw * ph <= bytes_len[bank\ui_pixels] - offset)) () else ( => 0; )
+      (pw * ph <= bytes_len[ui_pixels] - offset)) () else ( => 0; )
+  view rgbx as %32le[] over buf;
+  let drawn_width = pw * scale_numerator / scale_denominator;
+  let drawn_height = ph * scale_numerator / scale_denominator;
+  if (drawn_width < 1) ( drawn_width = 1; )
+  if (drawn_height < 1) ( drawn_height = 1; )
   let painted = 0;
-  let sy = 0;
-  while (sy < ph) (
-    let dy = y + sy;
-    if ((dy >= 0) and (dy < h)) (
+  // Full-frame 640x400 and 1280x800 status layers are exact 2x/4x views of
+  // the original 320x200 art. Walk source texels once for those integer
+  // scales: each admitted palette lookup owns a compact destination block,
+  // avoiding repeated nearest-neighbour division and opacity reads.
+  let integer_scale = scale_numerator / scale_denominator;
+  if (((integer_scale == 1) or (integer_scale == 2) or
+       (integer_scale == 4)) and
+      (scale_numerator == integer_scale * scale_denominator)) (
+    let sy = 0;
+    while (sy < ph) (
       let sx = 0;
       while (sx < pw) (
-        let dx = x + sx;
         let source = offset + sy * pw + sx;
-        if ((dx >= 0) and (dx < w) and
-            (bytes_get[bank\ui_opaque, source] == 1)) (
-          let colour = buf_get[
-            bank\colours, bytes_get[bank\ui_pixels, source]
+        if (bytes_get[ui_opaque, source] == 1) (
+          let packed_colour = buf_get[
+            rgbx_colours, bytes_get[ui_pixels, source]
           ];
-          let target = (dy * w + dx) * 4;
-          bytes_set[buf, target, (colour *> 16) *& 255];
-          bytes_set[buf, target + 1, (colour *> 8) *& 255];
-          bytes_set[buf, target + 2, colour *& 255];
-          painted = painted + 1;
+          let repeat_y = 0;
+          while (repeat_y < integer_scale) (
+            let dy = y + sy * integer_scale + repeat_y;
+            if ((dy >= 0) and (dy < h)) (
+              let repeat_x = 0;
+              while (repeat_x < integer_scale) (
+                let dx = x + sx * integer_scale + repeat_x;
+                if ((dx >= 0) and (dx < w)) (
+                  rgbx@(dy * w + dx) = packed_colour;
+                  painted = painted + 1;
+                )
+                repeat_x = repeat_x + 1;
+              )
+            )
+            repeat_y = repeat_y + 1;
+          )
         )
         sx = sx + 1;
       )
+      sy = sy + 1;
     )
-    sy = sy + 1;
+    => painted;
+  )
+  let ty = 0;
+  while (ty < drawn_height) (
+    let sy = ty * ph / drawn_height;
+    let dy = y + ty;
+    if ((dy >= 0) and (dy < h)) (
+      let tx = 0;
+      while (tx < drawn_width) (
+        let sx = tx * pw / drawn_width;
+        let dx = x + tx;
+        let source = offset + sy * pw + sx;
+        if ((dx >= 0) and (dx < w) and
+            (bytes_get[ui_opaque, source] == 1)) (
+          let packed_colour = buf_get[
+            rgbx_colours, bytes_get[ui_pixels, source]
+          ];
+          let pixel = dy * w + dx;
+          rgbx@pixel = packed_colour;
+          painted = painted + 1;
+        )
+        tx = tx + 1;
+      )
+    )
+    ty = ty + 1;
   )
   => painted;
+)
+
+op doom_ui_draw_patch [buf, w, h, bank, slot, x, y] (
+  => doom_ui_draw_patch_scaled[buf, w, h, bank, slot, x, y, 1, 1];
 )
 
 private op doom_ui_patch_width [bank, slot] (
@@ -226,33 +281,152 @@ private op doom_ui_draw_number_right [buf, w, h, bank, right, y,
   => 0;
 )
 
-op doom_ui_draw_status [buf, w, h, bank, combat, world] (
+private op doom_ui_number_width_scaled [bank, text, small, yellow,
+                                        numerator, denominator] (
+  let width = 0;
+  let i = 0;
+  while (i < str_len[text]) (
+    let digit = text\\i - 48;
+    let slot = doom_texture_ui_big_number_slot[digit];
+    if (small == 1) (
+      slot = doom_texture_ui_gray_number_slot[digit];
+      if (yellow == 1) ( slot = doom_texture_ui_yellow_number_slot[digit]; )
+    )
+    width = width +
+      doom_ui_patch_width[bank, slot] * numerator / denominator;
+    i = i + 1;
+  )
+  => width;
+)
+
+private op doom_ui_draw_number_right_scaled [buf, w, h, bank, right, y,
+                                             value, small, yellow,
+                                             numerator, denominator] (
+  let shown = value;
+  if (shown < 0) ( shown = 0; )
+  if (shown > 999) ( shown = 999; )
+  let text = int_to_string[shown];
+  let x = right - doom_ui_number_width_scaled[
+    bank, text, small, yellow, numerator, denominator
+  ];
+  let i = 0;
+  while (i < str_len[text]) (
+    let digit = text\\i - 48;
+    let slot = doom_texture_ui_big_number_slot[digit];
+    if (small == 1) (
+      slot = doom_texture_ui_gray_number_slot[digit];
+      if (yellow == 1) ( slot = doom_texture_ui_yellow_number_slot[digit]; )
+    )
+    doom_ui_draw_patch_scaled[
+      buf, w, h, bank, slot, x, y, numerator, denominator
+    ];
+    x = x + doom_ui_patch_width[bank, slot] * numerator / denominator;
+    i = i + 1;
+  )
+  => 0;
+)
+
+private op doom_ui_draw_status_static [buf, w, h, bank,
+                                       scale_n, scale_d, bx, by] (
+  doom_ui_draw_patch_scaled[
+    buf, w, h, bank, doom_texture_ui_status_slot[], bx, by,
+    scale_n, scale_d
+  ];
+  doom_ui_draw_patch_scaled[
+    buf, w, h, bank, doom_texture_ui_arms_slot[],
+    bx + 104 * scale_n / scale_d, by, scale_n, scale_d
+  ];
+  => 1;
+)
+
+private op doom_ui_face_tier [health] (
+  if (health >= 80) ( => 0; )
+  if (health >= 60) ( => 1; )
+  if (health >= 40) ( => 2; )
+  if (health >= 20) ( => 3; )
+  => 4;
+)
+
+// The face is live state, never part of the immutable status cache. It idles
+// among the three straight-ahead frames, reacts briefly to damage, descends
+// through the five health tiers and has an explicit terminal frame.
+op doom_ui_face_slot [combat] (
+  if (combat\health == 0) ( => doom_texture_ui_face_dead_slot[]; )
+  let tier = doom_ui_face_tier[combat\health];
+  let since_pain = combat\tick - combat\player_pain_tick;
+  if ((since_pain >= 0) and (since_pain < 18)) (
+    => doom_texture_ui_face_ouch_slot[tier];
+  )
+  => doom_texture_ui_face_straight_slot[tier, (combat\tick / 30) % 3];
+)
+
+private op doom_ui_draw_status_layers [buf, w, h, bank, combat, world,
+                                       draw_static] (
   if (bank\ui_ready == 1) () else ( => 0; )
-  let bx = (w - 320) / 2;
-  let by = h - 32;
-  doom_ui_draw_patch[
-    buf, w, h, bank, doom_texture_ui_status_slot[], bx, by
-  ];
-  doom_ui_draw_patch[
-    buf, w, h, bank, doom_texture_ui_arms_slot[], bx + 104, by
-  ];
-  doom_ui_draw_patch[
-    buf, w, h, bank, doom_texture_ui_face_slot[], bx + 143, by + 2
+  let scale_n = h;
+  let scale_d = 200;
+  let status_width = 320 * scale_n / scale_d;
+  let bx = (w - status_width) / 2;
+  let by = h - 32 * scale_n / scale_d;
+  if (draw_static == 1) (
+    doom_ui_draw_status_static[
+      buf, w, h, bank, scale_n, scale_d, bx, by
+    ];
+  )
+
+  doom_ui_draw_patch_scaled[
+    buf, w, h, bank, doom_ui_face_slot[combat],
+    bx + 143 * scale_n / scale_d, by + 2 * scale_n / scale_d,
+    scale_n, scale_d
   ];
 
-  doom_ui_draw_number_right[
-    buf, w, h, bank, bx + 44, by + 3,
-    doom_combat_current_ammo[combat], 0, 0
+  if ((world\blue_key == 1) or (world\blue_skull == 1)) (
+    let skull = world\blue_skull;
+    doom_ui_draw_patch_scaled[
+      buf, w, h, bank, doom_texture_ui_key_slot[0, skull],
+      bx + 239 * scale_n / scale_d, by + 3 * scale_n / scale_d,
+      scale_n, scale_d
+    ];
+  )
+  if ((world\yellow_key == 1) or (world\yellow_skull == 1)) (
+    let skull = world\yellow_skull;
+    doom_ui_draw_patch_scaled[
+      buf, w, h, bank, doom_texture_ui_key_slot[1, skull],
+      bx + 239 * scale_n / scale_d, by + 13 * scale_n / scale_d,
+      scale_n, scale_d
+    ];
+  )
+  if ((world\red_key == 1) or (world\red_skull == 1)) (
+    let skull = world\red_skull;
+    doom_ui_draw_patch_scaled[
+      buf, w, h, bank, doom_texture_ui_key_slot[2, skull],
+      bx + 239 * scale_n / scale_d, by + 23 * scale_n / scale_d,
+      scale_n, scale_d
+    ];
+  )
+
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 44 * scale_n / scale_d,
+    by + 3 * scale_n / scale_d,
+    doom_combat_current_ammo[combat], 0, 0, scale_n, scale_d
   ];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 90, by + 3,
-                            combat\health, 0, 0];
-  doom_ui_draw_patch[
-    buf, w, h, bank, doom_texture_ui_percent_slot[], bx + 90, by + 3
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 90 * scale_n / scale_d,
+    by + 3 * scale_n / scale_d, combat\health, 0, 0, scale_n, scale_d
   ];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 221, by + 3,
-                            combat\armor, 0, 0];
-  doom_ui_draw_patch[
-    buf, w, h, bank, doom_texture_ui_percent_slot[], bx + 221, by + 3
+  doom_ui_draw_patch_scaled[
+    buf, w, h, bank, doom_texture_ui_percent_slot[],
+    bx + 90 * scale_n / scale_d, by + 3 * scale_n / scale_d,
+    scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 221 * scale_n / scale_d,
+    by + 3 * scale_n / scale_d, combat\armor, 0, 0, scale_n, scale_d
+  ];
+  doom_ui_draw_patch_scaled[
+    buf, w, h, bank, doom_texture_ui_percent_slot[],
+    bx + 221 * scale_n / scale_d, by + 3 * scale_n / scale_d,
+    scale_n, scale_d
   ];
 
   let weapon = 2;
@@ -263,28 +437,46 @@ op doom_ui_draw_status [buf, w, h, bank, combat, world] (
     if (doom_combat_weapon_owned[combat, weapon] == 1) (
       slot = doom_texture_ui_yellow_number_slot[weapon];
     )
-    doom_ui_draw_patch[
-      buf, w, h, bank, slot, bx + 111 + column * 12, by + 4 + row * 10
+    doom_ui_draw_patch_scaled[
+      buf, w, h, bank, slot,
+      bx + (111 + column * 12) * scale_n / scale_d,
+      by + (4 + row * 10) * scale_n / scale_d, scale_n, scale_d
     ];
     weapon = weapon + 1;
   )
 
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 4,
-                            combat\ammo, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 10,
-                            combat\shells, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 16,
-                            combat\rockets, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 288, by + 22,
-                            combat\cells, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 4,
-                            combat\max_ammo, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 10,
-                            combat\max_shells, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 16,
-                            combat\max_rockets, 1, 1];
-  doom_ui_draw_number_right[buf, w, h, bank, bx + 314, by + 22,
-                            combat\max_cells, 1, 1];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 288 * scale_n / scale_d,
+    by + 4 * scale_n / scale_d, combat\ammo, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 288 * scale_n / scale_d,
+    by + 10 * scale_n / scale_d, combat\shells, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 288 * scale_n / scale_d,
+    by + 16 * scale_n / scale_d, combat\rockets, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 288 * scale_n / scale_d,
+    by + 22 * scale_n / scale_d, combat\cells, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 314 * scale_n / scale_d,
+    by + 4 * scale_n / scale_d, combat\max_ammo, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 314 * scale_n / scale_d,
+    by + 10 * scale_n / scale_d, combat\max_shells, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 314 * scale_n / scale_d,
+    by + 16 * scale_n / scale_d, combat\max_rockets, 1, 1, scale_n, scale_d
+  ];
+  doom_ui_draw_number_right_scaled[
+    buf, w, h, bank, bx + 314 * scale_n / scale_d,
+    by + 22 * scale_n / scale_d, combat\max_cells, 1, 1, scale_n, scale_d
+  ];
 
   if (world\pickup_tick > 0) (
     let message_x = (w - doom_ui_text_width[bank, world\pickup_message]) / 2;
@@ -293,6 +485,45 @@ op doom_ui_draw_status [buf, w, h, bank, combat, world] (
     ];
   )
   => 1;
+)
+
+// Cache only the immutable WAD status artwork. Live ammunition, health,
+// armour and weapon ownership remain ordinary overlays, so this is a raster
+// reuse policy rather than a second source of UI truth.
+op doom_ui_status_cache_new [w, h, bank] (
+  let status_h = 32 * h / 200;
+  if ((bank\ui_ready == 1) and (w > 0) and (h > 0) and
+      (w % 2 == 0) and (status_h > 0) and
+      (320 * h / 200 == w)) () else (
+    fall "doom_ui_status_cache_new: expected a measured 8:5 status raster";
+  )
+  let pixels = gui_buffer[w, status_h];
+  doom_ui_draw_status_static[pixels, w, status_h, bank, h, 200, 0, 0];
+  => { pixels: pixels, width: w, frame_height: h, height: status_h };
+)
+
+op doom_ui_draw_status [buf, w, h, bank, combat, world] (
+  => doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 1];
+)
+
+op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
+  let status_h = 32 * h / 200;
+  let cached_pixels = cache\pixels;
+  if ((cache\width == w) and (cache\frame_height == h) and
+      (cache\height == status_h) and (w % 2 == 0) and
+      (bytes_len[buf] == w * h * 4) and
+      (bytes_len[cached_pixels] == w * status_h * 4)) () else (
+    fall "doom_ui_draw_status_cached: cache dimensions disagree";
+  )
+  view cached_words as %32le[] over cached_pixels;
+  view frame_words as %32le[] over buf;
+  let target = (h - status_h) * w;
+  let i = 0;
+  while (i < buf_len[cached_words]) (
+    frame_words@(target + i) = cached_words@i;
+    i = i + 1;
+  )
+  => doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 0];
 )
 
 private op doom_ui_draw_centered_patch [buf, w, h, bank, slot, y] (

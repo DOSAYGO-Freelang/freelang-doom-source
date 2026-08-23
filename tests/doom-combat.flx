@@ -58,7 +58,7 @@ doom_combat_test_u16[things, 28, 7];
 doom_combat_test_u16[things, 30, 170];
 doom_combat_test_u16[things, 32, 150];
 doom_combat_test_u16[things, 34, 0];
-doom_combat_test_u16[things, 36, 3002];
+doom_combat_test_u16[things, 36, 84];
 doom_combat_test_u16[things, 38, 7];
 
 let base = doom_map_parse["COMBAT", vertices, lines, things];
@@ -124,6 +124,7 @@ doom_combat_test_expect[
   (string_eq[doom_combat_actor_phase_name[actor], "chase"] == 1),
   "bounded sight wakes enemy and reports its sound event"
 ];
+actor\attack_cooldown = 4;
 i = 0;
 while (i < 3) (
   combat = doom_combat_tick[map, combat, 50, 50];
@@ -135,6 +136,7 @@ doom_combat_test_expect[
 ];
 
 actor\x = 80;
+actor\attack_cooldown = 0;
 combat = doom_combat_tick[map, combat, 50, 50];
 doom_combat_test_expect[
   actor\phase == DoomEnemyPhase\Attack,
@@ -146,23 +148,26 @@ while (i < 8) (
   i = i + 1;
 )
 doom_combat_test_expect[
-  (combat\health == 97) and (combat\damage_taken == 3) and
+  (combat\health == 88) and (combat\damage_taken == 12) and
   (combat\monster_attack_serial == 1) and
   (combat\monster_attack_kind == 3004) and
-  (combat\player_pain_serial == 1),
-  "attack damage and both sound events are explicit and bounded"
+  (combat\player_pain_serial == 1) and
+  (combat\player_pain_tick >= 0) and
+  (combat\tick - combat\player_pain_tick < 18),
+  "former-human hitscan damage and both sound events are explicit and bounded"
 ];
 
 combat = doom_combat_fire[
   map, combat, 50, 50, trig_from_degrees[0]
 ];
 doom_combat_test_expect[
-  (actor\phase == DoomEnemyPhase\Pain) and (actor\health == 20) and
+  (actor\phase == DoomEnemyPhase\Pain) and (actor\health == 10) and
   (combat\monster_pain_serial == 1) and
   (combat\monster_pain_kind == 3004) and
   (combat\ammo == 49) and (combat\shot_cooldown == 10) and
   (doom_combat_actor_sprite_slot[actor, 5] == 52) and
-  (doom_combat_weapon_slot[combat] == 212),
+  (doom_combat_weapon_slot[combat] == 626) and
+  (doom_combat_muzzle_slot[combat] == 974),
   "first shot consumes ammo and selects pain/weapon frames"
 ];
 combat = doom_combat_fire[
@@ -205,7 +210,7 @@ while (i < 35) (
 doom_combat_test_expect[
   (actor\phase_tick == 25) and
   (doom_combat_actor_sprite_slot[actor, 1] == 68) and
-  (doom_combat_weapon_slot[combat] == 211) and
+  (doom_combat_weapon_slot[combat] == 625) and
   (doom_combat_validate[map, combat] == 1),
   "death animation terminates on the regular corpse frame"
 ];
@@ -219,6 +224,7 @@ doom_combat_test_expect[
   (barrel_target\distance == 50),
   "hitscan admits the nearest live toxic barrel as an explicit target"
 ];
+barrel_combat\barrels\0\health = 10;
 barrel_combat = doom_combat_fire[
   map, barrel_combat, 50, 150, trig_from_degrees[0]
 ];
@@ -227,9 +233,10 @@ doom_combat_test_expect[
   (barrel_combat\barrels\0\state == 2) and
   (barrel_combat\barrels\0\phase_tick == 1) and
   (barrel_combat\explosion_serial == 1) and
-  (barrel_combat\actors\0\health == 10) and
+  (barrel_combat\actors\0\health == 0) and
+  (barrel_combat\kills == 1) and
   (barrel_combat\misses == 0),
-  "one pistol shot destroys a barrel and applies its bounded visible blast"
+  "one lethal pistol shot destroys a barrel and applies its bounded visible blast"
 ];
 i = 0;
 while (i < 44) (
@@ -260,7 +267,7 @@ arsenal = doom_combat_fire[
 ];
 doom_combat_test_expect[
   (arsenal\shells == 3) and (arsenal\shot_cooldown == 24) and
-  (arsenal\kills == 1),
+  (arsenal\kills == 1) and (doom_combat_muzzle_slot[arsenal] == 975),
   "shotgun consumes shells and applies its explicit bounded profile"
 ];
 arsenal = doom_combat_cycle_weapon[arsenal, 1];
@@ -274,6 +281,9 @@ arsenal = doom_combat_fire[
 doom_combat_test_expect[
   (arsenal\rockets == 1) and (arr_len[arsenal\projectiles] == 1) and
   (arsenal\projectiles\0\state == 1) and
+  (arsenal\projectiles\0\kind == 1) and
+  (arsenal\projectiles\0\angle == 0) and
+  (doom_combat_muzzle_slot[arsenal] == 979) and
   (arsenal\projectile_impacts == 0),
   "rocket fire creates a travelling bounded projectile instead of hitscan"
 ];
@@ -288,5 +298,204 @@ doom_combat_test_expect[
   (arsenal\barrels\0\state == 2),
   "rocket impact destroys a nearby barrel and enters visible explosion state"
 ];
+
+let plasma_combat = doom_combat_new[map];
+bytes_set[plasma_combat\weapons, 6, 1];
+plasma_combat\cells = 2;
+plasma_combat = doom_combat_select_weapon[plasma_combat, 6];
+plasma_combat = doom_combat_fire[
+  map, plasma_combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (plasma_combat\cells == 1) and
+  (plasma_combat\shot_cooldown == 4) and
+  (arr_len[plasma_combat\projectiles] == 1) and
+  (plasma_combat\projectiles\0\kind == 6) and
+  (plasma_combat\projectiles\0\state == 1) and
+  (doom_combat_weapon_slot[plasma_combat] == 639) and
+  (doom_combat_muzzle_slot[plasma_combat] == 984),
+  "plasma fire consumes one cell and publishes its psprite and bolt authority"
+];
+i = 0;
+while (i < 3) (
+  plasma_combat = doom_combat_tick[map, plasma_combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (plasma_combat\projectiles\0\state == 2) and
+  (plasma_combat\projectiles\0\hits == 1) and
+  (plasma_combat\kills == 1) and
+  (plasma_combat\projectile_impacts == 1),
+  "plasma bolt travels, damages one visible body and enters its impact sequence"
+];
+
+let bfg_combat = doom_combat_new[map];
+bytes_set[bfg_combat\weapons, 7, 1];
+bfg_combat\cells = 39;
+bfg_combat = doom_combat_select_weapon[bfg_combat, 7];
+bfg_combat = doom_combat_fire[
+  map, bfg_combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (bfg_combat\dry_fires == 1) and (bfg_combat\cells == 39) and
+  (arr_len[bfg_combat\projectiles] == 0),
+  "BFG refuses a partial forty-cell charge without consuming it"
+];
+bfg_combat\cells = 40;
+bfg_combat = doom_combat_fire[
+  map, bfg_combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (bfg_combat\cells == 0) and
+  (bfg_combat\projectiles\0\kind == 7) and
+  (bfg_combat\projectiles\0\state == 1) and
+  (doom_combat_weapon_slot[bfg_combat] == 641) and
+  (doom_combat_muzzle_slot[bfg_combat] == 985),
+  "BFG charge publishes its forty-cell projectile and firing psprites"
+];
+i = 0;
+while (i < 4) (
+  bfg_combat = doom_combat_tick[map, bfg_combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (bfg_combat\projectiles\0\state == 2) and
+  (bfg_combat\projectiles\0\hits >= 1) and
+  (bfg_combat\kills == 1) and
+  (bfg_combat\projectile_impacts == 1),
+  "BFG projectile resolves a bounded visible-area impact"
+];
+
+buf_set[map\things, 6, 3003];
+let berserk_combat = doom_combat_new[map];
+bytes_set[berserk_combat\weapons, 1, 1];
+berserk_combat\berserk = 1;
+berserk_combat = doom_combat_select_weapon[berserk_combat, 1];
+berserk_combat = doom_combat_fire[
+  map, berserk_combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (berserk_combat\actors\0\health == 940) and
+  (berserk_combat\selected_weapon == 1),
+  "berserk power strengthens the admitted close-weapon profile"
+];
+buf_set[map\things, 6, 3004];
+
+// Reuse the checked square with an imp in the admitted enemy slot. Its attack
+// must create a hostile travelling record; damage is applied only when that
+// record reaches the player's body rather than at the attack-frame edge.
+buf_set[map\things, 6, 3001];
+let imp_combat = doom_combat_new[map];
+let imp = imp_combat\actors\\0;
+imp\phase = DoomEnemyPhase\Attack;
+imp\phase_tick = 7;
+imp\angle = 180;
+imp_combat = doom_combat_tick_at[map, imp_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (imp\max_health == 60) and
+  (arr_len[imp_combat\projectiles] == 1) and
+  (imp_combat\projectiles\0\kind == 2) and
+  (imp_combat\projectiles\0\state == 1) and
+  (imp_combat\health == 100),
+  "imp ranged attack creates one explicit hostile fireball"
+];
+i = 0;
+while (i < 8) (
+  imp_combat = doom_combat_tick_at[map, imp_combat, 50, 50, 0];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (imp_combat\projectiles\0\state == 2) and
+  (imp_combat\projectiles\0\hits == 1) and
+  (imp_combat\monster_projectile_impacts == 1) and
+  (imp_combat\health == 94) and
+  (imp_combat\damage_taken == 6),
+  "imp fireball collision owns damage and enters its WAD impact sequence"
+];
+buf_set[map\things, 6, 3004];
+
+// Demon and spectre share the native SARG atlas and melee authority. Keep the
+// spectre's future translucency as a renderer concern, not a second actor kind.
+buf_set[map\things, 6, 3002];
+let demon_combat = doom_combat_new[map];
+let demon = demon_combat\actors\\0;
+demon\x = 80;
+demon\phase = DoomEnemyPhase\Attack;
+demon\phase_tick = 7;
+demon_combat = doom_combat_tick_at[map, demon_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (demon\family == 3) and (demon\max_health == 150) and
+  (demon_combat\health == 92) and
+  (demon_combat\damage_taken == 8) and
+  (demon_combat\monster_attack_kind == 3002),
+  "demon uses the shared SARG family and its bounded melee profile"
+];
+buf_set[map\things, 6, 3004];
+
+buf_set[map\things, 6, 3005];
+let caco_combat = doom_combat_new[map];
+let caco = caco_combat\actors\\0;
+caco\phase = DoomEnemyPhase\Attack;
+caco\phase_tick = 7;
+caco_combat = doom_combat_tick_at[map, caco_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (caco\family == 4) and (caco\max_health == 400) and
+  (caco_combat\projectiles\0\kind == 3) and
+  (caco_combat\projectiles\0\damage == 10),
+  "cacodemon launches its bounded BAL2 projectile profile"
+];
+
+buf_set[map\things, 6, 3003];
+let baron_combat = doom_combat_new[map];
+let baron = baron_combat\actors\\0;
+baron\phase = DoomEnemyPhase\Attack;
+baron\phase_tick = 7;
+baron_combat = doom_combat_tick_at[map, baron_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (baron\family == 6) and (baron\max_health == 1000) and
+  (baron_combat\projectiles\0\kind == 4) and
+  (baron_combat\projectiles\0\damage == 16),
+  "baron launches its stronger bounded BAL7 projectile profile"
+];
+
+buf_set[map\things, 6, 16];
+let cyber_combat = doom_combat_new[map];
+let cyber = cyber_combat\actors\\0;
+cyber\phase = DoomEnemyPhase\Attack;
+cyber\phase_tick = 7;
+cyber_combat = doom_combat_tick_at[map, cyber_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (cyber\family == 7) and (cyber\max_health == 4000) and
+  (cyber_combat\projectiles\0\kind == 5) and
+  (cyber_combat\projectiles\0\damage == 40),
+  "cyberdemon launches an enemy-owned rocket profile"
+];
+
+buf_set[map\things, 6, 3006];
+let soul_combat = doom_combat_new[map];
+let soul = soul_combat\actors\\0;
+soul\x = 100;
+soul\phase = DoomEnemyPhase\Attack;
+soul\phase_tick = 7;
+soul_combat = doom_combat_tick_at[map, soul_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (soul\family == 5) and (soul\max_health == 100) and
+  (soul\x == 92) and (soul_combat\health == 94),
+  "lost soul charge advances before applying contact damage"
+];
+
+buf_set[map\things, 6, 7];
+let spider_combat = doom_combat_new[map];
+let spider = spider_combat\actors\\0;
+spider\phase = DoomEnemyPhase\Attack;
+spider\phase_tick = 7;
+spider_combat = doom_combat_tick_at[map, spider_combat, 50, 50, 0];
+doom_combat_test_expect[
+  (spider\family == 8) and (spider\max_health == 3000) and
+  (spider_combat\health == 64) and
+  (spider_combat\monster_attack_kind == 7),
+  "spider mastermind owns a deterministic hitscan burst"
+];
+buf_set[map\things, 6, 3004];
 
 print "doom combat state ok";

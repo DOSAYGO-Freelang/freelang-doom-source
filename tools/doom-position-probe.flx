@@ -9,24 +9,60 @@ op doom_position_probe_int [text] (
   => string_to_int[text];
 )
 
-if (argc[] == 5) () else (
-  print "usage: doom-position-probe WAD X Y Z";
-  fall "doom-position-probe: expected four arguments";
+if ((argc[] == 5) or (argc[] == 6)) () else (
+  print "usage: doom-position-probe WAD [ExMy] X Y Z";
+  fall "doom-position-probe: expected WAD, optional map and position";
 )
 
-let map = doom_map_load[argv[1], "E1M1"];
+let selector = "E1M1";
+let coordinate_base = 2;
+if (argc[] == 6) (
+  selector = argv[2];
+  coordinate_base = 3;
+)
+let map = doom_map_load[argv[1], selector];
 if (map\ok == 1) () else (
   print map\error;
   fall "doom-position-probe: map load failed";
 )
 let world = doom_world_new[map];
 let play_map = doom_world_map[map, world];
-let x = doom_position_probe_int[argv[2]];
-let y = doom_position_probe_int[argv[3]];
-let z = doom_position_probe_int[argv[4]];
+print "player start ^{map\player_x},^{map\player_y} angle ^{map\player_angle}";
+let x = doom_position_probe_int[argv[coordinate_base]];
+let y = doom_position_probe_int[argv[coordinate_base + 1]];
+let z = doom_position_probe_int[argv[coordinate_base + 2]];
 world\player_z = z;
 let origin_sector = doom_map_point_sector[play_map, x, y];
-print "origin ^{x},^{y},^{z} sector ^{origin_sector} floor ^{buf_get[play_map\sectors, origin_sector * 5]} ceiling ^{buf_get[play_map\sectors, origin_sector * 5 + 1]}";
+let origin_tag = buf_get[play_map\sectors, origin_sector * 5 + 4];
+print "origin ^{x},^{y},^{z} sector ^{origin_sector} floor ^{buf_get[play_map\sectors, origin_sector * 5]} ceiling ^{buf_get[play_map\sectors, origin_sector * 5 + 1]} tag ^{origin_tag}";
+let thing = 0;
+while (thing < map\thing_count) (
+  if (buf_get[map\things, thing * 4 + 2] == 2001) (
+    print "shotgun thing ^{thing} ^{buf_get[map\things, thing * 4]},^{buf_get[map\things, thing * 4 + 1]}";
+  )
+  if (buf_get[map\things, thing * 4 + 2] == 14) (
+    let marker_x = buf_get[map\things, thing * 4];
+    let marker_y = buf_get[map\things, thing * 4 + 1];
+    let marker_sector = doom_map_point_sector[play_map, marker_x, marker_y];
+    print "teleport thing ^{thing} ^{marker_x},^{marker_y} sector ^{marker_sector} floor ^{buf_get[play_map\sectors, marker_sector * 5]} ceiling ^{buf_get[play_map\sectors, marker_sector * 5 + 1]} tag ^{buf_get[play_map\sectors, marker_sector * 5 + 4]}";
+  )
+  thing = thing + 1;
+)
+let line = 0;
+while (line < map\line_count) (
+  let special = buf_get[map\line_actions, line * 2];
+  let tag = buf_get[map\line_actions, line * 2 + 1];
+  if ((tag == origin_tag) and (special != 0)) (
+    print "origin-tag action line ^{line} special ^{special} tag ^{tag}";
+  )
+  if ((special == 39) or (special == 97)) (
+    let lb = line * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    print "teleport line ^{line} special ^{special} tag ^{tag} from ^{buf_get[map\vertices, va]},^{buf_get[map\vertices, va + 1]} to ^{buf_get[map\vertices, vb]},^{buf_get[map\vertices, vb + 1]} flags ^{buf_get[map\lines, lb + 3]} sectors ^{buf_get[map\line_sides, lb + 2]},^{buf_get[map\line_sides, lb + 3]} destination ^{buf_get[world\line_teleports, line]}";
+  )
+  line = line + 1;
+)
 let dy = 0 - 8;
 while (dy <= 8) (
   let dx = 0 - 8;
@@ -38,7 +74,14 @@ while (dy <= 8) (
       let blocked = doom_world_player_move_blocked[
         play_map, world, x, y, tx, ty
       ];
-      print "move ^{dx},^{dy} -> ^{tx},^{ty} sector ^{sector} floor ^{buf_get[play_map\sectors, sector * 5]} ceiling ^{buf_get[play_map\sectors, sector * 5 + 1]} blocked ^{blocked}";
+      let probe_world = doom_world_new[map];
+      probe_world\player_z = z;
+      let probe_map = doom_world_map[map, probe_world];
+      let probe_combat = doom_combat_new[probe_map];
+      let move = doom_world_slide_move_combat[
+        probe_map, probe_world, probe_combat, x, y, dx, dy
+      ];
+      print "move ^{dx},^{dy} -> ^{tx},^{ty} sector ^{sector} floor ^{buf_get[play_map\sectors, sector * 5]} ceiling ^{buf_get[play_map\sectors, sector * 5 + 1]} blocked ^{blocked} result ^{move\x},^{move\y} teleported ^{move\teleported}";
     )
     dx = dx + 8;
   )

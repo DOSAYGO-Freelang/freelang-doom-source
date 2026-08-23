@@ -63,6 +63,15 @@ doom_audio_test_expect[
   (str_len[doom_audio_track_for_map["MAP01"]] == 0),
   "checked classic-map music naming"
 ];
+doom_audio_test_expect[
+  (doom_audio_weapon_clip[7] == 38) and
+  (doom_audio_world_clip[5] == 11) and
+  (doom_audio_monster_alert_clip[3003] == 28) and
+  (doom_audio_monster_attack_clip[3006] == 31) and
+  (doom_audio_monster_pain_clip[16] == 20) and
+  (doom_audio_monster_death_clip[7] == 36),
+  "semantic effect identities address the stable WAD-derived clip bank"
+];
 doom_audio_test_expect[missing_bank\ok == 0, "missing GENMIDI rejection"];
 
 // The OPL2 integration fixture retains the same MUS and adds the minimum
@@ -240,7 +249,7 @@ doom_audio_test_expect[
 ];
 
 // The gameplay bank is WAD policy, not mixer policy. Prove the stable bank
-// order with twenty-four independently directory-addressed Doom sound lumps.
+// order with independently directory-addressed Doom sound lumps.
 let effects_path = "doom-effects-fixture.tmp";
 let effect_names = [
   "DSSAWFUL", "DSPISTOL", "DSSHOTGN", "DSRLAUNC",
@@ -248,7 +257,11 @@ let effect_names = [
   "DSSWTCHN", "DSSWTCHX", "DSTELEPT", "DSBAREXP",
   "DSPLPAIN", "DSPOSIT1", "DSSGTSIT", "DSBGSIT1",
   "DSSGTATK", "DSCLAW", "DSPOPAIN", "DSDMPAIN",
-  "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD"
+  "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD",
+  "DSFIRSHT", "DSFIRXPL", "DSCACSIT", "DSBRSSIT",
+  "DSCYBSIT", "DSSPISIT", "DSSKLATK", "DSCACDTH",
+  "DSBRSDTH", "DSSKLDTH", "DSCYBDTH", "DSSPIDTH",
+  "DSPLASMA", "DSBFG", "DSGETPOW"
 ];
 let effect_count = arr_len[effect_names];
 let effects_directory = 12 + effect_count * 12;
@@ -284,10 +297,10 @@ doom_audio_test_expect[
 let effects = doom_audio_render_effects[effects_path];
 _intrinsic_fs_remove[effects_path];
 doom_audio_test_expect[
-  (effects\ok == 1) and (arr_len[effects\wavs] == 24) and
+  (effects\ok == 1) and (arr_len[effects\wavs] == 39) and
   (bytes_len[effects\wavs\@0] == 48) and
-  (bytes_len[effects\wavs\@23] == 48) and
-  (doom_wad_u32le[effects\wavs\@23, 24] == 8023),
+  (bytes_len[effects\wavs\@38] == 48) and
+  (doom_wad_u32le[effects\wavs\@38, 24] == 8038),
   "gameplay effect bank renders in stable independent-rate order"
 ];
 print "doom audio integration ok";

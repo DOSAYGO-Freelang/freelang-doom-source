@@ -2,7 +2,8 @@
 // record references stop at this boundary: later world/render code receives
 // checked numeric tables and cannot reinterpret an untrusted WAD directory.
 
-credits: <../games/doom-format.flx> <f/arrays> <f/buffers> <f/bytes>
+credits: <../games/doom-format.flx> <../games/doom-stock.flx>
+         <f/arrays> <f/buffers> <f/bytes>
          <f/files-chaos> <f/strings>;
 
 private op doom_map_read_range [path, offset, count] (
@@ -169,13 +170,14 @@ private op doom_map_empty_texture_bank [] (
     texture_names: bytes_new[0], texture_meta: %32[],
     texture_pixels: bytes_new[0], texture_opaque: bytes_new[0],
     flat_count: 0, flat_names: bytes_new[0],
-    flat_pixels: bytes_new[0], sky_flat: 0 - 1,
+    flat_pixels: bytes_new[0], sky_flat: 0 - 1, sky_texture: 0 - 1,
     sprite_ready: 0, sprite_slots: 0, sprite_loaded: 0,
     sprite_meta: %32[], sprite_pixels: bytes_new[0],
     sprite_opaque: bytes_new[0],
     ui_ready: 0, ui_slots: 0, ui_meta: %32[],
     ui_pixels: bytes_new[0], ui_opaque: bytes_new[0],
-    palette: bytes_new[0], colormap: bytes_new[0], colours: %32[]
+    palette: bytes_new[0], colormap: bytes_new[0],
+    colours: %32[], rgbx_colours: %32[]
   };
 )
 
@@ -747,6 +749,11 @@ private op doom_map_orientation [ax, ay, bx, by, px, py] (
   => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 )
 
+private op doom_map_abs [value] (
+  if (value < 0) ( => 0 - value; )
+  => value;
+)
+
 private op doom_map_between [value, a, b] (
   if (a <= b) ( => (value >= a) and (value <= b); )
   => (value >= b) and (value <= a);
@@ -779,12 +786,135 @@ private op doom_map_segments_cross [ax, ay, bx, by, cx, cy, dx, dy] (
 
 // Movement may ride exactly along a contacted wall. The general path test is
 // deliberately inclusive because use/cross/sight callers care about endpoint
-// contact, but treating a collinear movement span as a new wall crossing makes
-// a player stick once a radius support point reaches an angled linedef.
+// contact, but a support moving along the same infinite line never changes
+// sides. Checking collinearity rather than finite-segment membership also lets
+// it pass cleanly across a vertex shared by adjacent collinear linedefs.
 private op doom_map_move_segments_cross [ax, ay, bx, by, cx, cy, dx, dy] (
-  if ((doom_map_point_on_segment[ax, ay, bx, by, cx, cy] == 1) and
-      (doom_map_point_on_segment[ax, ay, bx, by, dx, dy] == 1)) ( => 0; )
+  if ((doom_map_orientation[ax, ay, bx, by, cx, cy] == 0) and
+      (doom_map_orientation[ax, ay, bx, by, dx, dy] == 0)) ( => 0; )
   => doom_map_segments_cross[ax, ay, bx, by, cx, cy, dx, dy];
+)
+
+private op doom_map_line_distance_squared [map, line, x, y] (
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let ax = buf_get[map\vertices, va];
+  let ay = buf_get[map\vertices, va + 1];
+  let vx = buf_get[map\vertices, vb] - ax;
+  let vy = buf_get[map\vertices, vb + 1] - ay;
+  let length_squared = vx * vx + vy * vy;
+  if (length_squared > 0) () else ( => 0; )
+  let dot = (x - ax) * vx + (y - ay) * vy;
+  let closest_x = ax;
+  let closest_y = ay;
+  if (dot >= length_squared) (
+    closest_x = buf_get[map\vertices, vb];
+    closest_y = buf_get[map\vertices, vb + 1];
+  ) else if (dot > 0) (
+    closest_x = ax + dot * vx / length_squared;
+    closest_y = ay + dot * vy / length_squared;
+  )
+  let dx = x - closest_x;
+  let dy = y - closest_y;
+  => dx * dx + dy * dy;
+)
+
+private op doom_map_point_near_line_square [map, line, x, y, radius] (
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let ax = buf_get[map\vertices, va];
+  let ay = buf_get[map\vertices, va + 1];
+  let vx = buf_get[map\vertices, vb] - ax;
+  let vy = buf_get[map\vertices, vb + 1] - ay;
+  let length_squared = vx * vx + vy * vy;
+  if (length_squared > 0) () else ( => 0; )
+  let dot = (x - ax) * vx + (y - ay) * vy;
+  let closest_x = ax;
+  let closest_y = ay;
+  if (dot >= length_squared) (
+    closest_x = buf_get[map\vertices, vb];
+    closest_y = buf_get[map\vertices, vb + 1];
+  ) else if (dot > 0) (
+    closest_x = ax + dot * vx / length_squared;
+    closest_y = ay + dot * vy / length_squared;
+  )
+  => (doom_map_abs[x - closest_x] <= radius) and
+    (doom_map_abs[y - closest_y] <= radius);
+)
+
+// A radius support can begin exactly on a linedef after a fall or step-down.
+// That start contact is not a new crossing when the player centre remains on
+// the same side and strictly increases its closest-segment distance.  The
+// finite-segment distance matters at joined vertices: an infinite-line test
+// would turn the neighboring segment into a one-way ratchet.
+private op doom_map_move_departs_contact [map, line,
+                                          centre_from_x, centre_from_y,
+                                          centre_to_x, centre_to_y, radius] (
+  if (radius > 0) () else ( => 0; )
+  if (doom_map_point_near_line_square[
+        map, line, centre_from_x, centre_from_y, radius
+      ] == 1) () else ( => 0; )
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  let ax = buf_get[map\vertices, va];
+  let ay = buf_get[map\vertices, va + 1];
+  let bx = buf_get[map\vertices, vb];
+  let by = buf_get[map\vertices, vb + 1];
+  let from_side = doom_map_orientation[
+    ax, ay, bx, by, centre_from_x, centre_from_y
+  ];
+  let to_side = doom_map_orientation[
+    ax, ay, bx, by, centre_to_x, centre_to_y
+  ];
+  if (from_side == 0) ( => 0; )
+  if (((from_side > 0) and (to_side >= 0)) or
+      ((from_side < 0) and (to_side <= 0))) () else ( => 0; )
+  => doom_map_line_distance_squared[
+       map, line, centre_to_x, centre_to_y
+     ] > doom_map_line_distance_squared[
+       map, line, centre_from_x, centre_from_y
+     ];
+)
+
+private op doom_map_move_line_blocks [map, line,
+                                      from_x, from_y, to_x, to_y,
+                                      centre_from_x, centre_from_y,
+                                      centre_to_x, centre_to_y, radius] (
+  let lb = line * 4;
+  let va = buf_get[map\lines, lb] * 2;
+  let vb = buf_get[map\lines, lb + 1] * 2;
+  if (doom_map_move_segments_cross[
+        buf_get[map\vertices, va], buf_get[map\vertices, va + 1],
+        buf_get[map\vertices, vb], buf_get[map\vertices, vb + 1],
+        from_x, from_y, to_x, to_y
+      ] == 1) () else ( => 0; )
+  if (doom_map_move_departs_contact[
+        map, line, centre_from_x, centre_from_y,
+        centre_to_x, centre_to_y, radius
+      ] == 1) ( => 0; )
+  => 1;
+)
+
+private op doom_map_move_wall_blocker_mode [map,
+                                            from_x, from_y, to_x, to_y,
+                                            centre_from_x, centre_from_y,
+                                            centre_to_x, centre_to_y,
+                                            radius] (
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    if ((buf_get[map\lines, lb + 2] == 1) and
+        (doom_map_move_line_blocks[
+           map, i, from_x, from_y, to_x, to_y,
+           centre_from_x, centre_from_y,
+           centre_to_x, centre_to_y, radius
+         ] == 1)) ( => i + 1; )
+    i = i + 1;
+  )
+  => 0;
 )
 
 op doom_map_path_crosses_line [map, line, from_x, from_y, to_x, to_y] (
@@ -805,23 +935,10 @@ op doom_map_path_crosses_line [map, line, from_x, from_y, to_x, to_y] (
 // compact code keeps the hot collision path allocation-free while allowing
 // the world layer to retain exact blocker identity after a live failure.
 op doom_map_move_wall_blocker [map, from_x, from_y, to_x, to_y] (
-  let i = 0;
-  while (i < map\line_count) (
-    let lb = i * 4;
-    if (buf_get[map\lines, lb + 2] == 1) (
-      let va = buf_get[map\lines, lb] * 2;
-      let vb = buf_get[map\lines, lb + 1] * 2;
-      let ax = buf_get[map\vertices, va];
-      let ay = buf_get[map\vertices, va + 1];
-      let bx = buf_get[map\vertices, vb];
-      let by = buf_get[map\vertices, vb + 1];
-      if (doom_map_move_segments_cross[
-            ax, ay, bx, by, from_x, from_y, to_x, to_y
-          ] == 1) ( => i + 1; )
-    )
-    i = i + 1;
-  )
-  => 0;
+  => doom_map_move_wall_blocker_mode[
+    map, from_x, from_y, to_x, to_y,
+    from_x, from_y, to_x, to_y, 0
+  ];
 )
 
 op doom_map_move_crosses_wall [map, from_x, from_y, to_x, to_y] (
@@ -842,10 +959,14 @@ op doom_map_move_blocked [map, from_x, from_y, to_x, to_y,
 // lip only when its real vertical state already fits the target portal; the
 // same dynamic sector table remains collision authority for moving doors.
 // Zero is clear, positive is linedef+1, and negative is -(target sector+1).
-op doom_map_move_blocker_at [map, from_x, from_y, to_x, to_y, feet_z,
-                             player_height, maximum_step] (
-  let solid = doom_map_move_wall_blocker[
-    map, from_x, from_y, to_x, to_y
+private op doom_map_move_blocker_at_mode [
+  map, from_x, from_y, to_x, to_y, feet_z,
+  player_height, maximum_step,
+  centre_from_x, centre_from_y, centre_to_x, centre_to_y, radius
+] (
+  let solid = doom_map_move_wall_blocker_mode[
+    map, from_x, from_y, to_x, to_y,
+    centre_from_x, centre_from_y, centre_to_x, centre_to_y, radius
   ];
   if (solid != 0) ( => solid; )
   // A two-sided line is still impassable when its sector pair leaves no
@@ -854,12 +975,10 @@ op doom_map_move_blocker_at [map, from_x, from_y, to_x, to_y, feet_z,
   while (i < map\line_count) (
     let lb = i * 4;
     if (buf_get[map\lines, lb + 2] == 0) (
-      let va = buf_get[map\lines, lb] * 2;
-      let vb = buf_get[map\lines, lb + 1] * 2;
-      if (doom_map_move_segments_cross[
-            buf_get[map\vertices, va], buf_get[map\vertices, va + 1],
-            buf_get[map\vertices, vb], buf_get[map\vertices, vb + 1],
-            from_x, from_y, to_x, to_y
+      if (doom_map_move_line_blocks[
+            map, i, from_x, from_y, to_x, to_y,
+            centre_from_x, centre_from_y,
+            centre_to_x, centre_to_y, radius
           ] == 1) (
         let right_sector = buf_get[map\line_sides, lb + 2];
         let left_sector = buf_get[map\line_sides, lb + 3];
@@ -888,6 +1007,30 @@ op doom_map_move_blocker_at [map, from_x, from_y, to_x, to_y, feet_z,
     => 0 - (to_sector + 1);
   )
   => 0;
+)
+
+op doom_map_move_blocker_at [map, from_x, from_y, to_x, to_y, feet_z,
+                             player_height, maximum_step] (
+  => doom_map_move_blocker_at_mode[
+    map, from_x, from_y, to_x, to_y, feet_z,
+    player_height, maximum_step,
+    from_x, from_y, to_x, to_y, 0
+  ];
+)
+
+// Radius-aware movement keeps each support sweep explicit while using the
+// player centre to distinguish departure from penetration at existing line
+// contact.  Callers still receive the first remaining line/sector blocker.
+op doom_map_move_blocker_at_radius [
+  map, from_x, from_y, to_x, to_y, feet_z,
+  player_height, maximum_step,
+  centre_from_x, centre_from_y, centre_to_x, centre_to_y, radius
+] (
+  => doom_map_move_blocker_at_mode[
+    map, from_x, from_y, to_x, to_y, feet_z,
+    player_height, maximum_step,
+    centre_from_x, centre_from_y, centre_to_x, centre_to_y, radius
+  ];
 )
 
 op doom_map_move_blocked_at [map, from_x, from_y, to_x, to_y, feet_z,
@@ -929,12 +1072,61 @@ op doom_map_sight_blocked [map, from_x, from_y, to_x, to_y] (
   => 0;
 )
 
-op doom_map_thing_is_enemy [kind] (
-  if ((kind == 7) or (kind == 9) or (kind == 16) or (kind == 58) or
-      (kind == 65) or (kind == 66) or (kind == 67) or (kind == 68) or
-      (kind == 69) or (kind == 71) or (kind == 84) or
-      ((kind >= 3001) and (kind <= 3006))) ( => 1; )
+// Combat rays carry an explicit vertical sample. A geometrically open portal
+// can still hide a target when the ray passes below its raised floor lip or
+// above its lowered ceiling. The 2D sight oracle remains useful to render and
+// movement callers; this variant is the authority for attacks and hitscan.
+op doom_map_sight_blocked_at [map, from_x, from_y, from_z,
+                              to_x, to_y, to_z] (
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    let ax = buf_get[map\vertices, va];
+    let ay = buf_get[map\vertices, va + 1];
+    let bx = buf_get[map\vertices, vb];
+    let by = buf_get[map\vertices, vb + 1];
+    if (doom_map_segments_cross[
+          ax, ay, bx, by, from_x, from_y, to_x, to_y
+        ] == 1) (
+      if (buf_get[map\lines, lb + 2] == 1) ( => 1; )
+      let right_sector = buf_get[map\line_sides, lb + 2];
+      let left_sector = buf_get[map\line_sides, lb + 3];
+      if ((right_sector >= 0) and (left_sector >= 0)) () else ( => 1; )
+      let opening_floor = buf_get[map\sectors, right_sector * 5];
+      let other_floor = buf_get[map\sectors, left_sector * 5];
+      if (other_floor > opening_floor) ( opening_floor = other_floor; )
+      let opening_ceiling = buf_get[map\sectors, right_sector * 5 + 1];
+      let other_ceiling = buf_get[map\sectors, left_sector * 5 + 1];
+      if (other_ceiling < opening_ceiling) ( opening_ceiling = other_ceiling; )
+      if (opening_ceiling <= opening_floor) ( => 1; )
+
+      let ray_dx = to_x - from_x;
+      let ray_dy = to_y - from_y;
+      let line_dx = bx - ax;
+      let line_dy = by - ay;
+      let denominator = ray_dx * line_dy - ray_dy * line_dx;
+      if (denominator != 0) (
+        let numerator = (ax - from_x) * line_dy -
+          (ay - from_y) * line_dx;
+        if (denominator < 0) (
+          denominator = 0 - denominator;
+          numerator = 0 - numerator;
+        )
+        let ray_z = from_z * denominator +
+          (to_z - from_z) * numerator;
+        if ((ray_z <= opening_floor * denominator) or
+            (ray_z >= opening_ceiling * denominator)) ( => 1; )
+      )
+    )
+    i = i + 1;
+  )
   => 0;
+)
+
+op doom_map_thing_is_enemy [kind] (
+  => doom_stock_thing_is_enemy[kind];
 )
 
 // Select the nearest live enemy in a 96-unit-wide cardinal hitscan corridor.

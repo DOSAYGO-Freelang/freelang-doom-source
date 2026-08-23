@@ -1,0 +1,86 @@
+// Symbol-rich native profiling workload for the Freelang Doom renderer.
+// It owns no window or audio sidecar: tools/profile.js can sample the same
+// map/texture/world/combat/view operations without presenter wait time.
+
+credits: <../games/doom-view.flx> <../games/doom-ui.flx>
+         <f/bytes> <f/trig>;
+
+let count = argc[];
+if ((count == 4) or (count == 5)) () else (
+  eprint["usage: doom-profile <wad> <ExMy> <frames> [--resolution=WxH]"];
+  exit[2];
+)
+
+let frames = string_to_int[argv[3]];
+if ((frames >= 60) and (frames <= 3600)) () else (
+  eprint["doom-profile: frames must be within 60..3600"];
+  exit[2];
+)
+
+let map = doom_map_load[argv[1], argv[2]];
+if (map\ok == 1) () else (
+  eprint["doom-profile: ^{map\error}"];
+  exit[1];
+)
+map = doom_texture_load_map[argv[1], map];
+if (map\ok == 1) () else (
+  eprint["doom-profile: ^{map\error}"];
+  exit[1];
+)
+
+let w = 640;
+let h = 400;
+if (count == 5) (
+  let arg = argv[4];
+  if (string_starts_with[arg, "--resolution="] == 1) () else (
+    eprint["doom-profile: expected --resolution=WxH"];
+    exit[2];
+  )
+  let spec = string_slice[arg, 13, str_len[arg] - 13];
+  let dimensions = string_split[spec, "x"];
+  if (arr_len[dimensions] == 2) () else (
+    eprint["doom-profile: resolution must be WIDTHxHEIGHT"];
+    exit[2];
+  )
+  w = string_to_int[dimensions\@0];
+  h = string_to_int[dimensions\@1];
+  if ((w >= 320) and (w <= 1280) and
+      (h >= 200) and (h <= 800) and
+      (w * 5 == h * 8) and
+      (w * h <= 1024000)) () else (
+    eprint["doom-profile: resolution must be 8:5 within 320x200..1280x800"];
+    exit[2];
+  )
+)
+let viewport_h = h - 32 * h / 200;
+let buf = gui_buffer[w, h];
+let font = gui_font[];
+let world = doom_world_new[map];
+let play_map = doom_world_map[map, world];
+let combat = doom_combat_new[play_map];
+let work = doom_view_work_sized[play_map, w, viewport_h];
+let status_cache = doom_ui_status_cache_new[w, h, play_map\texture_bank];
+let player_x = map\player_x;
+let player_y = map\player_y;
+let angle = trig_from_degrees[map\player_angle];
+let checksum = 0;
+let frame = 0;
+while (frame < frames) (
+  doom_view_draw_world_pitched[
+    buf, w, viewport_h, font, play_map, work,
+    player_x, player_y, angle, 0, combat, world, 0, 0
+  ];
+  doom_ui_draw_status_cached[
+    buf, w, h, play_map\texture_bank, status_cache, combat, world
+  ];
+  combat = doom_combat_tick_at[
+    play_map, combat, player_x, player_y, world\player_z
+  ];
+  world = doom_world_tick[play_map, world, player_x, player_y];
+  angle = angle + trig_from_degrees[1];
+  let sample_pixel = (frame * 7919) % (w * h);
+  checksum = (checksum + bytes_get[buf, sample_pixel * 4]) % 1000000007;
+  frame = frame + 1;
+)
+
+print "doom profile ^{map\name}: ^{frames} frames at ^{w}x^{viewport_h} + status checksum ^{checksum}";

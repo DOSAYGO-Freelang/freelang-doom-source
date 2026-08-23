@@ -107,6 +107,29 @@ doom_bsp_expect[doom_map_point_subsector[map, 150, 50] == 1, "east subsector"];
 doom_bsp_expect[doom_map_point_sector[map, 50, 50] == 0, "west sector"];
 doom_bsp_expect[doom_map_point_sector[map, 150, 50] == 1, "east sector"];
 
+// A raised destination floor can hide an actor even though the XY ray crosses
+// a two-sided line. Rendering and combat must agree on that portal horizon.
+doom_bsp_expect[
+  doom_map_sight_blocked_at[map, 50, 50, 41, 150, 50, 52] == 0,
+  "ordinary stepped portal admits the vertical sight sample"
+];
+buf_set[map\sectors, 5, 80];
+buf_set[map\sectors, 6, 160];
+let hidden_combat = doom_combat_new[map];
+let hidden_target = doom_combat_hitscan_at[
+  map, hidden_combat, 50, 50, 0, trig_from_degrees[0], 200
+];
+hidden_combat = doom_combat_tick_at[map, hidden_combat, 50, 50, 0];
+doom_bsp_expect[
+  (doom_map_sight_blocked[map, 50, 50, 150, 50] == 0) and
+  (doom_map_sight_blocked_at[map, 50, 50, 41, 150, 50, 108] == 1) and
+  (hidden_target\kind == 0) and
+  (hidden_combat\actors\0\phase == DoomEnemyPhase\Dormant),
+  "raised lip hides actor from player hitscan and monster attack authority"
+];
+buf_set[map\sectors, 5, 24];
+buf_set[map\sectors, 6, 96];
+
 // Classic Doom derives a subsector's sector from its first seg. Some official
 // maps contain later segs with a different front sector, so that is accepted
 // as data rather than rejected as a malformed BSP.
@@ -266,6 +289,11 @@ buf_set[sprite_meta, fog_mb, 1];
 buf_set[sprite_meta, fog_mb + 1, 1];
 buf_set[sprite_meta, fog_mb + 2, 3];
 buf_set[sprite_meta, fog_mb + 4, 41];
+let pillar_mb = doom_texture_prop_slot[30] * 6;
+buf_set[sprite_meta, pillar_mb, 1];
+buf_set[sprite_meta, pillar_mb + 1, 1];
+buf_set[sprite_meta, pillar_mb + 2, 3];
+buf_set[sprite_meta, pillar_mb + 4, 1];
 let sprite_pixels = bytes_new[4];
 let sprite_opaque = bytes_new[4];
 bytes_set[sprite_pixels, 0, 2];
@@ -277,17 +305,86 @@ bytes_set[sprite_opaque, 1, 1];
 bytes_set[sprite_opaque, 2, 1];
 bytes_set[sprite_opaque, 3, 1];
 let flat_pixels = bytes_new[4096];
+let rgbx_colours = buf_new[32, 8192];
+pi = 0;
+while (pi < 8192) (
+  let colour = buf_get[colours, pi];
+  buf_set[
+    rgbx_colours, pi,
+    ((colour *> 16) *& 255) + (colour *& 65280) + ((colour *& 255) *< 16)
+  ];
+  pi = pi + 1;
+)
 let bank = map\texture_bank + {
   ready: 1, texture_count: 1,
   texture_names: bytes_new[8], texture_meta: %32[2, 2, 0],
   texture_pixels: texture_pixels, texture_opaque: texture_opaque,
   flat_count: 1, flat_names: bytes_new[8], flat_pixels: flat_pixels,
-  sky_flat: 0, palette: bytes_new[0], colormap: bytes_new[0],
+  sky_flat: 0, sky_texture: 0 - 1,
+  palette: bytes_new[0], colormap: bytes_new[0],
   sprite_ready: 1, sprite_slots: doom_texture_sprite_slots[], sprite_loaded: 4,
   sprite_meta: sprite_meta, sprite_pixels: sprite_pixels,
-  sprite_opaque: sprite_opaque, colours: colours
+  sprite_opaque: sprite_opaque,
+  colours: colours, rgbx_colours: rgbx_colours
 };
 map = map + { texture_bank: bank };
+
+// PISGA0 and PISFA0 use one shared psprite origin. Their real WAD offsets
+// place the flash fourteen logical pixels right and forty above the body;
+// independent bottom-centering used to paint it at the hand.
+let psprite_meta = buf_new[32, doom_texture_sprite_slots[] * 6];
+let pistol_body = doom_texture_weapon_slot_for[2, 0];
+let pistol_flash = doom_texture_muzzle_slot_for[2, 0];
+let shotgun_anchor = doom_texture_weapon_slot_for[3, 0];
+let shotgun_flash = doom_texture_muzzle_slot_for[3, 0];
+let pistol_mb = pistol_body * 6;
+let pistol_flash_mb = pistol_flash * 6;
+let shotgun_mb = shotgun_anchor * 6;
+let shotgun_flash_mb = shotgun_flash * 6;
+buf_set[psprite_meta, pistol_mb, 57];
+buf_set[psprite_meta, pistol_mb + 1, 62];
+buf_set[psprite_meta, pistol_mb + 2, 0];
+buf_set[psprite_meta, pistol_mb + 3, 0 - 126];
+buf_set[psprite_meta, pistol_mb + 4, 0 - 106];
+buf_set[psprite_meta, pistol_flash_mb, 41];
+buf_set[psprite_meta, pistol_flash_mb + 1, 38];
+buf_set[psprite_meta, pistol_flash_mb + 2, 3534];
+buf_set[psprite_meta, pistol_flash_mb + 3, 0 - 140];
+buf_set[psprite_meta, pistol_flash_mb + 4, 0 - 66];
+// SHTGB-D change box width and left offset during the pump animation. SHTGA
+// remains the shared psprite anchor for both SHTFA/B flash patches.
+buf_set[psprite_meta, shotgun_mb, 79];
+buf_set[psprite_meta, shotgun_mb + 1, 60];
+buf_set[psprite_meta, shotgun_mb + 2, 5092];
+buf_set[psprite_meta, shotgun_mb + 3, 0 - 121];
+buf_set[psprite_meta, shotgun_mb + 4, 0 - 108];
+buf_set[psprite_meta, shotgun_flash_mb, 44];
+buf_set[psprite_meta, shotgun_flash_mb + 1, 31];
+buf_set[psprite_meta, shotgun_flash_mb + 2, 9832];
+buf_set[psprite_meta, shotgun_flash_mb + 3, 0 - 141];
+buf_set[psprite_meta, shotgun_flash_mb + 4, 0 - 95];
+let psprite_bank = bank + {
+  sprite_meta: psprite_meta,
+  sprite_pixels: bytes_new[11196], sprite_opaque: bytes_new[11196]
+};
+let muzzle_position = doom_view_muzzle_position[
+  320, 200, psprite_bank, pistol_body, pistol_flash
+];
+doom_bsp_expect[
+  (muzzle_position\left == 146) and (muzzle_position\top == 98) and
+  (muzzle_position\width == 41) and (muzzle_position\height == 38),
+  "muzzle flash preserves the shared WAD psprite origin at the barrel tip"
+];
+let shotgun_muzzle_position = doom_view_muzzle_position[
+  320, 200, psprite_bank, shotgun_anchor, shotgun_flash
+];
+doom_bsp_expect[
+  (shotgun_muzzle_position\left == 141) and
+  (shotgun_muzzle_position\top == 127) and
+  (shotgun_muzzle_position\width == 44) and
+  (shotgun_muzzle_position\height == 31),
+  "shotgun flash stays on the neutral psprite origin during pump frames"
+];
 pi = 0;
 while (pi < map\sector_count * 2) (
   buf_set[map\sector_flats, pi, 0];
@@ -299,6 +396,15 @@ while (pi < map\side_count * 3) (
   pi = pi + 1;
 )
 let textured_work = doom_view_work[map];
+doom_bsp_expect[
+  (textured_work\visplane_limit == map\subsector_count * 2) and
+  (bytes_len[textured_work\visplane_owner_stamp] ==
+   map\subsector_count * 2) and
+  (buf_len[textured_work\visplane_owner_record] ==
+   map\subsector_count * 2),
+  "visplane ownership is structurally bounded by convex subsectors"
+];
+textured_work\measure_plane_gaps = 1;
 let textured = doom_view_draw[
   pixels, 320, 200, gui_font[], map, textured_work,
   50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
@@ -334,6 +440,27 @@ doom_bsp_expect[red_pixels > 0, "indexed wall texels reach the frame"];
 doom_bsp_expect[blue_pixels > 0, "depth-tested enemy sprite reaches the frame"];
 doom_bsp_expect[green_pixels > 0, "first-person weapon sprite reaches the frame"];
 
+// Two disconnected leaves can refer to one physical sector-plane. They must
+// retain distinct records even when their rendering code (height/flat/light)
+// is identical; otherwise their per-column intervals can invent floor pixels
+// in the screen-space gap between the leaves.
+let east_owner = buf_get[map\subsectors, 5];
+buf_set[map\subsectors, 5, 0];
+let shared_plane_work = doom_view_work[map];
+doom_view_draw[
+  pixels, 320, 200, gui_font[], map, shared_plane_work,
+  50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
+];
+let shared_frame = shared_plane_work\frame;
+doom_bsp_expect[
+  (shared_plane_work\visplane_owner_stamp@0 == shared_frame) and
+  (shared_plane_work\visplane_owner_stamp@2 == shared_frame) and
+  (shared_plane_work\visplane_owner_record@0 !=
+   shared_plane_work\visplane_owner_record@2),
+  "same-sector subsectors retain independent floor intervals"
+];
+buf_set[map\subsectors, 5, east_owner];
+
 // A two-sided portal may legitimately name `-` for an optional upper/lower
 // texture. In textured mode that means no surface. It must never select the
 // depthless flat-oracle panel that formerly appeared as a remote gray door
@@ -359,6 +486,8 @@ doom_bsp_expect[
 ];
 buf_set[map\side_textures, 3 * 3, 0];
 let plane_owned = 0;
+let textured_depth_storage = textured_work\depth;
+view textured_depth as %32le[] over textured_depth_storage;
 let py = 102;
 while (py < 180) (
   let sample_y = py - py % 3 + 1;
@@ -368,8 +497,8 @@ while (py < 180) (
   while (px < 320) (
     let pixel = py * 320 + px;
     if (((textured_work\stamp)@pixel == textured_work\frame) and
-        (((textured_work\depth)@pixel == expected_west) or
-         ((textured_work\depth)@pixel == expected_east))) (
+        ((textured_depth@pixel == expected_west) or
+         (textured_depth@pixel == expected_east))) (
       plane_owned = plane_owned + 1;
     )
     px = px + 1;
@@ -395,6 +524,17 @@ doom_bsp_expect[
   (combat_view\ammo == 50) and (combat_view\visible_enemies == 1),
   "explicit combat state reaches the animated renderer"
 ];
+let light_work = doom_view_work[map];
+combat\light_tick = 30;
+doom_view_draw_combat_pitched[
+  pixels, 320, 200, gui_font[], map, light_work,
+  50, 50, trig_from_degrees[0], 0, combat, 0, 0
+];
+doom_bsp_expect[
+  light_work\light_amp == 1,
+  "light-amplification power selects the fullbright render authority"
+];
+combat\light_tick = 0;
 doom_bsp_expect[
   combat_view\visible_combat_items == 1,
   "equal-depth dropped clip remains visible over its source actor"
@@ -410,6 +550,31 @@ while (pi < bytes_len[pixels]) (
   pi = pi + 4;
 )
 doom_bsp_expect[yellow_pixels > 0, "dropped clip texels reach the frame"];
+
+let prop_map = map + {
+  things: %32[50, 50, 1, 7, 150, 50, 30, 7],
+  thing_angles: %32[0, 0], thing_count: 2
+};
+let prop_world = doom_world_new[prop_map];
+let prop_combat = doom_combat_new[prop_map];
+let prop_view = doom_view_draw_world_pitched[
+  pixels, 320, 200, gui_font[], prop_map, doom_view_work[prop_map],
+  50, 50, trig_from_degrees[0], 0, prop_combat, prop_world, 0, 0
+];
+let prop_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 233) and
+      (bytes_get[pixels, pi + 1] == 37) and
+      (bytes_get[pixels, pi + 2] == 197)) (
+    prop_pixels = prop_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  (prop_view\visible_props == 1) and (prop_pixels > 0),
+  "static decoration reaches the shared depth-tested sprite raster"
+];
 
 let fog_world = doom_world_new[map];
 fog_world\teleport_fog_tick = 70;
@@ -434,6 +599,18 @@ while (pi < bytes_len[pixels]) (
 doom_bsp_expect[
   fog_pixels > 0,
   "WAD-native teleport fog frame reaches the depth-tested world raster"
+];
+let viewport_pixels = gui_buffer[320, 200];
+let viewport_guard = ((200 * 320) - 1) * 4;
+bytes_set[viewport_pixels, viewport_guard, 173];
+doom_view_draw_world_pitched[
+  viewport_pixels, 320, 168, gui_font[], map,
+  doom_view_work_sized[map, 320, 168],
+  50, 50, trig_from_degrees[0], 0, combat, fog_world, 0, 0
+];
+doom_bsp_expect[
+  bytes_get[viewport_pixels, viewport_guard] == 173,
+  "viewport-prefix rendering leaves the status-bar suffix untouched"
 ];
 let flat_oracle = doom_view_draw_flat_pitched[
   pixels, 320, 200, gui_font[], map, doom_view_work[map],

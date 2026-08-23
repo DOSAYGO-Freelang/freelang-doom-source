@@ -118,55 +118,133 @@ private op doom_play_sound [audio_session, voice, clip, gain] (
   => 0;
 )
 
-private op doom_play_weapon_clip [weapon] (
-  if (weapon == 1) ( => 1; )
-  if ((weapon == 2) or (weapon == 4)) ( => 2; )
-  if (weapon == 3) ( => 3; )
-  if (weapon == 5) ( => 4; )
-  => 2;
+private op doom_play_sound_state [world, combat] (
+  => {
+    world: world\sound_serial,
+    explosion: combat\explosion_serial,
+    projectile: combat\projectile_impacts,
+    monster_projectile: combat\monster_projectile_impacts,
+    alert: combat\monster_alert_serial,
+    attack: combat\monster_attack_serial,
+    pain: combat\monster_pain_serial,
+    death: combat\monster_death_serial,
+    player_pain: combat\player_pain_serial
+  };
 )
 
-private op doom_play_world_sound_clip [kind] (
-  if (kind == 1) ( => 7; )
-  if (kind == 2) ( => 8; )
-  if (kind == 3) ( => 9; )
-  if (kind == 4) ( => 10; )
-  if (kind == 5) ( => 11; )
+// Consume simulation events after the complete world/combat tick. This stage
+// owns only clip selection and mixer voices; it cannot mutate simulation.
+private op doom_play_emit_sounds [audio_session, combat_mode,
+                                  world, combat, seen] (
+  if (world\sound_serial != seen\world) (
+    let clip = doom_audio_world_clip[world\sound_kind];
+    if (clip > 0) (
+      let voice = 3;
+      if (world\sound_kind == 5) ( voice = 4; )
+      doom_play_sound[audio_session, voice, clip, 256];
+    )
+    seen\world = world\sound_serial;
+  )
+  if (combat_mode == 0) ( => seen; )
+  if (combat\explosion_serial != seen\explosion) (
+    doom_play_sound[audio_session, 5, 12, 256];
+    seen\explosion = combat\explosion_serial;
+  )
+  if (combat\projectile_impacts != seen\projectile) (
+    doom_play_sound[audio_session, 5, 24, 256];
+    seen\projectile = combat\projectile_impacts;
+  )
+  if (combat\monster_projectile_impacts != seen\monster_projectile) (
+    doom_play_sound[audio_session, 5, 26, 240];
+    seen\monster_projectile = combat\monster_projectile_impacts;
+  )
+  if (combat\monster_alert_serial != seen\alert) (
+    let clip = doom_audio_monster_alert_clip[combat\monster_alert_kind];
+    if (clip > 0) ( doom_play_sound[audio_session, 6, clip, 224]; )
+    seen\alert = combat\monster_alert_serial;
+  )
+  if (combat\monster_attack_serial != seen\attack) (
+    let clip = doom_audio_monster_attack_clip[combat\monster_attack_kind];
+    if (clip > 0) ( doom_play_sound[audio_session, 7, clip, 240]; )
+    seen\attack = combat\monster_attack_serial;
+  )
+  if (combat\monster_pain_serial != seen\pain) (
+    let clip = doom_audio_monster_pain_clip[combat\monster_pain_kind];
+    if (clip > 0) ( doom_play_sound[audio_session, 8, clip, 224]; )
+    seen\pain = combat\monster_pain_serial;
+  )
+  if (combat\monster_death_serial != seen\death) (
+    let clip = doom_audio_monster_death_clip[combat\monster_death_kind];
+    if (clip > 0) ( doom_play_sound[audio_session, 9, clip, 240]; )
+    seen\death = combat\monster_death_serial;
+  )
+  if (combat\player_pain_serial != seen\player_pain) (
+    doom_play_sound[audio_session, 10, 13, 256];
+    seen\player_pain = combat\player_pain_serial;
+  )
+  => seen;
+)
+
+// Render one immutable view of the current frame. Presentation/input folding
+// happens only after this operation returns, preserving the visible frame
+// transaction while keeping raster/UI policy out of simulation scheduling.
+private op doom_play_draw_frame [buf, w, h, viewport_h, font, map, work,
+                                 player_x, player_y, angle, pitch,
+                                 alive, kills, enemies, misses, steps, blocked,
+                                 texture_mode, combat_mode, combat, world,
+                                 status_cache, diag_mode, demo_mode,
+                                 controls, ui] (
+  if (texture_mode == 1) (
+    if (combat_mode == 1) (
+      doom_view_draw_world_pitched[
+        buf, w, viewport_h, font, map, work,
+        player_x, player_y, angle, pitch, combat, world, steps, blocked
+      ];
+    ) else (
+      doom_view_draw_pitched[
+        buf, w, viewport_h, font, map, work,
+        player_x, player_y, angle, pitch,
+        alive, kills, enemies, misses, steps, blocked
+      ];
+    )
+  ) else if (combat_mode == 1) (
+    doom_view_draw_world_flat_pitched[
+      buf, w, viewport_h, font, map, work,
+      player_x, player_y, angle, pitch, combat, world, steps, blocked
+    ];
+  ) else (
+    doom_view_draw_flat_pitched[
+      buf, w, viewport_h, font, map, work,
+      player_x, player_y, angle, pitch,
+      alive, kills, enemies, misses, steps, blocked
+    ];
+  )
+  if ((combat_mode == 1) and (texture_mode == 1)) (
+    doom_ui_draw_status_cached[
+      buf, w, h, map\texture_bank, status_cache, combat, world
+    ];
+  )
+  if (diag_mode == 1) (
+    let sector = doom_map_point_sector[map, player_x, player_y];
+    gui_text[
+      buf, w, h, font, 10, 46,
+      "POS ^{player_x},^{player_y},^{world\player_z}  VZ ^{world\player_vz}  G ^{world\grounded}  SEC ^{sector}",
+      gui_rgb[255, 220, 96]
+    ];
+  )
+  if (demo_mode == 1) (
+    gui_text[buf, w, h, font, 10, 34,
+      "DETERMINISTIC ^{map\name} DEMO", gui_rgb[80, 220, 210]];
+  ) else if ((controls\captured == 0) and (ui\open == 0)) (
+    gui_text[buf, w, h, font, 10, 34,
+      "CLICK TO CAPTURE — ESC AGAIN FOR MENU", gui_rgb[255, 200, 80]];
+  )
+  if ((combat_mode == 1) and (texture_mode == 1)) (
+    doom_ui_draw_menu[buf, w, h, map\texture_bank, ui];
+  )
   => 0;
 )
 
-private op doom_play_monster_alert_clip [kind] (
-  if (kind == 3004) ( => 14; )
-  if (kind == 9) ( => 15; )
-  if (kind == 3001) ( => 16; )
-  => 0;
-)
-
-private op doom_play_monster_attack_clip [kind] (
-  if (kind == 3004) ( => 2; )
-  if (kind == 9) ( => 17; )
-  if (kind == 3001) ( => 18; )
-  => 0;
-)
-
-private op doom_play_monster_pain_clip [kind] (
-  if ((kind == 3004) or (kind == 9)) ( => 19; )
-  if (kind == 3001) ( => 20; )
-  => 0;
-)
-
-private op doom_play_monster_death_clip [kind] (
-  if (kind == 3004) ( => 21; )
-  if (kind == 9) ( => 22; )
-  if (kind == 3001) ( => 23; )
-  => 0;
-)
-
-// Keep one frame as one visible transaction rather than distributing game
-// state across callbacks: render the current world, present and receive the
-// complete input snapshot, fold UI/control intent, resolve movement, update
-// combat/world state, then retain optional evidence. The operation is long,
-// but its order makes ownership and frame-to-frame causality inspectable.
 op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
                                    texture_mode, combat_mode, w, h, diag_mode,
                                    start_menu, menu_maps, input_log_path,
@@ -175,7 +253,11 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
   let font = gui_font[];
   let world = doom_world_new[map];
   let play_map = doom_world_map[map, world];
-  let work = doom_view_work_sized[play_map, w, h];
+  // Keep the canonical 32/200 status strip outside the 3D viewport. The
+  // renderer owns only this leading prefix of the full presenter buffer.
+  let viewport_h = h - 32 * h / 200;
+  let work = doom_view_work_sized[play_map, w, viewport_h];
+  let status_cache = doom_ui_status_cache_new[w, h, play_map\texture_bank];
   let controls = doom_input_new[];
   // The loading frame receives the presenter's initial capture transition.
   // Fold it here so handing the live session into gameplay cannot discard
@@ -215,14 +297,7 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
     enemies = combat\enemy_count;
   )
   world = doom_play_note_compatibility[map\name, world, combat];
-  let world_sound_seen = world\sound_serial;
-  let explosion_sound_seen = combat\explosion_serial;
-  let projectile_impact_seen = combat\projectile_impacts;
-  let monster_alert_seen = combat\monster_alert_serial;
-  let monster_attack_seen = combat\monster_attack_serial;
-  let monster_pain_seen = combat\monster_pain_serial;
-  let monster_death_seen = combat\monster_death_serial;
-  let player_pain_seen = combat\player_pain_serial;
+  let sound_state = doom_play_sound_state[world, combat];
 
   let running = 1;
   let requested_episode = 0;
@@ -231,44 +306,13 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
   let contact_streak = 0;
   while (running == 1) (
     let frame_started = now[];
-    if (texture_mode == 1) (
-      if (combat_mode == 1) (
-        doom_view_draw_world_pitched[
-          buf, w, h, font, play_map, work,
-          player_x, player_y, angle, pitch, combat, world, steps, blocked
-        ];
-      ) else (
-        doom_view_draw_pitched[
-          buf, w, h, font, play_map, work, player_x, player_y, angle, pitch,
-          alive, kills, enemies, misses, steps, blocked
-        ];
-      )
-    ) else (
-      if (combat_mode == 1) (
-        doom_view_draw_world_flat_pitched[
-          buf, w, h, font, play_map, work,
-          player_x, player_y, angle, pitch, combat, world, steps, blocked
-        ];
-      ) else (
-        doom_view_draw_flat_pitched[
-          buf, w, h, font, play_map, work, player_x, player_y, angle, pitch,
-          alive, kills, enemies, misses, steps, blocked
-        ];
-      )
-    )
-    if ((combat_mode == 1) and (texture_mode == 1)) (
-      doom_ui_draw_status[buf, w, h, play_map\texture_bank, combat, world];
-    )
-    if (demo_mode == 1) (
-      gui_text[buf, w, h, font, 10, 34,
-        "DETERMINISTIC ^{map\name} DEMO", gui_rgb[80, 220, 210]];
-    ) else if ((controls\captured == 0) and (ui\open == 0)) (
-      gui_text[buf, w, h, font, 10, 34,
-        "CLICK TO CAPTURE — ESC AGAIN FOR MENU", gui_rgb[255, 200, 80]];
-    )
-    if ((combat_mode == 1) and (texture_mode == 1)) (
-      doom_ui_draw_menu[buf, w, h, play_map\texture_bank, ui];
-    )
+    doom_play_draw_frame[
+      buf, w, h, viewport_h, font, play_map, work,
+      player_x, player_y, angle, pitch,
+      alive, kills, enemies, misses, steps, blocked,
+      texture_mode, combat_mode, combat, world, status_cache,
+      diag_mode, demo_mode, controls, ui
+    ];
     let render_done = now[];
     let events = gui_present[session, buf] with chaos {
       _ => [{ kind: gui_ev_close[], a: 0, b: 0, mods: 0 }]
@@ -312,14 +356,7 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
         enemies = combat\enemy_count;
       )
       world = doom_play_note_compatibility[map\name, world, combat];
-      world_sound_seen = world\sound_serial;
-      explosion_sound_seen = combat\explosion_serial;
-      projectile_impact_seen = combat\projectile_impacts;
-      monster_alert_seen = combat\monster_alert_serial;
-      monster_attack_seen = combat\monster_attack_serial;
-      monster_pain_seen = combat\monster_pain_serial;
-      monster_death_seen = combat\monster_death_serial;
-      player_pain_seen = combat\player_pain_serial;
+      sound_state = doom_play_sound_state[world, combat];
       demo = doom_demo_idle_new_mode[map, combat_mode];
       if (demo_mode == 1) ( demo = doom_demo_new_mode[map, combat_mode]; )
       demo_phase_seen = 0 - 1;
@@ -386,7 +423,7 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
       )
       if (combat_mode == 1) (
         let weapon_key = 1;
-        while (weapon_key <= 5) (
+        while (weapon_key <= 7) (
           if (gui_key_pressed[events, 48 + weapon_key] == 1) (
             combat = doom_combat_select_weapon[combat, weapon_key];
           )
@@ -423,21 +460,22 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
         let shot_target_distance = 0;
         if ((diag_mode == 1) and (combat\shot_cooldown == 0) and
             (doom_combat_current_ammo[combat] > 0) and
-            (combat\selected_weapon != 5)) (
-          let shot_target = doom_combat_hitscan[
-            play_map, combat, player_x, player_y, angle, 1024
+            (combat\selected_weapon <= 4)) (
+          let shot_target = doom_combat_hitscan_at[
+            play_map, combat, player_x, player_y, world\player_z,
+            angle, 1024
           ];
           shot_target_kind = shot_target\kind;
           shot_target_index = shot_target\index;
           shot_target_distance = shot_target\distance;
         )
-        combat = doom_combat_fire[
-          play_map, combat, player_x, player_y, angle
+        combat = doom_combat_fire_at[
+          play_map, combat, player_x, player_y, world\player_z, angle
         ];
         if (combat\shots > shots_before) (
           doom_play_sound[
             audio_session, 1,
-            doom_play_weapon_clip[combat\selected_weapon], 256
+            doom_audio_weapon_clip[combat\selected_weapon], 256
           ];
           doom_world_shoot[play_map, world, player_x, player_y, angle];
           if (diag_mode == 1) (
@@ -474,6 +512,18 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
     let move_from_x = player_x;
     let move_from_y = player_y;
     let move_player_z = world\player_z;
+    let retain_world_evidence =
+      (diag_mode == 1) or (input_trace\enabled == 1);
+    let move_player_vz = 0;
+    let move_grounded = 0;
+    let move_from_sector = 0 - 1;
+    if (retain_world_evidence == 1) (
+      move_player_vz = world\player_vz;
+      move_grounded = world\grounded;
+      move_from_sector = doom_map_point_sector[
+        play_map, move_from_x, move_from_y
+      ];
+    )
     let move_moved = 0;
     let move_blocked = 0;
     let move_result = {
@@ -580,6 +630,8 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
           let pickup_clip = 5;
           if (doom_world_pickup_is_weapon[world\pickup_kind] == 1) (
             pickup_clip = 6;
+          ) else if (doom_world_pickup_is_power[world\pickup_kind] == 1) (
+            pickup_clip = 39;
           )
           doom_play_sound[audio_session, 2, pickup_clip, 256];
         )
@@ -594,56 +646,35 @@ op doom_play_run_session_audio_on [session, initial_events, map, demo_mode,
         combat = doom_world_apply_hazard[
           play_map, world, combat, player_x, player_y
         ];
+        doom_world_apply_boss_actions[play_map, world, combat];
       )
     )
-    if (world\sound_serial != world_sound_seen) (
-      let world_clip = doom_play_world_sound_clip[world\sound_kind];
-      if (world_clip > 0) (
-        let world_voice = 3;
-        if (world\sound_kind == 5) ( world_voice = 4; )
-        doom_play_sound[audio_session, world_voice, world_clip, 256];
+    if (retain_world_evidence == 1) (
+      let move_to_sector = doom_map_point_sector[
+        play_map, player_x, player_y
+      ];
+      input_trace = doom_input_trace_vertical[
+        input_trace, frame_index,
+        move_from_x, move_from_y, player_x, player_y,
+        move_from_sector, move_to_sector,
+        move_player_z, world\player_z,
+        move_player_vz, world\player_vz,
+        move_grounded, world\grounded, move_result
+      ];
+      let vertical_milestone = (move_from_sector != move_to_sector) or
+        (move_grounded != world\grounded);
+      if ((world\grounded == 0) and (frame_index % 8 == 0)) (
+        vertical_milestone = 1;
       )
-      world_sound_seen = world\sound_serial;
+      if ((diag_mode == 1) and (vertical_milestone == 1)) (
+        eprint[
+          "doom-diag vertical frame=^{frame_index} from=^{move_from_x},^{move_from_y},^{move_player_z} to=^{player_x},^{player_y},^{world\player_z} sector=^{move_from_sector},^{move_to_sector} vz=^{move_player_vz},^{world\player_vz} grounded=^{move_grounded},^{world\grounded} moved=^{move_moved} blocked=^{move_blocked} blocker=^{doom_world_blocker_name[move_result\blocker_kind]},^{move_result\blocker_index}"
+        ];
+      )
     )
-    if ((combat_mode == 1) and
-        (combat\explosion_serial != explosion_sound_seen)) (
-      doom_play_sound[audio_session, 5, 12, 256];
-      explosion_sound_seen = combat\explosion_serial;
-    )
-    if ((combat_mode == 1) and
-        (combat\projectile_impacts != projectile_impact_seen)) (
-      doom_play_sound[audio_session, 5, 24, 256];
-      projectile_impact_seen = combat\projectile_impacts;
-    )
-    if ((combat_mode == 1) and
-        (combat\monster_alert_serial != monster_alert_seen)) (
-      let clip = doom_play_monster_alert_clip[combat\monster_alert_kind];
-      if (clip > 0) ( doom_play_sound[audio_session, 6, clip, 224]; )
-      monster_alert_seen = combat\monster_alert_serial;
-    )
-    if ((combat_mode == 1) and
-        (combat\monster_attack_serial != monster_attack_seen)) (
-      let clip = doom_play_monster_attack_clip[combat\monster_attack_kind];
-      if (clip > 0) ( doom_play_sound[audio_session, 7, clip, 240]; )
-      monster_attack_seen = combat\monster_attack_serial;
-    )
-    if ((combat_mode == 1) and
-        (combat\monster_pain_serial != monster_pain_seen)) (
-      let clip = doom_play_monster_pain_clip[combat\monster_pain_kind];
-      if (clip > 0) ( doom_play_sound[audio_session, 8, clip, 224]; )
-      monster_pain_seen = combat\monster_pain_serial;
-    )
-    if ((combat_mode == 1) and
-        (combat\monster_death_serial != monster_death_seen)) (
-      let clip = doom_play_monster_death_clip[combat\monster_death_kind];
-      if (clip > 0) ( doom_play_sound[audio_session, 9, clip, 240]; )
-      monster_death_seen = combat\monster_death_serial;
-    )
-    if ((combat_mode == 1) and
-        (combat\player_pain_serial != player_pain_seen)) (
-      doom_play_sound[audio_session, 10, 13, 256];
-      player_pain_seen = combat\player_pain_serial;
-    )
+    sound_state = doom_play_emit_sounds[
+      audio_session, combat_mode, world, combat, sound_state
+    ];
     let frame_done = now[];
     if (diag_mode == 1) (
       if ((blocked_streak == 1) or

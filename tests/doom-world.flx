@@ -61,18 +61,23 @@ let things = %32[
   10, 50, 2007, 7,
   12, 50, 2011, 7,
   50, 50, 2001, 7,
-  39, 80, 3004, 7
+  39, 80, 3004, 7,
+  180, 50, 40, 7
 ];
 let map = {
   ok: 1, error: "", name: "WORLD",
   vertices: vertices, vertex_count: 14,
   lines: lines, line_count: line_count,
   line_sides: line_sides, line_actions: line_actions,
-  side_count: 1, side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
   sector_flats: %32[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  texture_bank: { texture_count: 0, texture_names: bytes_new[0] },
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
   sectors: sectors, sector_count: 5,
-  things: things, thing_angles: %32[0, 0, 0, 0, 180], thing_count: 5,
+  things: things, thing_angles: %32[0, 0, 0, 0, 180, 0], thing_count: 6,
   player_x: 0, player_y: 50, player_angle: 0,
   min_x: 0, max_x: 200, min_y: 0, max_y: 100,
   bsp_ready: 1, node_count: 0, nodes: %32[],
@@ -80,10 +85,14 @@ let map = {
 };
 
 let world = doom_world_new[map];
+doom_world_test_expect[
+  doom_world_validate[map, world] == 1,
+  "constructed world satisfies its complete mutable-table invariant"
+];
 let play_map = doom_world_map[map, world];
 doom_world_test_expect[
   (arr_len[world\doors] == 1) and (arr_len[world\movers] == 2) and
-  (world\pickup_total == 3) and (world\unsupported_actions == 1) and
+  (world\pickup_total == 4) and (world\unsupported_actions == 1) and
   (buf_get[world\sectors, 6] == 0),
   "bounded world inventory and closed copied door"
 ];
@@ -126,9 +135,13 @@ let diagonal_map = {
   vertices: %32[0, 100, 100, 0], vertex_count: 2,
   lines: %32[0, 1, 1, 0], line_count: 1,
   line_sides: %32[0, 0, 0, 0 - 1], line_actions: %32[0, 0],
-  side_count: 1, side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
   sector_flats: %32[0, 0],
-  texture_bank: { texture_count: 0, texture_names: bytes_new[0] },
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
   sectors: %32[0, 128, 160, 0, 0], sector_count: 1,
   things: %32[42, 42, 1, 7], thing_angles: %32[0], thing_count: 1,
   player_x: 42, player_y: 42, player_angle: 0,
@@ -147,6 +160,71 @@ doom_world_test_expect[
   (diagonal_slide\blocker_kind == 2) and
   (diagonal_slide\blocker_index == 0),
   "oblique contact projects motion onto the exact linedef tangent"
+];
+
+// Live E1M1 evidence: after falling from the stair ledge, a 16-unit player
+// could land at (227,-3184), exactly touching two collinear lines joined at
+// (224,-3200). Inclusive start contact must permit departure around that
+// finite vertex while continuing to reject penetration through the wall.
+let vertex_map = {
+  ok: 1, error: "", name: "VERTEX-ESCAPE",
+  vertices: %32[
+    256, 0 - 3200, 224, 0 - 3200, 192, 0 - 3200
+  ], vertex_count: 3,
+  lines: %32[0, 1, 1, 0, 1, 2, 1, 0], line_count: 2,
+  line_sides: %32[
+    0, 0, 0, 0 - 1,
+    0, 0, 0, 0 - 1
+  ],
+  line_actions: %32[0, 0, 0, 0],
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[0 - 8, 128, 160, 0, 0], sector_count: 1,
+  things: %32[227, 0 - 3184, 1, 7],
+  thing_angles: %32[0], thing_count: 1,
+  player_x: 227, player_y: 0 - 3184, player_angle: 0,
+  min_x: 0, max_x: 400, min_y: 0 - 3400, max_y: 0 - 3000,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+let vertex_world = doom_world_new[vertex_map];
+let vertex_play_map = doom_world_map[vertex_map, vertex_world];
+let vertex_away = doom_world_slide_move[
+  vertex_play_map, vertex_world, 227, 0 - 3184, 0, 4
+];
+doom_world_test_expect[
+  (vertex_away\x == 227) and (vertex_away\y == 0 - 3180) and
+  (vertex_away\moved == 1) and (vertex_away\blocked == 0),
+  "existing line contact permits strict outward separation"
+];
+let vertex_around = doom_world_slide_move[
+  vertex_play_map, vertex_world, 227, 0 - 3184, 0 - 8, 0
+];
+doom_world_test_expect[
+  (vertex_around\x == 219) and (vertex_around\y == 0 - 3184) and
+  (vertex_around\moved == 1) and (vertex_around\blocked == 0),
+  "joined finite linedefs cannot ratchet a player at their vertex"
+];
+let vertex_inward = doom_world_slide_move[
+  vertex_play_map, vertex_world, 227, 0 - 3184, 0, 0 - 4
+];
+doom_world_test_expect[
+  (vertex_inward\x == 227) and (vertex_inward\y == 0 - 3184) and
+  (vertex_inward\moved == 0) and (vertex_inward\blocked == 1),
+  "contact escape does not admit motion into the wall"
+];
+let vertex_through = doom_world_slide_move[
+  vertex_play_map, vertex_world, 227, 0 - 3184, 0, 0 - 40
+];
+doom_world_test_expect[
+  (vertex_through\x == 227) and (vertex_through\y == 0 - 3184) and
+  (vertex_through\moved == 0) and (vertex_through\blocked == 1),
+  "same-side proof rejects a large motion through contacted geometry"
 ];
 
 doom_world_test_expect[
@@ -169,6 +247,52 @@ doom_world_test_expect[
   (world\player_z == 0) and (world\player_vz == 0) and
   (world\grounded == 1),
   "gravity lands exactly on the authoritative floor"
+];
+
+// A one-node BSP splits an upper floor (y >= 0) from a 96-unit drop. The
+// centre crosses first at y=-1, but the player's +Y support remains over the
+// ledge until y=-17. Gravity must not strand that support below the high step.
+let ledge_map = {
+  ok: 1, error: "", name: "LEDGE",
+  vertices: %32[], vertex_count: 0,
+  lines: %32[], line_count: 0,
+  line_sides: %32[], line_actions: %32[],
+  side_count: 0, sides: %32[], side_textures: %32[],
+  sector_flats: %32[0, 0, 0, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[
+    32, 160, 160, 0, 0,
+    0 - 64, 160, 160, 0, 0
+  ], sector_count: 2,
+  things: %32[0, 8, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 0, player_y: 8, player_angle: 0,
+  min_x: 0 - 100, max_x: 100, min_y: 0 - 100, max_y: 100,
+  bsp_ready: 1,
+  node_count: 1,
+  nodes: %32[
+    0, 0, 1, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    32769, 32768
+  ],
+  subsector_count: 2,
+  subsectors: %32[0, 0, 0, 0, 0, 1]
+};
+let ledge_world = doom_world_new[ledge_map];
+let ledge_play_map = doom_world_map[ledge_map, ledge_world];
+ledge_world = doom_world_tick[ledge_play_map, ledge_world, 0, 0 - 1];
+doom_world_test_expect[
+  (ledge_world\player_z == 32) and (ledge_world\player_vz == 0) and
+  (ledge_world\grounded == 1),
+  "body support retains a ledge after the centre crosses a drop"
+];
+ledge_world = doom_world_tick[ledge_play_map, ledge_world, 0, 0 - 17];
+doom_world_test_expect[
+  (ledge_world\player_z == 32) and (ledge_world\player_vz == 0 - 1) and
+  (ledge_world\grounded == 0),
+  "fall begins once the whole body clears the ledge horizon"
 ];
 
 let combat = doom_combat_new[play_map];
@@ -255,6 +379,242 @@ doom_world_test_expect[
   (combat\ammo == 65) and (combat\drops\0\alive == 0) and
   (combat\drops_picked == 1),
   "former-human drop is a visible one-shot five-bullet world item"
+];
+doom_world_test_expect[
+  (doom_world_collect[play_map, world, combat, 180, 50] == 1) and
+  (world\blue_skull == 1) and (world\picked == 5) and
+  (world\pickup_kind == 40),
+  "skull keys are visible pickups and satisfy the shared colour authority"
+];
+
+let parity_map = play_map + {
+  things: %32[
+    0, 50, 2004, 7, 0, 50, 2006, 7,
+    0, 50, 2010, 7, 0, 50, 2047, 7,
+    0, 50, 17, 7, 0, 50, 8, 7,
+    0, 50, 2022, 7, 0, 50, 2023, 7,
+    0, 50, 2024, 7, 0, 50, 2025, 7,
+    0, 50, 2026, 7, 0, 50, 2045, 7
+  ],
+  thing_angles: %32[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  thing_count: 12
+};
+let parity_world = doom_world_new[parity_map];
+let parity_combat = doom_combat_new[parity_map];
+doom_world_test_expect[
+  (parity_world\pickup_total == 12) and
+  (doom_world_collect[
+     parity_map, parity_world, parity_combat, 0, 50
+   ] == 12),
+  "stock energy, backpack and power things are admitted as visible pickups"
+];
+doom_world_test_expect[
+  (doom_combat_weapon_owned[parity_combat, 6] == 1) and
+  (doom_combat_weapon_owned[parity_combat, 7] == 1) and
+  (parity_combat\cells == 220) and
+  (parity_combat\rockets == 2) and
+  (parity_combat\ammo == 60) and (parity_combat\shells == 4) and
+  (parity_combat\backpack == 1) and
+  (parity_combat\max_ammo == 400) and
+  (parity_combat\max_cells == 600),
+  "energy weapons and backpack update one bounded arsenal authority"
+];
+doom_world_test_expect[
+  (parity_combat\berserk == 1) and
+  (parity_combat\invulnerability_tick == 1800) and
+  (parity_combat\invisibility_tick == 3600) and
+  (parity_combat\radiation_tick == 3600) and
+  (parity_combat\light_tick == 7200) and
+  (parity_world\computer_map == 1) and
+  (parity_combat\selected_weapon == 1) and
+  (doom_combat_validate[parity_map, parity_combat] == 1),
+  "power pickups retain explicit timers and persistent map, pack and berserk state"
+];
+let berserk_target = parity_combat\actors;
+doom_world_test_expect[
+  (arr_len[berserk_target] == 0) and
+  (doom_world_pickup_is_power[2045] == 1) and
+  (doom_world_pickup_is_power[2004] == 0),
+  "power classification remains separate from weapons and ordinary resources"
+];
+
+let prop_map = play_map + {
+  things: %32[50, 50, 30, 7], thing_angles: %32[0], thing_count: 1
+};
+let prop_world = doom_world_new[prop_map];
+let prop_block = doom_world_slide_move[prop_map, prop_world, 0, 50, 20, 0];
+doom_world_test_expect[
+  (arr_len[prop_world\solid_props] == 1) and
+  (prop_block\x == 0) and (prop_block\moved == 0) and
+  (prop_block\blocked == 1) and
+  (prop_block\blocker_kind == 6) and (prop_block\blocker_index == 0),
+  "solid map decorations publish exact collision identity"
+];
+let prop_escape = doom_world_slide_move[
+  prop_map, prop_world, 20, 50, 0 - 2, 0
+];
+doom_world_test_expect[
+  (prop_escape\x == 18) and (prop_escape\moved == 1) and
+  (prop_escape\blocked == 0),
+  "existing decoration overlap permits strict outward separation"
+];
+
+let ambient_map = play_map + {
+  sectors: %32[
+    0, 128, 160, 8, 0,
+    0, 0, 64, 0, 0,
+    0, 96, 160, 0, 0,
+    64, 128, 160, 0, 1,
+    64, 128, 160, 0, 2
+  ],
+  things: %32[0, 50, 1, 7], thing_angles: %32[0], thing_count: 1
+};
+let ambient_world = doom_world_new[ambient_map];
+let ambient_play_map = doom_world_map[ambient_map, ambient_world];
+ambient_world = doom_world_tick[ambient_play_map, ambient_world, 0, 50];
+let glow_first = buf_get[ambient_world\sectors, 2];
+ambient_world = doom_world_tick[ambient_play_map, ambient_world, 0, 50];
+doom_world_test_expect[
+  (arr_len[ambient_world\ambient_lights] == 1) and
+  (glow_first == 64) and (buf_get[ambient_world\sectors, 2] == 68),
+  "ambient glow retains bounded neighboring-light state"
+];
+
+let secret_map = ambient_map + {
+  sectors: %32[
+    0, 128, 160, 9, 0,
+    0, 0, 64, 0, 0,
+    0, 96, 160, 0, 0,
+    64, 128, 160, 0, 1,
+    64, 128, 160, 0, 2
+  ]
+};
+let secret_world = doom_world_new[secret_map];
+let secret_play_map = doom_world_map[secret_map, secret_world];
+secret_world = doom_world_tick[secret_play_map, secret_world, 0, 50];
+secret_world = doom_world_tick[secret_play_map, secret_world, 0, 50];
+doom_world_test_expect[
+  (secret_world\secret_total == 1) and
+  (secret_world\secrets_found == 1) and
+  (secret_world\secret_serial == 1),
+  "secret sectors retire once through explicit player-sector authority"
+];
+
+let exit_map = secret_map + {
+  sectors: %32[
+    0, 128, 160, 11, 0,
+    0, 0, 64, 0, 0,
+    0, 96, 160, 0, 0,
+    64, 128, 160, 0, 1,
+    64, 128, 160, 0, 2
+  ]
+};
+let exit_world = doom_world_new[exit_map];
+let exit_play_map = doom_world_map[exit_map, exit_world];
+let exit_combat = doom_combat_new[exit_play_map];
+exit_combat\health = 30;
+exit_combat\invulnerability_tick = 1800;
+exit_combat\radiation_tick = 3600;
+exit_world\tick = 59;
+exit_world = doom_world_tick[exit_play_map, exit_world, 0, 50];
+exit_combat = doom_world_apply_hazard[
+  exit_play_map, exit_world, exit_combat, 0, 50
+];
+doom_world_test_expect[
+  (exit_combat\health == 10) and (exit_world\exited == 1) and
+  (exit_world\hazard_damage == 20),
+  "sector 11 forces bounded episode-exit damage through temporary powers"
+];
+
+let e1m8_map = play_map + {
+  name: "E1M8",
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 0, 160, 0, 0,
+    0, 96, 160, 0, 0,
+    64, 128, 160, 0, 666,
+    64, 128, 160, 0, 2
+  ],
+  things: %32[0, 50, 1, 7, 80, 80, 3003, 7],
+  thing_angles: %32[0, 0], thing_count: 2
+};
+let e1m8_world = doom_world_new[e1m8_map];
+let e1m8_play_map = doom_world_map[e1m8_map, e1m8_world];
+let e1m8_combat = doom_combat_new[e1m8_play_map];
+let e1m8_baron = e1m8_combat\actors\\0;
+e1m8_baron\health = 0;
+e1m8_baron\phase = DoomEnemyPhase\Death;
+bytes_set[e1m8_combat\alive, e1m8_baron\thing, 0];
+e1m8_combat\kills = 1;
+let e1m8_movers_before = arr_len[e1m8_world\movers];
+doom_world_test_expect[
+  doom_world_apply_boss_actions[
+    e1m8_play_map, e1m8_world, e1m8_combat
+  ] == 1,
+  "E1M8 final baron activates the map-owned tag 666 transition"
+];
+let e1m8_boss_mover = e1m8_world\movers\\e1m8_movers_before;
+doom_world_test_expect[
+  (arr_len[e1m8_world\movers] == e1m8_movers_before + 1) and
+  (e1m8_boss_mover\sector == 3) and
+  (e1m8_boss_mover\bottom == 0) and
+  (e1m8_boss_mover\phase == DoomMoverPhase\Lowering) and
+  (e1m8_world\boss_action_serial == 1),
+  "tag 666 floor enters the ordinary bounded mover authority"
+];
+
+let e2m8_map = play_map + {
+  name: "E2M8",
+  things: %32[0, 50, 1, 7, 80, 80, 16, 7],
+  thing_angles: %32[0, 0], thing_count: 2
+};
+let e2m8_world = doom_world_new[e2m8_map];
+let e2m8_play_map = doom_world_map[e2m8_map, e2m8_world];
+let e2m8_combat = doom_combat_new[e2m8_play_map];
+let e2m8_cyber = e2m8_combat\actors\\0;
+doom_world_test_expect[
+  doom_world_apply_boss_actions[
+    e2m8_play_map, e2m8_world, e2m8_combat
+  ] == 0,
+  "E2M8 remains active while its cyberdemon is targetable"
+];
+e2m8_cyber\health = 0;
+e2m8_cyber\phase = DoomEnemyPhase\Death;
+bytes_set[e2m8_combat\alive, e2m8_cyber\thing, 0];
+e2m8_combat\kills = 1;
+doom_world_test_expect[
+  (doom_world_apply_boss_actions[
+     e2m8_play_map, e2m8_world, e2m8_combat
+   ] == 1) and
+  (e2m8_world\exited == 1) and (e2m8_world\boss_action_done == 1),
+  "E2M8 final cyberdemon completes the explicit episode world"
+];
+doom_world_test_expect[
+  doom_world_apply_boss_actions[
+    e2m8_play_map, e2m8_world, e2m8_combat
+  ] == 0,
+  "episode boss completion is a one-shot transition"
+];
+
+let e3m8_map = play_map + {
+  name: "E3M8",
+  things: %32[0, 50, 1, 7, 80, 80, 7, 7],
+  thing_angles: %32[0, 0], thing_count: 2
+};
+let e3m8_world = doom_world_new[e3m8_map];
+let e3m8_play_map = doom_world_map[e3m8_map, e3m8_world];
+let e3m8_combat = doom_combat_new[e3m8_play_map];
+let e3m8_spider = e3m8_combat\actors\\0;
+e3m8_spider\health = 0;
+e3m8_spider\phase = DoomEnemyPhase\Death;
+bytes_set[e3m8_combat\alive, e3m8_spider\thing, 0];
+e3m8_combat\kills = 1;
+doom_world_test_expect[
+  (doom_world_apply_boss_actions[
+     e3m8_play_map, e3m8_world, e3m8_combat
+   ] == 1) and
+  (e3m8_world\exited == 1) and (e3m8_world\boss_action_done == 1),
+  "E3M8 final spider mastermind completes the explicit episode world"
 ];
 
 doom_world_test_expect[
