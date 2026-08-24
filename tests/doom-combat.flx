@@ -86,6 +86,215 @@ doom_combat_test_expect[
   (combat\max_ammo == 200) and (combat\kills == 0),
   "explicit player resources"
 ];
+
+let prior_inventory = doom_combat_new[map];
+prior_inventory\health = 147;
+prior_inventory\armor = 83;
+prior_inventory\backpack = 1;
+prior_inventory\max_ammo = 400;
+prior_inventory\max_shells = 100;
+prior_inventory\max_rockets = 100;
+prior_inventory\max_cells = 600;
+prior_inventory\ammo = 311;
+prior_inventory\shells = 71;
+prior_inventory\rockets = 29;
+prior_inventory\cells = 407;
+bytes_set[prior_inventory\weapons, 3, 1];
+bytes_set[prior_inventory\weapons, 5, 1];
+bytes_set[prior_inventory\weapons, 7, 1];
+prior_inventory\selected_weapon = 5;
+prior_inventory\berserk = 1;
+prior_inventory\invulnerability_tick = 90;
+prior_inventory\invisibility_tick = 120;
+prior_inventory\radiation_tick = 150;
+prior_inventory\light_tick = 180;
+prior_inventory\shot_cooldown = 4;
+prior_inventory\shots = 9;
+prior_inventory\dry_fires = 2;
+prior_inventory\weapon_switches = 3;
+prior_inventory\tick = 17;
+doom_combat_validate[map, prior_inventory];
+
+let carried = doom_combat_carry_inventory[
+  map, doom_combat_new[map], map, prior_inventory
+];
+doom_combat_test_expect[
+  (carried\health == 147) and (carried\armor == 83) and
+  (carried\backpack == 1) and
+  (carried\max_ammo == 400) and (carried\max_shells == 100) and
+  (carried\max_rockets == 100) and (carried\max_cells == 600) and
+  (carried\ammo == 311) and (carried\shells == 71) and
+  (carried\rockets == 29) and (carried\cells == 407) and
+  (doom_combat_weapon_owned[carried, 3] == 1) and
+  (doom_combat_weapon_owned[carried, 5] == 1) and
+  (doom_combat_weapon_owned[carried, 7] == 1) and
+  (carried\selected_weapon == 5),
+  "session map change carries durable player inventory"
+];
+doom_combat_test_expect[
+  (carried\berserk == 0) and (carried\invulnerability_tick == 0) and
+  (carried\invisibility_tick == 0) and
+  (carried\radiation_tick == 0) and (carried\light_tick == 0) and
+  (carried\shot_cooldown == 0) and (carried\shots == 0) and
+  (carried\dry_fires == 0) and (carried\weapon_switches == 0) and
+  (carried\tick == 0) and (arr_len[carried\projectiles] == 0) and
+  (carried\kills == 0) and (carried\damage_taken == 0),
+  "session map change resets temporary and map-local combat state"
+];
+bytes_set[carried\weapons, 3, 0];
+doom_combat_test_expect[
+  bytes_get[prior_inventory\weapons, 3] == 1,
+  "carried weapon ownership has a fresh measured owner"
+];
+
+// These pure presenter checks pin the ordering and tic boundaries from
+// linuxdoom's S_PISTOL*, S_SGUN*, S_CHAIN*, S_MISSILE*, S_PLASMA* and
+// S_BFG* state tables. Gameplay cooldowns stay bounded, but a flash may not
+// precede its vanilla wind-up or overlap a later recoil/pump state.
+let psprite = doom_combat_new[map];
+psprite\shots = 1;
+psprite\selected_weapon = 2;
+psprite\shot_cooldown = 10;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 625) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "pistol holds PISGA dark for its four-tic wind-up"
+];
+psprite\shot_cooldown = 6;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 626) and
+  (doom_combat_muzzle_slot[psprite] == 974),
+  "pistol flash begins with its firing body frame"
+];
+
+psprite\selected_weapon = 3;
+psprite\shot_cooldown = 24;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 630) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "shotgun begins with the three-tic dark SHTGA wind-up"
+];
+psprite\shot_cooldown = 21;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 630) and
+  (doom_combat_muzzle_slot[psprite] == 975),
+  "shotgun first flash remains on SHTGA"
+];
+psprite\shot_cooldown = 17;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 630) and
+  (doom_combat_muzzle_slot[psprite] == 976),
+  "shotgun second flash still precedes recoil"
+];
+psprite\shot_cooldown = 14;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 631) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "shotgun recoil begins only after both flash states"
+];
+psprite\shot_cooldown = 9;
+doom_combat_test_expect[
+  doom_combat_weapon_slot[psprite] == 632,
+  "shotgun pump reaches SHTGC"
+];
+psprite\shot_cooldown = 4;
+doom_combat_test_expect[
+  doom_combat_weapon_slot[psprite] == 633,
+  "shotgun pump reaches SHTGD"
+];
+
+psprite\selected_weapon = 4;
+psprite\shot_cooldown = 4;
+psprite\shots = 1;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 634) and
+  (doom_combat_muzzle_slot[psprite] == 977),
+  "first chaingun shot begins on body and flash A"
+];
+psprite\shots = 2;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 635) and
+  (doom_combat_muzzle_slot[psprite] == 978),
+  "second chaingun shot advances body and flash together"
+];
+
+psprite\selected_weapon = 5;
+psprite\shot_cooldown = 30;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 637) and
+  (doom_combat_muzzle_slot[psprite] == 979),
+  "rocket firing body and MISFA begin together"
+];
+psprite\shot_cooldown = 27;
+doom_combat_test_expect[
+  doom_combat_muzzle_slot[psprite] == 980,
+  "rocket flash advances to MISFB after three tics"
+];
+psprite\shot_cooldown = 23;
+doom_combat_test_expect[
+  doom_combat_muzzle_slot[psprite] == 981,
+  "rocket flash advances to MISFC after four more tics"
+];
+psprite\shot_cooldown = 19;
+doom_combat_test_expect[
+  doom_combat_muzzle_slot[psprite] == 982,
+  "rocket flash advances to MISFD after four more tics"
+];
+psprite\shot_cooldown = 15;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 637) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "rocket body persists after the complete flash sequence"
+];
+
+psprite\selected_weapon = 6;
+psprite\shots = 1;
+psprite\shot_cooldown = 4;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 638) and
+  (doom_combat_muzzle_slot[psprite] == 983),
+  "first plasma shot begins on PLSGA and flash A"
+];
+psprite\shot_cooldown = 1;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 639) and
+  (doom_combat_muzzle_slot[psprite] == 983),
+  "plasma body enters refire without changing its flash phase"
+];
+psprite\shots = 2;
+psprite\shot_cooldown = 4;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 638) and
+  (doom_combat_muzzle_slot[psprite] == 984),
+  "next plasma shot restarts PLSGA with the alternate bounded flash"
+];
+
+psprite\selected_weapon = 7;
+psprite\shot_cooldown = 30;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 640) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "BFG begins with its twenty-tic dark charge"
+];
+psprite\shot_cooldown = 11;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 640) and
+  (doom_combat_muzzle_slot[psprite] == 0 - 1),
+  "BFG remains dark through the last charge tic"
+];
+psprite\shot_cooldown = 10;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 641) and
+  (doom_combat_muzzle_slot[psprite] == 985),
+  "BFG flash begins only after the charge"
+];
+psprite\shot_cooldown = 3;
+doom_combat_test_expect[
+  (doom_combat_weapon_slot[psprite] == 641) and
+  (doom_combat_muzzle_slot[psprite] == 986),
+  "BFG completes on its second flash frame"
+];
+
 let actor = combat\actors\\0;
 doom_combat_test_expect[
   actor\phase == DoomEnemyPhase\Dormant,
@@ -166,9 +375,9 @@ doom_combat_test_expect[
   (combat\monster_pain_kind == 3004) and
   (combat\ammo == 49) and (combat\shot_cooldown == 10) and
   (doom_combat_actor_sprite_slot[actor, 5] == 52) and
-  (doom_combat_weapon_slot[combat] == 626) and
-  (doom_combat_muzzle_slot[combat] == 974),
-  "first shot consumes ammo and selects pain/weapon frames"
+  (doom_combat_weapon_slot[combat] == 625) and
+  (doom_combat_muzzle_slot[combat] == 0 - 1),
+  "first shot consumes ammo and begins the pistol wind-up"
 ];
 combat = doom_combat_fire[
   map, combat, 50, 50, trig_from_degrees[0]
@@ -267,8 +476,10 @@ arsenal = doom_combat_fire[
 ];
 doom_combat_test_expect[
   (arsenal\shells == 3) and (arsenal\shot_cooldown == 24) and
-  (arsenal\kills == 1) and (doom_combat_muzzle_slot[arsenal] == 975),
-  "shotgun consumes shells and applies its explicit bounded profile"
+  (arsenal\kills == 1) and
+  (doom_combat_weapon_slot[arsenal] == 630) and
+  (doom_combat_muzzle_slot[arsenal] == 0 - 1),
+  "shotgun consumes shells and begins its explicit dark wind-up"
 ];
 arsenal = doom_combat_cycle_weapon[arsenal, 1];
 doom_combat_test_expect[
@@ -312,8 +523,8 @@ doom_combat_test_expect[
   (arr_len[plasma_combat\projectiles] == 1) and
   (plasma_combat\projectiles\0\kind == 6) and
   (plasma_combat\projectiles\0\state == 1) and
-  (doom_combat_weapon_slot[plasma_combat] == 639) and
-  (doom_combat_muzzle_slot[plasma_combat] == 984),
+  (doom_combat_weapon_slot[plasma_combat] == 638) and
+  (doom_combat_muzzle_slot[plasma_combat] == 983),
   "plasma fire consumes one cell and publishes its psprite and bolt authority"
 ];
 i = 0;
@@ -349,9 +560,9 @@ doom_combat_test_expect[
   (bfg_combat\cells == 0) and
   (bfg_combat\projectiles\0\kind == 7) and
   (bfg_combat\projectiles\0\state == 1) and
-  (doom_combat_weapon_slot[bfg_combat] == 641) and
-  (doom_combat_muzzle_slot[bfg_combat] == 985),
-  "BFG charge publishes its forty-cell projectile and firing psprites"
+  (doom_combat_weapon_slot[bfg_combat] == 640) and
+  (doom_combat_muzzle_slot[bfg_combat] == 0 - 1),
+  "BFG charge publishes its projectile while the psprite remains dark"
 ];
 i = 0;
 while (i < 4) (
@@ -482,6 +693,29 @@ doom_combat_test_expect[
   (soul\family == 5) and (soul\max_health == 100) and
   (soul\x == 92) and (soul_combat\health == 94),
   "lost soul charge advances before applying contact damage"
+];
+soul\health = 0;
+soul\phase = DoomEnemyPhase\Death;
+soul\phase_tick = 30;
+soul_combat\kills = 1;
+bytes_set[soul_combat\alive, soul\thing, 0];
+doom_combat_test_expect[
+  (doom_combat_actor_renderable[soul] == 1) and
+  (doom_combat_actor_sprite_slot[soul, 1] ==
+    doom_texture_lost_soul_terminal_slot[]),
+  "lost soul renders its sixth vanilla death frame before removal"
+];
+i = 0;
+while (i < 6) (
+  soul_combat = doom_combat_tick_at[map, soul_combat, 50, 50, 0];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (soul\phase_tick == 36) and
+  (doom_combat_actor_targetable[soul] == 0) and
+  (doom_combat_actor_renderable[soul] == 0) and
+  (doom_combat_validate[map, soul_combat] == 1),
+  "lost soul reaches S_NULL instead of retaining a terminal halo"
 ];
 
 buf_set[map\things, 6, 7];

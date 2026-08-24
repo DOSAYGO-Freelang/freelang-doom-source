@@ -1,6 +1,7 @@
 # Freelang speaker protocols v1 and v2
 
-The wire contract between `f/audio` and the process-isolated macOS speaker.
+The wire contract between `f/audio` and the process-isolated macOS speaker,
+also used byte-for-byte by the reduced-authority WebAudio speaker agent.
 Freelang owns selection, decoding, synthesis and semantic clip names; the
 speaker owns only one bounded AudioQueue output stream. It receives no source
 path and has no shell, WAD parser, music decoder or access to the Freelang
@@ -12,6 +13,20 @@ Transport is one blocking `AF_UNIX` `SOCK_STREAM` connection. The common
 directory. The speaker binds before daemonizing, re-execs a pristine serving
 image, accepts one client within ten seconds, and exits on BYE or socket EOF.
 All integers are little-endian `u32`.
+
+On the WASM browser target, one complete frame is one transferred
+`ArrayBuffer` over a private `MessagePort`. Freelang, linear memory and the
+collector remain in a Dedicated Worker; `sidecars/f/speaker/speaker-web-v2.js`
+revalidates the same lengths, fields and canonical WAVs before creating
+WebAudio sources. Its sixteen independent sources mix at the browser audio
+destination, and each PLAY restarts only its named voice. The different
+transport adds no second audio protocol or application semantics.
+
+The browser agent keeps a private-port supervisor alive across sessions. BYE
+disposes the current `AudioContext`, bank and voices, then admits one fresh
+HELLO on the same port. This is the browser lifecycle equivalent of ending one
+native speaker process/connection and birthing another; no audio state crosses
+the boundary. Closing the outer agent port remains terminal.
 
 ## Message types
 
@@ -93,9 +108,11 @@ The body is one voice `u32` in 0…15. STOP deactivates and rewinds that voice.
 
 ## BYE — `length = 8`
 
-There is no reply. The speaker stops and disposes AudioQueue synchronously,
-closes the wire, unlinks the socket and exits. EOF has the same terminal
-meaning, so a dead application cannot orphan audio.
+There is no reply. The native speaker stops and disposes AudioQueue
+synchronously, closes the wire, unlinks the socket and exits. EOF has the same
+terminal meaning, so a dead application cannot orphan audio. The browser
+implementation disposes its current `AudioContext`, clips and voices, then its
+private-port supervisor waits for a new HELLO as described above.
 
 ## ERROR — `length = 16 + text_bytes`
 

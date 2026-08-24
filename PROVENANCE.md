@@ -13,6 +13,7 @@ particular implementation detail.
 ## Included
 
 - Freelang-authored engine modules under `games/`;
+- the Freelang-authored browser application entry under `examples/`;
 - synthetic Doom-format fixtures and expected results under `tests/`;
 - source-only inspection, comparison and probe tools under `tools/`;
 - current protocol/design documentation and dated research notes under `docs/`.
@@ -26,7 +27,10 @@ commercial game data.
 - reference recordings, rendered WAVs, captures and other generated media;
 - compiled Freelang Doom Engine binaries;
 - the Freelang compiler, standard-library source and native sidecar
-  implementations.
+  implementations;
+- browser sidecar/agent implementations and generated HTML, loaders, Workers
+  or WASM modules; and
+- browser/native cache contents and other local runtime artifacts.
 
 A legally obtained compatible Doom-format WAD remains caller-owned runtime
 input. The engine neither searches for nor downloads one.
@@ -47,14 +51,20 @@ caller-supplied compatibility corpus. It is not present in this repository.
 
 The current source was synchronized from the same private monorepo at:
 
-- commit `373ab2781ac3`: the `v6.4.0` milestone tip;
-- implementation commit `53ebe7d`: the bounded 1280x800 raster closeout;
-- synchronization date 2026-08-23.
+- commit `d8ebabc3bbdf02cd5989394342090cf2cce2ab37`: the source checkpoint;
+- milestone tag `v6.9.0` at `7e2371b618db10abbe9b4337fe3a0af05c3358a8`;
+- cached browser-music implementation commit
+  `1160a010b4503efac67a4729fcdbe824836818ba`;
+- intrinsic-callability migration commit
+  `c8394557d3dc886234cfb06faca60f4659c17793`;
+- synchronization date 2026-08-24.
 
 The source boundary remains unchanged: only the Freelang Doom application,
 synthetic Doom-specific tests, source tools and supporting documentation are
-copied. Compiler, standard-library, sidecar and caller-owned WAD material are
-not copied into this repository.
+copied, including the browser entry written in Freelang. Compiler/backend
+source, standard-library and intrinsic implementations, native or web
+sidecars, generated browser hosts/modules, caches and caller-owned WAD material
+are not copied into this repository.
 
 ## Native distribution form
 

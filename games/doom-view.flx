@@ -63,6 +63,31 @@ op doom_view_work_sized [map, w, h] (
     64, raster_masked_indexed_lit_depth_panel_header_words[] +
       w * raster_masked_indexed_lit_depth_panel_command_words[]
   ];
+  let wall_modulo_commands = buf_new[
+    64, raster_masked_indexed_lit_depth_panel_header_words[] +
+      raster_masked_indexed_lit_depth_panel_command_words[]
+  ];
+  // Finite transparent middle panels use one small reusable chunk. Flushing a
+  // full chunk during traversal preserves their former immediate ordering and
+  // avoids reserving work proportional to a hostile map's complete seg count.
+  let masked_wall_capacity = map\seg_count;
+  if (masked_wall_capacity > 64) ( masked_wall_capacity = 64; )
+  let masked_wall_commands = buf_new[
+    64, raster_masked_indexed_lit_depth_panel_header_words[] +
+      masked_wall_capacity *
+        raster_masked_indexed_lit_depth_panel_command_words[]
+  ];
+  let sprite_command = buf_new[
+    64, raster_masked_indexed_lit_depth_sprite_command_words[]
+  ];
+  // Infinite indexed backdrops are discovered through visplanes and lowered
+  // to the existing general rational-span leaf. One finite strided command
+  // per screen column covers the complete upper hemisphere with aligned 2x2
+  // sampling; foreground depth/stamps retain all nearer geometry.
+  let sky_commands = buf_new[
+    64, raster_masked_indexed_depth_span_batch_header_words[] +
+      w * raster_masked_indexed_depth_span_command_words[]
+  ];
   let bank = map\texture_bank;
   let texture_pixels = bank\texture_pixels;
   let texture_opaque = bank\texture_opaque;
@@ -78,6 +103,25 @@ op doom_view_work_sized [map, w, h] (
     bytes_set[wall_indexed_alpha, wi * 2, texture_pixels@wi];
     bytes_set[wall_indexed_alpha, wi * 2 + 1, texture_opaque@wi];
     wi = wi + 1;
+  )
+  // The scan view keeps sprite silhouette/detail but maps every admitted Doom
+  // colour to one phosphor-green ramp. Build the alternate palette once with
+  // render work; held Tab never converts a completed frame or allocates.
+  let scan_rgbx_colours = buf_new[32, 8192];
+  let scan_colour = 0;
+  while ((scan_colour < 8192) and (buf_len[bank\colours] == 8192)) (
+    let packed = buf_get[bank\colours, scan_colour];
+    let red = (packed / 65536) % 256;
+    let green = (packed / 256) % 256;
+    let blue = packed % 256;
+    let luminance = (red * 3 + green * 6 + blue) / 10;
+    let scan_green = 24 + luminance * 231 / 255;
+    if (scan_green > 255) ( scan_green = 255; )
+    buf_set[
+      scan_rgbx_colours, scan_colour,
+      luminance / 12 + scan_green * 256 + luminance / 9 * 65536
+    ];
+    scan_colour = scan_colour + 1;
   )
   view sky_offsets as %32le[] over sky_offsets_storage;
   doom_view_zero_bytes[stamp];
@@ -139,8 +183,15 @@ op doom_view_work_sized [map, w, h] (
     plane_commands: plane_commands,
     plane_command_count: 0, plane_drawn: 0,
     wall_commands: wall_commands,
+    wall_modulo_commands: wall_modulo_commands,
+    masked_wall_commands: masked_wall_commands,
+    masked_wall_capacity: masked_wall_capacity,
+    sprite_command: sprite_command,
+    sky_commands: sky_commands, sky_command_count: 0, sky_drawn: 0,
     wall_command_count: 0, wall_drawn: 0,
+    masked_wall_command_count: 0, masked_wall_drawn: 0,
     wall_indexed_alpha: wall_indexed_alpha,
+    scan_rgbx_colours: scan_rgbx_colours,
     frame: 0, width: w, height: h, light_amp: 0,
     measure_plane_gaps: 0
   };
@@ -173,6 +224,22 @@ private op doom_view_positive_mod [value, modulus] (
   => out;
 )
 
+// Map one held sample into the upper half of an infinite cylindrical
+// backdrop. The horizon always lands at the texture midpoint; maximum upward
+// pitch maps the viewport top to the first source row. Every other pitch keeps
+// that scale and selects a shorter translated crop instead of squashing it.
+op doom_view_infinite_backdrop_v [
+  texture_height, maximum_centre_y, centre_y, sample_y
+] (
+  if ((texture_height > 0) and (maximum_centre_y > 0) and
+      (centre_y > 0)) () else (
+    fall "doom_view_infinite_backdrop_v: invalid measured domain";
+  )
+  let ty = texture_height / 2 +
+    (sample_y - centre_y) * (texture_height / 2) / maximum_centre_y;
+  => doom_view_clamp[ty, 0, texture_height - 1];
+)
+
 // Fill a clipped contiguous row interval through the same packed RGBX view as
 // the textured rasterizer. The generic GUI primitives deliberately retain
 // per-channel byte semantics; a framebuffer transaction already proves this
@@ -189,10 +256,74 @@ private op doom_view_fill_rows [buf, w, h, first_y, last_y, colour] (
   => 0;
 )
 
+private op doom_view_flush_sky_commands [buf, map, work] (
+  let count = work\sky_command_count;
+  if (count > 0) (
+    let commands = work\sky_commands;
+    commands@0 = count;
+    work\sky_drawn = work\sky_drawn + raster_masked_indexed_depth_spans[
+      buf, work\stamp, work\depth, work\wall_indexed_alpha,
+      map\texture_bank\rgbx_colours, commands
+    ];
+    work\sky_command_count = 0;
+    commands@0 = 0;
+  )
+  => 0;
+)
+
+// Queue one checked strided indexed span. This is not a sky primitive: the
+// existing f/raster operation knows only owners, rational coordinates and a
+// finite destination. The Doom renderer supplies the infinite-panorama
+// projection and the visible interval.
+private op doom_view_queue_sky_command [
+  buf, w, map, work, wall_frame,
+  x, first_y, count, texture_base, texture_width, texture_height,
+  texture_x, centre_y, maximum_centre_y, hold
+] (
+  if (count > 0) () else ( => 0; )
+  let commands = work\sky_commands;
+  let active = work\sky_command_count;
+  let capacity =
+    (buf_len[commands] -
+     raster_masked_indexed_depth_span_batch_header_words[]) /
+    raster_masked_indexed_depth_span_command_words[];
+  if (active == capacity) (
+    doom_view_flush_sky_commands[buf, map, work];
+    active = 0;
+  )
+  let base = raster_masked_indexed_depth_span_batch_header_words[] +
+    active * raster_masked_indexed_depth_span_command_words[];
+  let half_height = texture_height / 2;
+  commands@base = first_y * w + x;
+  commands@(base + 1) = w;
+  commands@(base + 2) = count;
+  commands@(base + 3) = texture_base;
+  commands@(base + 4) = texture_width;
+  commands@(base + 5) = texture_height;
+  commands@(base + 6) = 0;
+  commands@(base + 7) = texture_x;
+  commands@(base + 8) = half_height;
+  commands@(base + 9) = (first_y - centre_y) * half_height;
+  commands@(base + 10) = half_height;
+  commands@(base + 11) = maximum_centre_y;
+  commands@(base + 12) = 2147483647;
+  commands@(base + 13) = wall_frame;
+  commands@(base + 14) = hold;
+  // Doom's composed atlas initializes absent patch pixels to palette index
+  // zero. Treating transparent source cells as that same packed colour keeps
+  // this opaque infinite backdrop byte-identical to scalar indexed sampling.
+  commands@(base + 15) = (map\texture_bank\rgbx_colours)@0;
+  commands@(base + 16) = 1;
+  work\sky_command_count = active + 1;
+  => count;
+)
+
 // F_SKY1 exposes Doom's composed SKY1 texture as an unlit cylindrical
-// panorama. Wall traversal has already identified its exact visible ceiling
-// intervals, so sample only those pixels instead of painting half the screen
-// before opaque indoor ceilings cover it. The block-origin calculation below
+// panorama. It is one world-level infinite environment, not a set of finite
+// ceiling polygons: paint the upper hemisphere at infinite depth and let the
+// already-rendered walls and ordinary planes reject covered pixels. This
+// remains correct while crossing equal-sky portals whose local visplane
+// ownership can legitimately disappear. The block-origin calculation below
 // preserves the renderer's deliberate 2x2 nearest-neighbour sampling exactly.
 private op doom_view_draw_sky [buf, w, h, centre_y, map, work,
                                wall_frame, angle] (
@@ -212,21 +343,13 @@ private op doom_view_draw_sky [buf, w, h, centre_y, map, work,
   let texture_pixels = bank\texture_pixels;
   let rgbx_colours = bank\rgbx_colours;
   let sky_offsets_storage = work\sky_offsets;
-  let visplane_stamps = work\visplane_stamp;
-  let visplane_top_storage = work\visplane_top;
-  let visplane_bottom_storage = work\visplane_bottom;
   let stamp = work\stamp;
   view sky_offsets as %32le[] over sky_offsets_storage;
-  view visplane_top as %32le[] over visplane_top_storage;
-  view visplane_bottom as %32le[] over visplane_bottom_storage;
   if ((texture_width > 0) and (texture_height > 0) and
       (atlas_offset >= 0) and
       (texture_width * texture_height <=
-       bytes_len[texture_pixels] - atlas_offset) and
-      (bytes_len[sky_offsets_storage] == w * 4) and
-      (bytes_len[visplane_stamps] == work\visplane_limit * w) and
-      (bytes_len[visplane_top_storage] == work\visplane_limit * w * 4) and
-      (bytes_len[visplane_bottom_storage] == work\visplane_limit * w * 4)) () else (
+      bytes_len[texture_pixels] - atlas_offset) and
+      (bytes_len[sky_offsets_storage] == w * 4)) () else (
     fall "doom_view_draw_sky: invalid SKY1 atlas metadata";
   )
   view rgbx as %32le[] over buf;
@@ -234,50 +357,55 @@ private op doom_view_draw_sky [buf, w, h, centre_y, map, work,
     (u32[angle] * texture_width * 2) *> 32, texture_width
   ];
   let drawn = 0;
-  let record = 0;
-  while (record < work\visplane_count) (
-    let code = (work\visplane_keys)@record;
-    let encoded = code - 1;
-    let sector = encoded *> 1;
-    let plane_slot = encoded *& 1;
-    if ((plane_slot == 1) and
-        ((map\sector_flats)@(sector * 2 + 1) == bank\sky_flat)) (
-      let x = (work\visplane_min_x)@record;
-      let last_x = (work\visplane_max_x)@record;
-      while (x <= last_x) (
-        let cell = record * w + x;
-        if (visplane_stamps@cell == wall_frame) (
-          let block_x = x - (x *& 1);
-          let sample_x = block_x + 1;
-          if (sample_x >= w) ( sample_x = block_x; )
-          let tx = base_u + sky_offsets@sample_x;
-          if (tx < 0) ( tx = tx + texture_width; )
-          if (tx >= texture_width) ( tx = tx - texture_width; )
-          let y = visplane_top@cell;
-          let last_y = visplane_bottom@cell;
-          while (y <= last_y) (
-            let pixel = y * w + x;
-            if (stamp@pixel != wall_frame) (
-              let block_y = y - (y *& 1);
-              let sample_y = block_y + 1;
-              if (sample_y >= centre_y) ( sample_y = block_y; )
-              let ty = texture_height / 2 +
-                (sample_y - centre_y) * texture_height / h;
-              ty = doom_view_clamp[ty, 0, texture_height - 1];
-              let source = atlas_offset + ty * texture_width + tx;
-              let palette_index = texture_pixels@source;
-              rgbx@pixel = rgbx_colours@palette_index;
-              drawn = drawn + 1;
-            )
-            y = y + 1;
+  let power_two_texture =
+    ((texture_width *& (texture_width - 1)) == 0) and
+    ((texture_height *& (texture_height - 1)) == 0);
+  work\sky_command_count = 0;
+  work\sky_drawn = 0;
+  work\sky_commands@0 = 0;
+  // Extended mouse pitch changes only the panorama's vertical translation.
+  // Calibrate its fixed texel scale once at the highest permitted look-up
+  // horizon; lower pitches reveal a shorter crop without squashing texels.
+  let maximum_centre_y = doom_view_horizon_y[h, 0 - 145];
+  let x = 0;
+  while (x < w) (
+      let block_x = x - (x *& 1);
+      let sample_x = block_x + 1;
+      if (sample_x >= w) ( sample_x = block_x; )
+      let tx = base_u + sky_offsets@sample_x;
+      if (tx < 0) ( tx = tx + texture_width; )
+      if (tx >= texture_width) ( tx = tx - texture_width; )
+      if (power_two_texture == 1) (
+        doom_view_queue_sky_command[
+          buf, w, map, work, wall_frame,
+          x, 0, centre_y, atlas_offset, texture_width, texture_height,
+          tx, centre_y, maximum_centre_y, 2
+        ];
+      ) else (
+        // Exact-size panoramas retain the readable scalar definition. Source
+        // dimensions remain measured; no texture expansion is permitted.
+        let y = 0;
+        while (y < centre_y) (
+          let pixel = y * w + x;
+          if (stamp@pixel != wall_frame) (
+            let block_y = y - (y *& 1);
+            let sample_y = block_y + 1;
+            if (sample_y >= centre_y) ( sample_y = block_y; )
+            let ty = doom_view_infinite_backdrop_v[
+              texture_height, maximum_centre_y, centre_y, sample_y
+            ];
+            let source = atlas_offset + ty * texture_width + tx;
+            let palette_index = texture_pixels@source;
+            rgbx@pixel = rgbx_colours@palette_index;
+            drawn = drawn + 1;
           )
+          y = y + 1;
         )
-        x = x + 1;
       )
-    )
-    record = record + 1;
+    x = x + 1;
   )
-  => drawn;
+  doom_view_flush_sky_commands[buf, map, work];
+  => drawn + work\sky_drawn;
 )
 
 private op doom_view_isqrt [value] (
@@ -350,6 +478,27 @@ private op doom_view_flush_wall_commands [buf, bank, work] (
   => count;
 )
 
+// Finite transparent panels flush in bounded traversal chunks and once more
+// before the deferred opaque-wall/plane streams. That preserves their former
+// immediate equal-depth ownership while amortizing native transitions. The
+// target operation sees only exact texture geometry and projected records;
+// BSP policy and ordering remain here in Freelang.
+private op doom_view_flush_masked_wall_commands [buf, bank, work] (
+  let count = work\masked_wall_command_count;
+  if (count > 0) (
+    let commands = work\masked_wall_commands;
+    commands@0 = count;
+    work\masked_wall_drawn = work\masked_wall_drawn +
+      raster_masked_indexed_lit_depth_finite_panels[
+        buf, work\stamp, work\depth,
+        work\wall_indexed_alpha, bank\rgbx_colours, commands
+      ];
+    work\masked_wall_command_count = 0;
+    commands@0 = 0;
+  )
+  => count;
+)
+
 // Perspective-correct indexed wall sampling. U is interpolated in reciprocal
 // depth; V is derived from the world-space anchor selected by Doom's pegging
 // rules. Transparent patch holes either preserve the prior pixel (masked
@@ -379,6 +528,7 @@ private op doom_view_textured_panel [buf, w, h, centre_y,
   let texture_opaque = bank\texture_opaque;
   let wall_indexed_alpha = work\wall_indexed_alpha;
   let wall_commands = work\wall_commands;
+  let wall_modulo_commands = work\wall_modulo_commands;
   let rgbx_colours = bank\rgbx_colours;
   let stamp = work\stamp;
   let depth_storage = work\depth;
@@ -391,7 +541,10 @@ private op doom_view_textured_panel [buf, w, h, centre_y,
       (bytes_len[wall_indexed_alpha] == bytes_len[texture_pixels] * 2) and
       (buf_len[wall_commands] ==
        raster_masked_indexed_lit_depth_panel_header_words[] +
-       w * raster_masked_indexed_lit_depth_panel_command_words[])) () else (
+       w * raster_masked_indexed_lit_depth_panel_command_words[]) and
+      (buf_len[wall_modulo_commands] ==
+       raster_masked_indexed_lit_depth_panel_header_words[] +
+       raster_masked_indexed_lit_depth_panel_command_words[])) () else (
     fall "doom_view_textured_panel: invalid atlas metadata";
   )
   view rgbx as %32le[] over buf;
@@ -411,12 +564,15 @@ private op doom_view_textured_panel [buf, w, h, centre_y,
   let fast_wrapped_fill =
     (fill_transparent == 1) and (wrap_v == 1) and
     (texture_width_pow2 == 1) and (texture_height_pow2 == 1);
+  let modulo_wrapped_fill =
+    (fill_transparent == 1) and (wrap_v == 1) and
+    ((texture_width_pow2 == 0) or (texture_height_pow2 == 0));
   // Depth ownership is per column. Keep the inexpensive two-row texture
   // sample, but never copy one column's depth/coverage into its neighbour: a
   // former 2x2 shortcut did that at portals and produced penetrating auras.
   let sample_step = 2;
   let wall_count = work\wall_command_count;
-  if (fast_wrapped_fill == 1) (
+  if ((fast_wrapped_fill == 1) or (modulo_wrapped_fill == 1)) (
     if (wall_count == w) (
       work\wall_command_count = wall_count;
       doom_view_flush_wall_commands[buf, bank, work];
@@ -425,29 +581,83 @@ private op doom_view_textured_panel [buf, w, h, centre_y,
     // One screen-space panel replaces one checked command per output column.
     // BSP discovery, clipping, pegging and projected endpoints remain above;
     // the generalized raster batch owns only their repeated interpolation.
+    let command_book = wall_commands;
     let command_base =
       raster_masked_indexed_lit_depth_panel_header_words[] +
       wall_count * raster_masked_indexed_lit_depth_panel_command_words[];
-    wall_commands@command_base = sx1;
-    wall_commands@(command_base + 1) = sx2;
-    wall_commands@(command_base + 2) = z1;
-    wall_commands@(command_base + 3) = z2;
-    wall_commands@(command_base + 4) = u1;
-    wall_commands@(command_base + 5) = u2;
-    wall_commands@(command_base + 6) = top1;
-    wall_commands@(command_base + 7) = top2;
-    wall_commands@(command_base + 8) = bottom1;
-    wall_commands@(command_base + 9) = bottom2;
-    wall_commands@(command_base + 10) = atlas_offset;
-    wall_commands@(command_base + 11) = texture_width;
-    wall_commands@(command_base + 12) = texture_height;
-    wall_commands@(command_base + 13) = texture_anchor - view_z;
-    wall_commands@(command_base + 14) = focal;
-    wall_commands@(command_base + 15) = light;
-    wall_commands@(command_base + 16) = fallback_rgbx;
-    wall_commands@(command_base + 17) = wall_frame;
-    wall_commands@(command_base + 18) = sample_step;
-    work\wall_command_count = wall_count + 1;
+    if (modulo_wrapped_fill == 1) (
+      command_book = wall_modulo_commands;
+      command_base = raster_masked_indexed_lit_depth_panel_header_words[];
+    )
+    command_book@command_base = sx1;
+    command_book@(command_base + 1) = sx2;
+    command_book@(command_base + 2) = z1;
+    command_book@(command_base + 3) = z2;
+    command_book@(command_base + 4) = u1;
+    command_book@(command_base + 5) = u2;
+    command_book@(command_base + 6) = top1;
+    command_book@(command_base + 7) = top2;
+    command_book@(command_base + 8) = bottom1;
+    command_book@(command_base + 9) = bottom2;
+    command_book@(command_base + 10) = atlas_offset;
+    command_book@(command_base + 11) = texture_width;
+    command_book@(command_base + 12) = texture_height;
+    command_book@(command_base + 13) = texture_anchor - view_z;
+    command_book@(command_base + 14) = focal;
+    command_book@(command_base + 15) = light;
+    command_book@(command_base + 16) = fallback_rgbx;
+    command_book@(command_base + 17) = wall_frame;
+    command_book@(command_base + 18) = sample_step;
+    if (modulo_wrapped_fill == 1) (
+      // The exact-size leaf has a deliberately separate texture species.
+      // Reuse the same measured atlas and command storage, but never pad or
+      // expand a WAD texture to enter the power-of-two operation.
+      command_book@0 = 1;
+      work\wall_drawn = work\wall_drawn +
+        raster_masked_indexed_lit_depth_modulo_panels[
+        buf, stamp, depth_storage, wall_indexed_alpha, rgbx_colours,
+        command_book
+      ];
+      command_book@0 = 0;
+    ) else (
+      work\wall_command_count = wall_count + 1;
+    )
+    => last_x - first_x + 1;
+  )
+  if ((fill_transparent == 0) and (wrap_v == 0)) (
+    let masked_wall_commands = work\masked_wall_commands;
+    let masked_count = work\masked_wall_command_count;
+    if ((masked_count == work\masked_wall_capacity) and
+        (masked_count > 0)) (
+      doom_view_flush_masked_wall_commands[buf, bank, work];
+      masked_count = 0;
+    )
+    if (masked_count < work\masked_wall_capacity) () else (
+      fall "doom_view_textured_panel: finite masked command capacity exceeded";
+    )
+    let command_base =
+      raster_masked_indexed_lit_depth_panel_header_words[] +
+      masked_count * raster_masked_indexed_lit_depth_panel_command_words[];
+    masked_wall_commands@command_base = sx1;
+    masked_wall_commands@(command_base + 1) = sx2;
+    masked_wall_commands@(command_base + 2) = z1;
+    masked_wall_commands@(command_base + 3) = z2;
+    masked_wall_commands@(command_base + 4) = u1;
+    masked_wall_commands@(command_base + 5) = u2;
+    masked_wall_commands@(command_base + 6) = top1;
+    masked_wall_commands@(command_base + 7) = top2;
+    masked_wall_commands@(command_base + 8) = bottom1;
+    masked_wall_commands@(command_base + 9) = bottom2;
+    masked_wall_commands@(command_base + 10) = atlas_offset;
+    masked_wall_commands@(command_base + 11) = texture_width;
+    masked_wall_commands@(command_base + 12) = texture_height;
+    masked_wall_commands@(command_base + 13) = texture_anchor - view_z;
+    masked_wall_commands@(command_base + 14) = focal;
+    masked_wall_commands@(command_base + 15) = light;
+    masked_wall_commands@(command_base + 16) = fallback_rgbx;
+    masked_wall_commands@(command_base + 17) = wall_frame;
+    masked_wall_commands@(command_base + 18) = sample_step;
+    work\masked_wall_command_count = masked_count + 1;
     => last_x - first_x + 1;
   )
 
@@ -625,6 +835,37 @@ private op doom_view_claim_visplane [work, owner, code, first_x, last_x,
 // the nearest ceiling and floor boundary may be claimed by a farther seg.
 // Visible intervals are recorded as code = sector*2 + slot + 1, where slot
 // 0=floor and 1=ceiling; the later horizontal pass never guesses a sector.
+// A farther projected seg with no remaining open column cannot contribute a
+// plane or wall pixel. This deliberately culls only whole spans; any partial
+// opening retains the original projection and texture-sampling path exactly.
+private op doom_view_span_has_open_portal [w, work, sx1, sx2] (
+  let ceiling_clip_storage = work\ceiling_clip;
+  let floor_clip_storage = work\floor_clip;
+  view ceiling_clip as %32le[] over ceiling_clip_storage;
+  view floor_clip as %32le[] over floor_clip_storage;
+  let first_x = doom_view_clamp[sx1, 0, w - 1];
+  let last_x = doom_view_clamp[sx2, 0, w - 1];
+  let x = first_x;
+  while (x <= last_x) (
+    if (ceiling_clip@x + 1 < floor_clip@x) ( => 1; )
+    x = x + 1;
+  )
+  => 0;
+)
+
+// Public proof seam for the portal-plane decision. Sky identity changes wall
+// presentation, not whether unequal ceiling geometry contributes a front
+// visplane interval; combining those decisions caused high-resolution holes.
+op doom_view_portal_ceiling_plane_differs [
+  front_height, front_flat, front_light,
+  back_height, back_flat, back_light
+] (
+  if ((back_height == front_height) and
+      (back_flat == front_flat) and
+      (back_light == front_light)) ( => 0; )
+  => 1;
+)
+
 private op doom_view_mark_front_planes [w, h, centre_y, map, work, wall_frame,
                                         subsector, front, back,
                                         sx1, sx2, z1, z2,
@@ -663,15 +904,14 @@ private op doom_view_mark_front_planes [w, h, centre_y, map, work, wall_frame,
     if ((back_floor == floor_height) and
         (back_floor_flat == front_floor_flat) and
         (back_light == front_light)) ( mark_floor = 0; )
-    if ((back_ceiling == ceiling_height) and
-        (back_ceiling_flat == front_ceiling_flat) and
-        (back_light == front_light)) ( mark_ceiling = 0; )
-    // Adjacent sky ceilings form one unbounded visual plane even when their
-    // bookkeeping heights differ; this is Doom's deliberate outdoor seam.
-    if ((front_ceiling_flat == map\texture_bank\sky_flat) and
-        (back_ceiling_flat == map\texture_bank\sky_flat)) (
-      mark_ceiling = 0;
-    )
+    mark_ceiling = doom_view_portal_ceiling_plane_differs[
+      ceiling_height, front_ceiling_flat, front_light,
+      back_ceiling, back_ceiling_flat, back_light
+    ];
+    // Adjacent sky ceilings suppress their upper wall seam, but a differing
+    // bookkeeping height must still mark the front sky interval. Suppressing
+    // the plane here leaves the cleared backdrop visible at some high-pitch,
+    // high-resolution portal projections.
     if ((back_ceiling <= floor_height) or
         (back_floor >= ceiling_height)) (
       terminal = 1;
@@ -1005,7 +1245,8 @@ private op doom_view_draw_planes [buf, w, h, centre_y, map, work, wall_frame,
         while (x < w) (
           let pixel = y * w + x;
           if ((stamp@pixel != wall_frame) and
-              (plane_stamp@pixel != wall_frame)) (
+              (plane_stamp@pixel != wall_frame) and
+              (y >= centre_y)) (
             gaps = gaps + 1;
           )
           x = x + 1;
@@ -1072,21 +1313,20 @@ private op doom_view_sprite_meta_valid [bank, slot] (
     (width * height <= bytes_len[bank\sprite_pixels] - offset);
 )
 
-private op doom_view_draw_world_sprite [buf, w, h, bank, work, wall_frame,
-                                        slot, origin_x, origin_y, depth, depth_key,
-                                        focal, light] (
+private op doom_view_draw_world_sprite_palette [buf, w, h, bank, work,
+                                                wall_frame, slot,
+                                                origin_x, origin_y,
+                                                depth, depth_key, focal, light,
+                                                rgbx_colours] (
   if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
     fall "doom_view_draw_world_sprite: invalid sprite atlas metadata";
   )
   let sprite_meta = bank\sprite_meta;
   let sprite_pixels = bank\sprite_pixels;
   let sprite_opaque = bank\sprite_opaque;
-  let rgbx_colours = bank\rgbx_colours;
   let stamp = work\stamp;
   let depth_storage = work\depth;
-  let sprite_x_storage = work\sprite_x;
-  view depth_buffer as %32le[] over depth_storage;
-  view sprite_x_map as %32le[] over sprite_x_storage;
+  let sprite_command = work\sprite_command;
   let mb = slot * 6;
   let width = buf_get[sprite_meta, mb];
   let height = buf_get[sprite_meta, mb + 1];
@@ -1102,47 +1342,39 @@ private op doom_view_draw_world_sprite [buf, w, h, bank, work, wall_frame,
       (right > 0) and (left < w) and (bottom > 0) and (top < h)) () else (
     => 0;
   )
-  view rgbx as %32le[] over buf;
-  let first_x = doom_view_clamp[left, 0, w - 1];
-  let last_x = doom_view_clamp[right - 1, 0, w - 1];
-  let first_y = doom_view_clamp[top, 0, h - 1];
-  let last_y = doom_view_clamp[bottom - 1, 0, h - 1];
-  let mapped_x = first_x;
-  while (mapped_x <= last_x) (
-    let source_x = (mapped_x - left) * width / (right - left);
-    if (flip == 1) ( source_x = width - 1 - source_x; )
-    sprite_x_map@mapped_x = source_x;
-    mapped_x = mapped_x + 1;
-  )
   if (work\light_amp == 1) ( light = 255; )
   let shade = (255 - (light - (depth *> 5))) *> 3;
   shade = doom_view_clamp[shade, 0, 31];
-  let painted = 0;
-  let y = first_y;
-  while (y <= last_y) (
-    let sy = (y - top) * height / (bottom - top);
-    let x = first_x;
-    while (x <= last_x) (
-      let sx = sprite_x_map@x;
-      let source = atlas_offset + sy * width + sx;
-      if (sprite_opaque@source == 1) (
-        let pixel = y * w + x;
-        if ((stamp@pixel != wall_frame) or
-            (depth_key < depth_buffer@pixel)) (
-          let palette_index = sprite_pixels@source;
-          let packed_colour =
-            rgbx_colours@(shade * 256 + palette_index);
-          rgbx@pixel = packed_colour;
-          stamp@pixel = wall_frame;
-          depth_buffer@pixel = depth_key;
-          painted = painted + 1;
-        )
-      )
-      x = x + 1;
-    )
-    y = y + 1;
+  if (buf_len[sprite_command] ==
+      raster_masked_indexed_lit_depth_sprite_command_words[]) () else (
+    fall "doom_view_draw_world_sprite: command work has wrong shape";
   )
-  => painted;
+  sprite_command@0 = w;
+  sprite_command@1 = h;
+  sprite_command@2 = atlas_offset;
+  sprite_command@3 = width;
+  sprite_command@4 = height;
+  sprite_command@5 = left;
+  sprite_command@6 = right;
+  sprite_command@7 = top;
+  sprite_command@8 = bottom;
+  sprite_command@9 = flip;
+  sprite_command@10 = shade;
+  sprite_command@11 = depth_key;
+  sprite_command@12 = wall_frame;
+  => raster_masked_indexed_lit_depth_sprite[
+    buf, stamp, depth_storage, sprite_pixels, sprite_opaque,
+    rgbx_colours, sprite_command
+  ];
+)
+
+private op doom_view_draw_world_sprite [buf, w, h, bank, work, wall_frame,
+                                        slot, origin_x, origin_y,
+                                        depth, depth_key, focal, light] (
+  => doom_view_draw_world_sprite_palette[
+    buf, w, h, bank, work, wall_frame, slot, origin_x, origin_y,
+    depth, depth_key, focal, light, bank\rgbx_colours
+  ];
 )
 
 private op doom_view_draw_weapon [buf, w, h, bank, work] (
@@ -1155,7 +1387,8 @@ private op doom_view_draw_weapon [buf, w, h, bank, work] (
 
 private op doom_view_draw_weapon_slot_at [buf, w, h, bank, work, slot,
                                            left, top,
-                                           drawn_width, drawn_height] (
+                                           drawn_width, drawn_height,
+                                           depth_key] (
   if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
     fall "doom_view_draw_weapon: invalid weapon sprite metadata";
   )
@@ -1173,62 +1406,77 @@ private op doom_view_draw_weapon_slot_at [buf, w, h, bank, work, slot,
   let bottom = top + drawn_height;
   if ((right > 0) and (left < w) and
       (bottom > 0) and (top < h)) () else ( => 0; )
-  let sprite_x_storage = work\sprite_x;
-  if (bytes_len[sprite_x_storage] == w * 4) () else (
-    fall "doom_view_draw_weapon: source-X scratch disagrees with target";
+  let command = work\sprite_command;
+  if ((buf_len[command] ==
+       raster_masked_indexed_lit_depth_sprite_command_words[]) and
+      (work\frame >= 1) and (work\frame <= 255) and
+      (depth_key >= 0) and (depth_key <= 2147483647)) () else (
+    fall "doom_view_draw_weapon: raster command state disagrees";
   )
-  view sprite_x_map as %32le[] over sprite_x_storage;
-  view rgbx as %32le[] over buf;
-  let first_x = doom_view_clamp[left, 0, w - 1];
-  let last_x = doom_view_clamp[right - 1, 0, w - 1];
-  let mapped_x = first_x;
-  while (mapped_x <= last_x) (
-    sprite_x_map@mapped_x =
-      (mapped_x - left) * width / drawn_width;
-    mapped_x = mapped_x + 1;
+  command@0 = w;
+  command@1 = h;
+  command@2 = atlas_offset;
+  command@3 = width;
+  command@4 = height;
+  command@5 = left;
+  command@6 = right;
+  command@7 = top;
+  command@8 = bottom;
+  // First-person patches are registered in their authored orientation. The
+  // screen layer never selects a mirrored directional alias.
+  command@9 = 0;
+  command@10 = 0;
+  command@11 = depth_key;
+  command@12 = work\frame;
+  => raster_masked_indexed_lit_depth_sprite[
+    buf, work\stamp, work\depth,
+    sprite_pixels, sprite_opaque, rgbx_colours, command
+  ];
+)
+
+// Reproduce R_DrawPSprite's zero-bob placement in logical 320x200 space.
+// Doom's psprite x is 1. Its y is WEAPONTOP=32, but the 168-line play view is
+// centred at 84 while R_DrawPSprite retains BASEYCENTER=100. After its half-
+// pixel ceiling this makes the exact visible patch top 16 - top_offset, not
+// 32 - top_offset and not framebuffer_bottom - height. Pspritescale is derived
+// from the 320-wide screen, not the shorter 168-line viewport: using h / 200
+// shrinks the weapon to 84% and exposes a gap above the status bar.
+private op doom_view_psprite_position [w, h, bank, slot] (
+  if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
+    fall "doom_view_psprite_position: invalid psprite metadata";
   )
-  let first_y = doom_view_clamp[top, 0, h - 1];
-  let last_y = doom_view_clamp[bottom - 1, 0, h - 1];
-  let screen_y = first_y;
-  while (screen_y <= last_y) (
-    let sy = (screen_y - top) * height / drawn_height;
-    let screen_x = first_x;
-    while (screen_x <= last_x) (
-      let sx = sprite_x_map@screen_x;
-      let source = atlas_offset + sy * width + sx;
-      if (sprite_opaque@source == 1) (
-        let palette_index = sprite_pixels@source;
-        let packed_colour = rgbx_colours@palette_index;
-        let pixel = screen_y * w + screen_x;
-        rgbx@pixel = packed_colour;
-      )
-      screen_x = screen_x + 1;
-    )
-    screen_y = screen_y + 1;
-  )
-  => 0;
+  let mb = slot * 6;
+  let drawn_width = buf_get[bank\sprite_meta, mb] * w / 320;
+  let drawn_height = buf_get[bank\sprite_meta, mb + 1] * w / 320;
+  if (drawn_width < 1) ( drawn_width = 1; )
+  if (drawn_height < 1) ( drawn_height = 1; )
+  => {
+    left: w / 2 +
+      (1 - 160 - buf_get[bank\sprite_meta, mb + 3]) * w / 320,
+    top: 16 * w / 320 -
+      buf_get[bank\sprite_meta, mb + 4] * w / 320,
+    width: drawn_width, height: drawn_height
+  };
+)
+
+// Public proof seam for the body layer; flashes use the same psprite math.
+op doom_view_weapon_position [w, h, bank, slot] (
+  => doom_view_psprite_position[w, h, bank, slot];
 )
 
 private op doom_view_draw_weapon_slot [buf, w, h, bank, work, slot] (
-  if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
-    fall "doom_view_draw_weapon: invalid weapon sprite metadata";
-  )
-  let mb = slot * 6;
-  let drawn_width = buf_get[bank\sprite_meta, mb] * h / 200;
-  let drawn_height = buf_get[bank\sprite_meta, mb + 1] * h / 200;
-  if (drawn_width < 1) ( drawn_width = 1; )
-  if (drawn_height < 1) ( drawn_height = 1; )
+  let placement = doom_view_weapon_position[w, h, bank, slot];
   => doom_view_draw_weapon_slot_at[
     buf, w, h, bank, work, slot,
-    w / 2 - drawn_width / 2, h - drawn_height,
-    drawn_width, drawn_height
+    placement\left, placement\top,
+    placement\width, placement\height, 1
   ];
 )
 
 private op doom_view_draw_enemies [buf, w, h, centre_y, map, alive,
                                    player_x, player_y, view_z,
                                    sine, cosine, focal, work, wall_frame,
-                                   textured] (
+                                   textured, rgbx_colours] (
   let centre_x = w / 2;
   let q31 = 2147483648;
   let drawn = 0;
@@ -1266,10 +1514,10 @@ private op doom_view_draw_enemies [buf, w, h, centre_y, map, alive,
           let slot = doom_texture_sprite_directional_slot[
             family, 0, rotation
           ];
-          let pixels = doom_view_draw_world_sprite[
+          let pixels = doom_view_draw_world_sprite_palette[
             buf, w, h, map\texture_bank, work, wall_frame,
             slot, screen_x, bottom, depth, depth, focal,
-            buf_get[map\sectors, sector * 5 + 2]
+            buf_get[map\sectors, sector * 5 + 2], rgbx_colours
           ];
           if (pixels > 0) ( drawn = drawn + 1; )
         ) else (
@@ -1306,7 +1554,7 @@ private op doom_view_draw_enemies [buf, w, h, centre_y, map, alive,
 private op doom_view_draw_combat_enemies [buf, w, h, centre_y, map, combat,
                                           player_x, player_y, view_z,
                                           sine, cosine, focal, work, wall_frame,
-                                          textured] (
+                                          textured, rgbx_colours] (
   let centre_x = w / 2;
   let q31 = 2147483648;
   let drawn = 0;
@@ -1324,7 +1572,7 @@ private op doom_view_draw_combat_enemies [buf, w, h, centre_y, map, combat,
     // the near plane and let that exact visual authority reject covered
     // texels; a second whole-map movement scan was both redundant and capable
     // of rejecting an actor visible through a vertically open portal.
-    if (depth > 8) (
+    if ((doom_combat_actor_renderable[actor] == 1) and (depth > 8)) (
       let screen_x = centre_x - lateral * focal / depth;
       let sector = doom_map_point_sector[map, world_x, world_y];
       let floor = buf_get[map\sectors, sector * 5];
@@ -1336,10 +1584,10 @@ private op doom_view_draw_combat_enemies [buf, w, h, centre_y, map, combat,
           actor\angle, viewer_dx, viewer_dy
         ];
         let slot = doom_combat_actor_sprite_slot[actor, rotation];
-        let pixels = doom_view_draw_world_sprite[
+        let pixels = doom_view_draw_world_sprite_palette[
           buf, w, h, map\texture_bank, work, wall_frame,
           slot, screen_x, bottom, depth, depth, focal,
-          buf_get[map\sectors, sector * 5 + 2]
+          buf_get[map\sectors, sector * 5 + 2], rgbx_colours
         ];
         if (pixels > 0) ( drawn = drawn + 1; )
       ) else (
@@ -1375,7 +1623,7 @@ private op doom_view_draw_combat_enemies [buf, w, h, centre_y, map, combat,
 private op doom_view_draw_combat_items [buf, w, h, centre_y, map, combat,
                                         player_x, player_y, view_z,
                                         sine, cosine, focal, work, wall_frame,
-                                        textured] (
+                                        textured, rgbx_colours] (
   let centre_x = w / 2;
   let q31 = 2147483648;
   // Textured walls and sprites share this frame's stamped per-pixel depth
@@ -1402,21 +1650,21 @@ private op doom_view_draw_combat_items [buf, w, h, centre_y, map, combat,
         let floor = buf_get[map\sectors, sector * 5];
         let bottom = centre_y - (floor - view_z) * focal / depth;
         if (barrel\state == 1) (
-          let pixels = doom_view_draw_world_sprite[
+          let pixels = doom_view_draw_world_sprite_palette[
             buf, w, h, map\texture_bank, work, wall_frame,
             doom_texture_prop_slot[2035], screen_x, bottom, depth, depth, focal,
-            buf_get[map\sectors, sector * 5 + 2]
+            buf_get[map\sectors, sector * 5 + 2], rgbx_colours
           ];
           if (pixels > 0) ( drawn = drawn + 1; )
         ) else (
           let frame = 2 + (barrel\phase_tick - 1) / 9;
           if (frame < 2) ( frame = 2; )
           if (frame > 6) ( frame = 6; )
-          let pixels = doom_view_draw_world_sprite[
+          let pixels = doom_view_draw_world_sprite_palette[
             buf, w, h, map\texture_bank, work, wall_frame,
             doom_texture_prop_slot_for[2035, frame],
             screen_x, bottom, depth, depth, focal,
-            buf_get[map\sectors, sector * 5 + 2]
+            buf_get[map\sectors, sector * 5 + 2], rgbx_colours
           ];
           if (pixels > 0) ( drawn = drawn + 1; )
         )
@@ -1441,14 +1689,14 @@ private op doom_view_draw_combat_items [buf, w, h, centre_y, map, combat,
         let sector = doom_map_point_sector[map, drop\x, drop\y];
         let floor = buf_get[map\sectors, sector * 5];
         let bottom = centre_y - (floor - view_z) * focal / depth;
-        let pixels = doom_view_draw_world_sprite[
+        let pixels = doom_view_draw_world_sprite_palette[
           buf, w, h, map\texture_bank, work, wall_frame,
           // A dropped item shares its dead actor's exact map coordinates.
           // Preserve true projection depth, but give that intentional tie one
           // unit of sprite priority so the corpse cannot erase every texel.
           doom_texture_pickup_slot[drop\kind], screen_x, bottom,
           depth, depth - 1, focal,
-          buf_get[map\sectors, sector * 5 + 2]
+          buf_get[map\sectors, sector * 5 + 2], rgbx_colours
         ];
         if (pixels > 0) ( drawn = drawn + 1; )
       )
@@ -1465,7 +1713,7 @@ private op doom_view_draw_combat_items [buf, w, h, centre_y, map, combat,
 private op doom_view_draw_projectiles [buf, w, h, centre_y, map, combat,
                                        player_x, player_y, view_z,
                                        sine, cosine, focal, work, wall_frame,
-                                       textured] (
+                                       textured, rgbx_colours] (
   view rgbx as %32le[] over buf;
   let depth_storage = work\depth;
   view depth_buffer as %32le[] over depth_storage;
@@ -1533,10 +1781,10 @@ private op doom_view_draw_projectiles [buf, w, h, centre_y, map, combat,
           let sector = doom_map_point_sector[
             map, projectile\x, projectile\y
           ];
-          let pixels = doom_view_draw_world_sprite[
+          let pixels = doom_view_draw_world_sprite_palette[
             buf, w, h, map\texture_bank, work, wall_frame,
             slot, screen_x, screen_y, depth, depth - 1, focal,
-            buf_get[map\sectors, sector * 5 + 2]
+            buf_get[map\sectors, sector * 5 + 2], rgbx_colours
           ];
           if (pixels > 0) ( drawn = drawn + 1; )
         ) else (
@@ -1616,36 +1864,9 @@ op doom_view_muzzle_position [w, h, bank, anchor_slot, flash_slot] (
       (doom_view_sprite_meta_valid[bank, flash_slot] == 1)) () else (
     fall "doom_view_muzzle_position: invalid psprite metadata";
   )
-  let body_mb = anchor_slot * 6;
-  let flash_mb = flash_slot * 6;
-  let body_width = buf_get[bank\sprite_meta, body_mb] * h / 200;
-  let body_height = buf_get[bank\sprite_meta, body_mb + 1] * h / 200;
-  let flash_width = buf_get[bank\sprite_meta, flash_mb] * h / 200;
-  let flash_height = buf_get[bank\sprite_meta, flash_mb + 1] * h / 200;
-  if (body_width < 1) ( body_width = 1; )
-  if (body_height < 1) ( body_height = 1; )
-  if (flash_width < 1) ( flash_width = 1; )
-  if (flash_height < 1) ( flash_height = 1; )
-
-  // Both Doom psprites are authored around one logical screen origin. Recover
-  // that origin from the weapon's neutral anchor frame, then place the flash
-  // with its own checked patch offsets. Animated shotgun frames have radically
-  // different boxes; treating the current pump frame as the anchor translates
-  // SHTFA/B roughly half a weapon-width downrange and to the right.
-  let body_left = w / 2 - body_width / 2;
-  let body_top = h - body_height;
-  let origin_x = body_left +
-    buf_get[bank\sprite_meta, body_mb + 3] * h / 200;
-  let origin_y = body_top +
-    buf_get[bank\sprite_meta, body_mb + 4] * h / 200;
-  let flash_left = origin_x -
-    buf_get[bank\sprite_meta, flash_mb + 3] * h / 200;
-  let flash_top = origin_y -
-    buf_get[bank\sprite_meta, flash_mb + 4] * h / 200;
-  => {
-    left: flash_left, top: flash_top,
-    width: flash_width, height: flash_height
-  };
+  // P_MovePsprites copies weapon sx/sy to the flash psprite every tic. The
+  // patch's own offsets are therefore the only per-layer placement inputs.
+  => doom_view_psprite_position[w, h, bank, flash_slot];
 )
 
 private op doom_view_draw_muzzle_flash [buf, w, h, bank, work, combat] (
@@ -1659,7 +1880,7 @@ private op doom_view_draw_muzzle_flash [buf, w, h, bank, work, combat] (
   ];
   doom_view_draw_weapon_slot_at[
     buf, w, h, bank, work, flash_slot,
-    placement\left, placement\top, placement\width, placement\height
+    placement\left, placement\top, placement\width, placement\height, 0
   ];
   => 1;
 )
@@ -1667,7 +1888,7 @@ private op doom_view_draw_muzzle_flash [buf, w, h, bank, work, combat] (
 private op doom_view_draw_pickups [buf, w, h, centre_y, map, world,
                                    player_x, player_y, view_z,
                                    sine, cosine, focal, work, wall_frame,
-                                   textured] (
+                                   textured, rgbx_colours] (
   let centre_x = w / 2;
   let q31 = 2147483648;
   let stamped_sprites =
@@ -1698,11 +1919,11 @@ private op doom_view_draw_pickups [buf, w, h, centre_y, map, world,
           let floor = buf_get[map\sectors, sector * 5];
           let bottom = centre_y - (floor - view_z) * focal / depth;
           if ((textured == 1) and (map\texture_bank\sprite_ready == 1)) (
-            let pixels = doom_view_draw_world_sprite[
+            let pixels = doom_view_draw_world_sprite_palette[
               buf, w, h, map\texture_bank, work, wall_frame,
               doom_texture_pickup_slot[kind], screen_x, bottom,
               depth, depth, focal,
-              buf_get[map\sectors, sector * 5 + 2]
+              buf_get[map\sectors, sector * 5 + 2], rgbx_colours
             ];
             if (pixels > 0) ( drawn = drawn + 1; )
           ) else (
@@ -1724,7 +1945,7 @@ private op doom_view_draw_pickups [buf, w, h, centre_y, map, world,
 private op doom_view_draw_props [buf, w, h, centre_y, map, world,
                                  player_x, player_y, view_z,
                                  sine, cosine, focal, work, wall_frame,
-                                 textured] (
+                                 textured, rgbx_colours] (
   let centre_x = w / 2;
   let q31 = 2147483648;
   let stamped_sprites =
@@ -1758,10 +1979,11 @@ private op doom_view_draw_props [buf, w, h, centre_y, map, world,
         let origin_y = centre_y - (origin_z - view_z) * focal / depth;
         if ((textured == 1) and (map\texture_bank\sprite_ready == 1)) (
           let frame = doom_texture_prop_frame_for_tick[kind, world\tick];
-          let pixels = doom_view_draw_world_sprite[
+          let pixels = doom_view_draw_world_sprite_palette[
             buf, w, h, map\texture_bank, work, wall_frame,
             doom_texture_prop_slot_for[kind, frame], screen_x, origin_y,
-            depth, depth, focal, buf_get[map\sectors, sector * 5 + 2]
+            depth, depth, focal, buf_get[map\sectors, sector * 5 + 2],
+            rgbx_colours
           ];
           if (pixels > 0) ( drawn = drawn + 1; )
         ) else (
@@ -1786,7 +2008,7 @@ private op doom_view_draw_props [buf, w, h, centre_y, map, world,
 private op doom_view_draw_teleport_fog [buf, w, h, centre_y, map, world,
                                         player_x, player_y, view_z,
                                         sine, cosine, focal, work,
-                                        wall_frame] (
+                                        wall_frame, rgbx_colours] (
   if ((world\teleport_fog_tick > 0) and
       (map\texture_bank\sprite_ready == 1)) () else ( => 0; )
   let frame = (70 - world\teleport_fog_tick) / 7;
@@ -1813,10 +2035,10 @@ private op doom_view_draw_teleport_fog [buf, w, h, centre_y, map, world,
       let sector = doom_map_point_sector[map, world_x, world_y];
       let floor = buf_get[map\sectors, sector * 5];
       let bottom = centre_y - (floor - view_z) * focal / depth;
-      let pixels = doom_view_draw_world_sprite[
+      let pixels = doom_view_draw_world_sprite_palette[
         buf, w, h, map\texture_bank, work, wall_frame,
         slot, screen_x, bottom, depth, depth - 2, focal,
-        buf_get[map\sectors, sector * 5 + 2]
+        buf_get[map\sectors, sector * 5 + 2], rgbx_colours
       ];
       if (pixels > 0) ( drawn = drawn + 1; )
     )
@@ -1876,6 +2098,19 @@ op doom_view_draw_pitched [buf, w, h, font, map, work,
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     alive, kills, enemies, misses, steps, blocked,
     1, 0, 0, 2147483647, 0, 0
+  ];
+)
+
+// Textured browser/navigation view with real vertical world state but without
+// claiming combat or item simulation.  This keeps jump eye height honest while
+// the bounded proof still renders non-combat actor placeholders.
+op doom_view_draw_navigation_pitched [buf, w, h, font, map, work,
+                                      player_x, player_y, angle, pitch,
+                                      alive, enemies, steps, blocked, world] (
+  => doom_view_draw_mode[
+    buf, w, h, font, map, work, player_x, player_y, angle, pitch,
+    alive, 0, enemies, 0, steps, blocked,
+    1, 0, 0, world\player_z + 41, 0, 0
   ];
 )
 
@@ -1959,6 +2194,246 @@ op doom_view_draw_reticle [buf, w, h] (
   => 0;
 )
 
+// Draw one clipped projected edge without walking any invisible off-screen
+// extent. Projected wall endpoints may be far beyond the raster after a near
+// clip; the finite destination interval is the complete work authority.
+private op doom_view_draw_scan_edge [buf, w, h, x1, y1, x2, y2, colour] (
+  if ((x2 < 0) or (x1 >= w)) ( => 0; )
+  if (x1 == x2) (
+    if ((x1 < 0) or (x1 >= w)) ( => 0; )
+    let first_y = y1;
+    let last_y = y2;
+    if (first_y > last_y) (
+      let swap_y = first_y; first_y = last_y; last_y = swap_y;
+    )
+    first_y = doom_view_clamp[first_y, 0, h - 1];
+    last_y = doom_view_clamp[last_y, 0, h - 1];
+    gui_vline[buf, w, h, x1, first_y, last_y - first_y + 1, colour];
+    => last_y - first_y + 1;
+  )
+  if (x1 > x2) (
+    let swap_x = x1; x1 = x2; x2 = swap_x;
+    let swap_y = y1; y1 = y2; y2 = swap_y;
+  )
+  if ((x2 < 0) or (x1 >= w)) ( => 0; )
+  let first_x = doom_view_clamp[x1, 0, w - 1];
+  let last_x = doom_view_clamp[x2, 0, w - 1];
+  let span = x2 - x1;
+  let previous_y = y1 + (y2 - y1) * (first_x - x1) / span;
+  let x = first_x;
+  let drawn = 0;
+  while (x <= last_x) (
+    let y = y1 + (y2 - y1) * (x - x1) / span;
+    let top = previous_y;
+    let bottom = y;
+    if (top > bottom) (
+      let swap = top; top = bottom; bottom = swap;
+    )
+    top = doom_view_clamp[top, 0, h - 1];
+    bottom = doom_view_clamp[bottom, 0, h - 1];
+    gui_vline[buf, w, h, x, top, bottom - top + 1, colour];
+    drawn = drawn + bottom - top + 1;
+    previous_y = y;
+    x = x + 1;
+  )
+  => drawn;
+)
+
+private op doom_view_draw_scan_reticle [buf, w, h] (
+  let scale = w / 320;
+  if (scale < 1) ( scale = 1; )
+  let x = w / 2;
+  let y = h / 2;
+  let dim = gui_rgb[12, 74, 34];
+  let ink = gui_rgb[96, 255, 154];
+  gui_rect[buf, w, h, x - 11 * scale, y - scale,
+           7 * scale, 3 * scale, dim];
+  gui_rect[buf, w, h, x + 5 * scale, y - scale,
+           7 * scale, 3 * scale, dim];
+  gui_rect[buf, w, h, x - scale, y - 11 * scale,
+           3 * scale, 7 * scale, dim];
+  gui_rect[buf, w, h, x - scale, y + 5 * scale,
+           3 * scale, 7 * scale, dim];
+  gui_rect[buf, w, h, x - 10 * scale, y,
+           6 * scale, scale, ink];
+  gui_rect[buf, w, h, x + 5 * scale, y,
+           6 * scale, scale, ink];
+  gui_rect[buf, w, h, x, y - 10 * scale,
+           scale, 6 * scale, ink];
+  gui_rect[buf, w, h, x, y + 5 * scale,
+           scale, 6 * scale, ink];
+  gui_rect[buf, w, h, x, y, scale, scale, ink];
+  => 0;
+)
+
+// Held-Tab tactical scan is a second renderer, not a filter over the normal
+// frame. It projects only checked sector edges, then reuses the indexed sprite
+// kernel with a prebuilt phosphor palette. No wall, flat or sky texel is read.
+op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
+                                      player_x, player_y, angle, pitch,
+                                      combat, world, steps, blocked] (
+  if ((w > 0) and (h > 0) and
+      (bytes_len[buf] >= w * h * 4) and
+      (bytes_len[buf] % (w * 4) == 0)) () else (
+    fall "doom_view_draw_scan: buffer dimensions disagree";
+  )
+  if ((work\width == w) and (work\height == h) and
+      (bytes_len[work\depth] == w * h * 4) and
+      (bytes_len[work\stamp] == w * h) and
+      (buf_len[work\sprite_command] ==
+       raster_masked_indexed_lit_depth_sprite_command_words[]) and
+      (buf_len[work\scan_rgbx_colours] == 8192)) () else (
+    fall "doom_view_draw_scan: work buffers disagree with the frame";
+  )
+  doom_combat_validate[map, combat];
+  let bank = map\texture_bank;
+  if ((bank\ready == 1) and (bank\sprite_ready == 1)) () else (
+    fall "doom_view_draw_scan: checked texture and sprite banks required";
+  )
+
+  let wall_frame = work\frame + 1;
+  if (wall_frame > 255) (
+    doom_view_zero_bytes[work\stamp];
+    wall_frame = 1;
+  )
+  work\frame = wall_frame;
+  work\light_amp = 0;
+  doom_view_fill_rows[buf, w, h, 0, h, gui_rgb[3, 8, 6]];
+
+  let direction = trig_sincos[angle];
+  let sine = direction\sin;
+  let cosine = direction\cos;
+  let q31 = 2147483648;
+  let focal = w * 3 / 4;
+  let centre_x = w / 2;
+  let centre_y = doom_view_horizon_y[h, pitch];
+  let view_z = world\player_z + 41;
+  let bright = gui_rgb[66, 255, 130];
+  let medium = gui_rgb[34, 176, 88];
+  let dim = gui_rgb[18, 92, 52];
+  let walls = 0;
+  let panels = 0;
+  let columns = 0;
+  let seg = 0;
+  while (seg < map\seg_count) (
+    let gb = seg * 6;
+    let va = buf_get[map\segs, gb] * 2;
+    let vb = buf_get[map\segs, gb + 1] * 2;
+    let ax = buf_get[map\vertices, va];
+    let ay = buf_get[map\vertices, va + 1];
+    let bx = buf_get[map\vertices, vb];
+    let by = buf_get[map\vertices, vb + 1];
+    let adx = ax - player_x;
+    let ady = ay - player_y;
+    let bdx = bx - player_x;
+    let bdy = by - player_y;
+    let z1 = (adx * cosine + ady * sine) / q31;
+    let z2 = (bdx * cosine + bdy * sine) / q31;
+    let lateral1 = (ady * cosine - adx * sine) / q31;
+    let lateral2 = (bdy * cosine - bdx * sine) / q31;
+    let near = 8;
+    if ((z1 >= near) or (z2 >= near)) (
+      if (z1 < near) (
+        lateral1 = lateral1 +
+          (lateral2 - lateral1) * (near - z1) / (z2 - z1);
+        z1 = near;
+      )
+      if (z2 < near) (
+        lateral2 = lateral2 +
+          (lateral1 - lateral2) * (near - z2) / (z1 - z2);
+        z2 = near;
+      )
+      let sx1 = centre_x - lateral1 * focal / z1;
+      let sx2 = centre_x - lateral2 * focal / z2;
+      if ((sx1 < sx2) and (sx2 >= 0) and (sx1 < w)) (
+        let front = buf_get[map\segs, gb + 4];
+        let back = buf_get[map\segs, gb + 5];
+        let front_floor = buf_get[map\sectors, front * 5];
+        let front_ceiling = buf_get[map\sectors, front * 5 + 1];
+        let top1 = centre_y - (front_ceiling - view_z) * focal / z1;
+        let top2 = centre_y - (front_ceiling - view_z) * focal / z2;
+        let bottom1 = centre_y - (front_floor - view_z) * focal / z1;
+        let bottom2 = centre_y - (front_floor - view_z) * focal / z2;
+        let colour = bright;
+        if (back >= 0) ( colour = medium; )
+        columns = columns + doom_view_draw_scan_edge[
+          buf, w, h, sx1, top1, sx2, top2, colour
+        ];
+        columns = columns + doom_view_draw_scan_edge[
+          buf, w, h, sx1, bottom1, sx2, bottom2, colour
+        ];
+        columns = columns + doom_view_draw_scan_edge[
+          buf, w, h, sx1, top1, sx1, bottom1, colour
+        ];
+        columns = columns + doom_view_draw_scan_edge[
+          buf, w, h, sx2, top2, sx2, bottom2, colour
+        ];
+        panels = panels + 1;
+        walls = walls + 1;
+        if (back >= 0) (
+          let back_floor = buf_get[map\sectors, back * 5];
+          let back_ceiling = buf_get[map\sectors, back * 5 + 1];
+          let back_top1 = centre_y - (back_ceiling - view_z) * focal / z1;
+          let back_top2 = centre_y - (back_ceiling - view_z) * focal / z2;
+          let back_bottom1 = centre_y - (back_floor - view_z) * focal / z1;
+          let back_bottom2 = centre_y - (back_floor - view_z) * focal / z2;
+          columns = columns + doom_view_draw_scan_edge[
+            buf, w, h, sx1, back_top1, sx2, back_top2, dim
+          ];
+          columns = columns + doom_view_draw_scan_edge[
+            buf, w, h, sx1, back_bottom1, sx2, back_bottom2, dim
+          ];
+        )
+      )
+    )
+    seg = seg + 1;
+  )
+
+  let palette = work\scan_rgbx_colours;
+  let visible_enemies = doom_view_draw_combat_enemies[
+    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, 1, palette
+  ];
+  let visible_combat_items = doom_view_draw_combat_items[
+    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, 1, palette
+  ];
+  doom_view_draw_projectiles[
+    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, 1, palette
+  ];
+  let visible_props = doom_view_draw_props[
+    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, 1, palette
+  ];
+  let visible_pickups = doom_view_draw_pickups[
+    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, 1, palette
+  ];
+  doom_view_draw_teleport_fog[
+    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    sine, cosine, focal, work, wall_frame, palette
+  ];
+  doom_view_draw_scan_reticle[buf, w, h];
+  let text_scale = w / 320;
+  if (text_scale < 1) ( text_scale = 1; )
+  gui_text_scaled[
+    buf, w, h, font, 8 * text_scale, 8 * text_scale,
+    "TACTICAL SCAN", gui_rgb[96, 255, 154], text_scale
+  ];
+  => {
+    subsectors: map\subsector_count, walls: walls, panels: panels,
+    columns: columns, visible_enemies: visible_enemies,
+    player_sector: doom_map_point_sector[map, player_x, player_y],
+    textured: 0, plane_samples: 0, plane_gaps: 0,
+    health: combat\health, ammo: combat\ammo,
+    combat: 1, visible_pickups: visible_pickups,
+    visible_props: visible_props,
+    visible_combat_items: visible_combat_items,
+    exited: world\exited
+  };
+)
+
 // The shared draw core is a complete software-raster transaction. `work` owns
 // reusable numeric scratch/depth storage, while `buf` is the only result that
 // crosses into the presenter. No WAD bytes are parsed here: map geometry and
@@ -1973,6 +2448,10 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
   // that will immediately be covered. Requiring complete same-width rows
   // keeps the larger measured buffer coherent; every draw remains bounded by
   // this operation's explicit `h`.
+  let expected_masked_wall_capacity = map\seg_count;
+  if (expected_masked_wall_capacity > 64) (
+    expected_masked_wall_capacity = 64;
+  )
   if ((w > 0) and (h > 0) and
       (bytes_len[buf] >= w * h * 4) and
       (bytes_len[buf] % (w * 4) == 0)) () else (
@@ -1993,6 +2472,16 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
       (bytes_len[work\ceiling_clip] == w * 4) and
       (bytes_len[work\floor_clip] == w * 4) and
       (bytes_len[work\sprite_x] == w * 4) and
+      (buf_len[work\sprite_command] ==
+       raster_masked_indexed_lit_depth_sprite_command_words[]) and
+      (buf_len[work\sky_commands] ==
+       raster_masked_indexed_depth_span_batch_header_words[] +
+         w * raster_masked_indexed_depth_span_command_words[]) and
+      (work\masked_wall_capacity == expected_masked_wall_capacity) and
+      (buf_len[work\masked_wall_commands] ==
+       raster_masked_indexed_lit_depth_panel_header_words[] +
+         expected_masked_wall_capacity *
+           raster_masked_indexed_lit_depth_panel_command_words[]) and
       (work\visplane_limit == map\subsector_count * 2) and
       (bytes_len[work\visplane_stamp] == work\visplane_limit * w) and
       (bytes_len[work\visplane_top] == work\visplane_limit * w * 4) and
@@ -2026,7 +2515,11 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
     work\visplane_count = 0;
     work\wall_command_count = 0;
     work\wall_drawn = 0;
+    work\masked_wall_command_count = 0;
+    work\masked_wall_drawn = 0;
     work\wall_commands@0 = 0;
+    work\wall_modulo_commands@0 = 0;
+    work\masked_wall_commands@0 = 0;
     let clip_x = 0;
     while (clip_x < w) (
       ceiling_clip@clip_x = 0 - 1;
@@ -2041,6 +2534,12 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
     work\wall_commands@1 = w;
     work\wall_commands@2 = h;
     work\wall_commands@3 = centre_y;
+    work\wall_modulo_commands@1 = w;
+    work\wall_modulo_commands@2 = h;
+    work\wall_modulo_commands@3 = centre_y;
+    work\masked_wall_commands@1 = w;
+    work\masked_wall_commands@2 = h;
+    work\masked_wall_commands@3 = centre_y;
   )
   // A complete deterministic backdrop prevents stale prior-frame texels.
   // Tests may additionally opt into the expensive `plane_gaps` accounting.
@@ -2135,12 +2634,18 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
           let back = buf_get[map\segs, gb + 5];
           let front_floor = buf_get[map\sectors, front * 5];
           let front_ceiling = buf_get[map\sectors, front * 5 + 1];
+          let portal_visible = 1;
           if ((textured == 1) and (map\texture_bank\ready == 1)) (
-            doom_view_mark_front_planes[
-              w, h, centre_y, map, work, wall_frame,
-              subsector, subsector_front, back,
-              sx1, sx2, z1, z2, view_z, focal
+            portal_visible = doom_view_span_has_open_portal[
+              w, work, sx1, sx2
             ];
+            if (portal_visible == 1) (
+              doom_view_mark_front_planes[
+                w, h, centre_y, map, work, wall_frame,
+                subsector, subsector_front, back,
+                sx1, sx2, z1, z2, view_z, focal
+              ];
+            )
           )
           let light = buf_get[map\sectors, front * 5 + 2];
           if (work\light_amp == 1) ( light = 255; )
@@ -2149,7 +2654,7 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
           let lower_texture = buf_get[map\side_textures, side_base + 1];
           let middle_texture = buf_get[map\side_textures, side_base + 2];
           walls = walls + 1;
-          if (back < 0) (
+          if ((portal_visible == 1) and (back < 0)) (
             let middle_anchor = front_ceiling + row_offset;
             if ((flags / 16) % 2 == 1) (
               middle_anchor = front_floor +
@@ -2163,9 +2668,15 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
               doom_view_wall_colour[light, 0], 1, 1
             ];
             if (drawn > 0) ( panels = panels + 1; columns = columns + drawn; )
-          ) else (
+          )
+          if ((portal_visible == 1) and (back >= 0)) (
             let back_floor = buf_get[map\sectors, back * 5];
             let back_ceiling = buf_get[map\sectors, back * 5 + 1];
+            let both_sky =
+              ((map\sector_flats)@(front * 2 + 1) ==
+               map\texture_bank\sky_flat) and
+              ((map\sector_flats)@(back * 2 + 1) ==
+               map\texture_bank\sky_flat);
             let opening_floor = front_floor;
             if (back_floor > opening_floor) ( opening_floor = back_floor; )
             let opening_ceiling = front_ceiling;
@@ -2183,7 +2694,8 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
               ];
               if (drawn > 0) ( panels = panels + 1; columns = columns + drawn; )
             ) else (
-              if ((back_ceiling < front_ceiling) and
+              if ((both_sky == 0) and
+                  (back_ceiling < front_ceiling) and
                   (upper_texture >= 0)) (
                 let upper_anchor = back_ceiling +
                   doom_view_texture_height[map\texture_bank, upper_texture] +
@@ -2245,6 +2757,10 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
   )
 
   if ((textured == 1) and (map\texture_bank\ready == 1)) (
+    // Preserve the established masked-middle tie order: these surfaces were
+    // formerly drawn during traversal before the final opaque/plane flush.
+    // Batching changes the transition count, not equal-depth ownership.
+    doom_view_flush_masked_wall_commands[buf, map\texture_bank, work];
     doom_view_flush_wall_commands[buf, map\texture_bank, work];
     let plane_result = doom_view_draw_planes[
       buf, w, h, centre_y, map, work, wall_frame,
@@ -2262,20 +2778,24 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
   if (combat_mode == 1) (
     visible_enemies = doom_view_draw_combat_enemies[
       buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
     visible_combat_items = doom_view_draw_combat_items[
       buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
     doom_view_draw_projectiles[
       buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
   ) else (
     visible_enemies = doom_view_draw_enemies[
       buf, w, h, centre_y, map, alive, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
   )
 
@@ -2286,16 +2806,19 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
     exited = world\exited;
     visible_props = doom_view_draw_props[
       buf, w, h, centre_y, map, world, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
     visible_pickups = doom_view_draw_pickups[
       buf, w, h, centre_y, map, world, player_x, player_y, view_z,
-      sine, cosine, focal, work, wall_frame, textured
+      sine, cosine, focal, work, wall_frame, textured,
+      map\texture_bank\rgbx_colours
     ];
     if ((textured == 1) and (map\texture_bank\sprite_ready == 1)) (
       doom_view_draw_teleport_fog[
         buf, w, h, centre_y, map, world,
-        player_x, player_y, view_z, sine, cosine, focal, work, wall_frame
+        player_x, player_y, view_z, sine, cosine, focal, work, wall_frame,
+        map\texture_bank\rgbx_colours
       ];
     )
   )

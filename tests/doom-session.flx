@@ -1,0 +1,114 @@
+// One presenter-independent application transaction owns input folding,
+// movement, jump/world scheduling and close lifecycle.
+
+credits: <../games/doom-session.flx> <f/buffers> <f/bytes> <f/gui>;
+
+op expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom session expectation failed";
+  )
+)
+
+let line_count = 3;
+let vertices = %32[
+  40, 0, 40, 100,
+  80, 0, 80, 100,
+  120, 0, 120, 100
+];
+let lines = %32[
+  0, 1, 0, 4,
+  2, 3, 1, 4,
+  4, 5, 0, 4
+];
+let line_sides = %32[
+  0, 0, 0, 1,
+  0, 0, 2, 1,
+  0, 0, 0, 0 - 1
+];
+let line_actions = %32[
+  1, 0,
+  0, 0,
+  11, 0
+];
+let map = {
+  ok: 1, error: "", name: "WORLD",
+  vertices: vertices, vertex_count: 6,
+  lines: lines, line_count: line_count,
+  line_sides: line_sides, line_actions: line_actions,
+  side_count: 1, sides: %32[0, 0, 0],
+  side_textures: %32[0 - 1, 0 - 1, 0 - 1],
+  sector_flats: %32[0, 0, 0, 0, 0, 0],
+  texture_bank: {
+    ready: 0, texture_count: 0,
+    texture_names: bytes_new[0], texture_meta: %32[]
+  },
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    0, 0, 160, 0, 0,
+    0, 96, 160, 0, 0
+  ],
+  sector_count: 3,
+  things: %32[0, 50, 1, 7], thing_angles: %32[0], thing_count: 1,
+  player_x: 0, player_y: 50, player_angle: 0,
+  min_x: 0, max_x: 160, min_y: 0, max_y: 100,
+  bsp_ready: 1, node_count: 0, nodes: %32[],
+  subsector_count: 1, subsectors: %32[0, 0, 0]
+};
+
+let state = doom_session_new[map, [], 0, 0, 0, 0, ["WORLD"]];
+expect[
+  (state\player_x == 0) and (state\player_y == 50) and
+  (state\running == 1) and (state\frame_index == 0),
+  "initial state comes entirely from the checked map"
+];
+
+// Protocol-v3 state records, not a web-private held table, drive movement.
+let held_w = [
+  { kind: gui_ev_input_state[], a: 1, b: 3, mods: 0 },
+  { kind: gui_ev_key_held[], a: 119, b: 0, mods: 0 }
+];
+state = doom_session_step[state, held_w, 1];
+expect[
+  (state\player_x == 8) and (state\player_y == 50) and
+  (state\steps == 1) and (state\transition_frame == 0),
+  "one shared frame folds held W and resolves checked movement"
+];
+
+// A new authoritative snapshot without KEY_HELD clears forward motion.
+let idle = [{ kind: gui_ev_input_state[], a: 2, b: 3, mods: 0 }];
+state = doom_session_step[state, idle, 1];
+expect[
+  (state\player_x == 8) and (state\steps == 1) and
+  (state\frame_index == 2),
+  "authoritative held snapshots replace rather than accumulate state"
+];
+
+// Jump is edge-triggered, while subsequent vertical/world progress does not
+// depend on another key or on a presenter-specific timer branch.
+let jump = [
+  { kind: gui_ev_key_down[], a: 32, b: 0, mods: 0 },
+  { kind: gui_ev_input_state[], a: 3, b: 3, mods: 0 },
+  { kind: gui_ev_key_held[], a: 32, b: 0, mods: 0 }
+];
+state = doom_session_step[state, jump, 1];
+let jump_z = state\world\player_z;
+expect[
+  (state\jump_requested == 1) and (state\jump_result == 1) and
+  (state\world\grounded == 0) and (jump_z > 0),
+  "jump enters the ordinary world vertical state"
+];
+state = doom_session_step[state, idle, 1];
+expect[
+  state\world\player_z > jump_z,
+  "an idle presenter frame still advances the same world tick"
+];
+
+let close = [{ kind: gui_ev_close[], a: 0, b: 0, mods: 0 }];
+state = doom_session_step[state, close, 1];
+expect[
+  (state\running == 0) and (state\frame_index == 5),
+  "close is lifecycle input to the shared transition"
+];
+
+print "doom session step ok";

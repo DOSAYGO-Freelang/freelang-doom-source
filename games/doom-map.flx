@@ -648,6 +648,216 @@ op doom_map_load [path, selector] (
   ];
 )
 
+// Reduced-authority companion for browser and embedded callers that already
+// own a measured WAD. It reuses the exact directory, record and geometry
+// proofs above; no synthetic filename or filesystem-shaped host callback is
+// introduced for an in-memory value.
+private op doom_map_bytes_range [wad, offset, count] (
+  let file_bytes = bytes_len[wad];
+  if ((offset >= 0) and (count >= 0) and
+      (offset <= file_bytes) and (count <= file_bytes - offset)) (
+    => bytes_slice[wad, offset, count];
+  )
+  => bytes_new[0];
+)
+
+// Browser map presentation uses one bounded availability table: 81 ExMy slots
+// followed by MAP01..MAP99.  The table is derived inside Freelang from complete
+// classic namespaces; the DOM host receives only numeric availability queries,
+// never WAD directory bytes or lump names.
+private op doom_map_catalog_result [ok, error, available] (
+  => { ok: ok, error: error, available: available };
+)
+
+private op doom_map_catalog_slot_at [directory, index] (
+  let base = index * 16 + 8;
+  let c0 = bytes_get[directory, base];
+  let c1 = bytes_get[directory, base + 1];
+  let c2 = bytes_get[directory, base + 2];
+  let c3 = bytes_get[directory, base + 3];
+  let c4 = bytes_get[directory, base + 4];
+  let c5 = bytes_get[directory, base + 5];
+  let c6 = bytes_get[directory, base + 6];
+  let c7 = bytes_get[directory, base + 7];
+  if ((c0 == 69) and (c1 >= 49) and (c1 <= 57) and
+      (c2 == 77) and (c3 >= 49) and (c3 <= 57) and
+      (c4 == 0) and (c5 == 0) and (c6 == 0) and (c7 == 0)) (
+    => (c1 - 49) * 9 + (c3 - 49);
+  )
+  if ((c0 == 77) and (c1 == 65) and (c2 == 80) and
+      (c3 >= 48) and (c3 <= 57) and
+      (c4 >= 48) and (c4 <= 57) and
+      (c5 == 0) and (c6 == 0) and (c7 == 0)) (
+    let number = (c3 - 48) * 10 + (c4 - 48);
+    if ((number >= 1) and (number <= 99)) ( => 81 + number - 1; )
+  )
+  => 0 - 1;
+)
+
+op doom_map_catalog_slot_from_code [code] (
+  if ((code >= 111) and (code <= 199)) (
+    let episode = (code - 100) / 10;
+    let map_number = code % 10;
+    if ((episode >= 1) and (episode <= 9) and
+        (map_number >= 1) and (map_number <= 9)) (
+      => (episode - 1) * 9 + map_number - 1;
+    )
+  )
+  if ((code >= 1001) and (code <= 1099)) ( => 81 + code - 1001; )
+  => 0 - 1;
+)
+
+op doom_map_code_from_catalog_slot [slot] (
+  if ((slot >= 0) and (slot < 81)) (
+    => 100 + (slot / 9 + 1) * 10 + (slot % 9 + 1);
+  )
+  if ((slot >= 81) and (slot < 180)) ( => 1001 + slot - 81; )
+  => 0;
+)
+
+op doom_map_selector_from_code [code] (
+  let slot = doom_map_catalog_slot_from_code[code];
+  if ((slot >= 0) and (slot < 81)) (
+    => "E^{slot / 9 + 1}M^{slot % 9 + 1}";
+  )
+  if ((slot >= 81) and (slot < 180)) (
+    let number = slot - 81 + 1;
+    if (number < 10) ( => "MAP0^{number}"; )
+    => "MAP^{number}";
+  )
+  => "";
+)
+
+op doom_map_catalog_bytes [wad] (
+  let available = bytes_new[180];
+  let ai = 0;
+  while (ai < 180) ( bytes_set[available, ai, 0]; ai = ai + 1; )
+  if (is_bytes[wad] == 1) () else (
+    => doom_map_catalog_result[0, "WAD source is not bytes", available];
+  )
+  let file_bytes = bytes_len[wad];
+  let header = doom_map_bytes_range[wad, 0, 12];
+  if (bytes_len[header] == 12) () else (
+    => doom_map_catalog_result[0, "short WAD header read", available];
+  )
+  if (((bytes_get[header, 0] == 73) or (bytes_get[header, 0] == 80)) and
+      (bytes_get[header, 1] == 87) and (bytes_get[header, 2] == 65) and
+      (bytes_get[header, 3] == 68)) () else (
+    => doom_map_catalog_result[0, "bad WAD magic", available];
+  )
+  let lump_count = doom_wad_u32le[header, 4];
+  let directory_offset = doom_wad_u32le[header, 8];
+  if (lump_count <= 65536) () else (
+    => doom_map_catalog_result[0, "directory exceeds 65536 lumps", available];
+  )
+  let directory_bytes = lump_count * 16;
+  if ((directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => doom_map_catalog_result[0, "WAD directory exceeds measured bytes", available];
+  )
+  let directory = doom_map_bytes_range[
+    wad, directory_offset, directory_bytes
+  ];
+  if (bytes_len[directory] == directory_bytes) () else (
+    => doom_map_catalog_result[0, "short WAD directory read", available];
+  )
+  let i = 0;
+  while (i < lump_count) (
+    let slot = doom_map_catalog_slot_at[directory, i];
+    if ((slot >= 0) and
+        (doom_map_namespace_complete[directory, lump_count, i] == 1)) (
+      bytes_set[available, slot, 1];
+    )
+    i = i + 1;
+  )
+  => doom_map_catalog_result[1, "", available];
+)
+
+op doom_map_load_bytes [wad, selector] (
+  let file_bytes = bytes_len[wad];
+  let header = doom_map_bytes_range[wad, 0, 12];
+  if (bytes_len[header] == 12) () else ( => doom_map_error["short WAD header read"]; )
+  if (((bytes_get[header, 0] == 73) or (bytes_get[header, 0] == 80)) and
+      (bytes_get[header, 1] == 87) and (bytes_get[header, 2] == 65) and
+      (bytes_get[header, 3] == 68)) () else ( => doom_map_error["bad WAD magic"]; )
+  let lump_count = doom_wad_u32le[header, 4];
+  let directory_offset = doom_wad_u32le[header, 8];
+  if (lump_count <= 65536) () else ( => doom_map_error["directory exceeds 65536 lumps"]; )
+  let directory_bytes = lump_count * 16;
+  if ((directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => doom_map_error["WAD directory exceeds measured bytes"];
+  )
+  let directory = doom_map_bytes_range[
+    wad, directory_offset, directory_bytes
+  ];
+  if (bytes_len[directory] == directory_bytes) () else (
+    => doom_map_error["short WAD directory read"];
+  )
+  let marker = 0 - 1;
+  let i = 0;
+  while (i < lump_count) (
+    if (string_eq[doom_wad_name[directory, i], selector] == 1) ( marker = i; )
+    i = i + 1;
+  )
+  if (marker >= 0) () else ( => doom_map_error["map marker ^{selector} was not found"]; )
+  if (doom_map_namespace_complete[directory, lump_count, marker] == 1) () else (
+    => doom_map_error["map marker is not followed by a classic namespace"];
+  )
+  let things = doom_map_directory_entry[directory, marker + 1];
+  let linedefs = doom_map_directory_entry[directory, marker + 2];
+  let sidedefs = doom_map_directory_entry[directory, marker + 3];
+  let vertices = doom_map_directory_entry[directory, marker + 4];
+  let segs = doom_map_directory_entry[directory, marker + 5];
+  let subsectors = doom_map_directory_entry[directory, marker + 6];
+  let nodes = doom_map_directory_entry[directory, marker + 7];
+  let sectors = doom_map_directory_entry[directory, marker + 8];
+  if (vertices\bytes <= 65536 * 4) () else ( => doom_map_error["VERTEXES exceeds 65536 entries"]; )
+  if (linedefs\bytes <= 65536 * 14) () else ( => doom_map_error["LINEDEFS exceeds 65536 entries"]; )
+  if (things\bytes <= 65536 * 10) () else ( => doom_map_error["THINGS exceeds 65536 entries"]; )
+  if (sidedefs\bytes <= 65536 * 30) () else ( => doom_map_error["SIDEDEFS exceeds 65536 entries"]; )
+  if (segs\bytes <= 65536 * 12) () else ( => doom_map_error["SEGS exceeds 65536 entries"]; )
+  if (subsectors\bytes <= 32768 * 4) () else ( => doom_map_error["SSECTORS exceeds 32768 entries"]; )
+  if (nodes\bytes <= 32767 * 28) () else ( => doom_map_error["NODES exceeds 32767 entries"]; )
+  if (sectors\bytes <= 65536 * 26) () else ( => doom_map_error["SECTORS exceeds 65536 entries"]; )
+  if ((doom_map_span_fits[vertices, file_bytes] == 1) and
+      (doom_map_span_fits[linedefs, file_bytes] == 1) and
+      (doom_map_span_fits[things, file_bytes] == 1) and
+      (doom_map_span_fits[sidedefs, file_bytes] == 1) and
+      (doom_map_span_fits[segs, file_bytes] == 1) and
+      (doom_map_span_fits[subsectors, file_bytes] == 1) and
+      (doom_map_span_fits[nodes, file_bytes] == 1) and
+      (doom_map_span_fits[sectors, file_bytes] == 1)) () else (
+    => doom_map_error["map lump span exceeds measured WAD bytes"];
+  )
+  let vertex_data = doom_map_bytes_range[wad, vertices\offset, vertices\bytes];
+  let linedef_data = doom_map_bytes_range[wad, linedefs\offset, linedefs\bytes];
+  let thing_data = doom_map_bytes_range[wad, things\offset, things\bytes];
+  let sidedef_data = doom_map_bytes_range[wad, sidedefs\offset, sidedefs\bytes];
+  let seg_data = doom_map_bytes_range[wad, segs\offset, segs\bytes];
+  let subsector_data = doom_map_bytes_range[wad, subsectors\offset, subsectors\bytes];
+  let node_data = doom_map_bytes_range[wad, nodes\offset, nodes\bytes];
+  let sector_data = doom_map_bytes_range[wad, sectors\offset, sectors\bytes];
+  if ((bytes_len[vertex_data] == vertices\bytes) and
+      (bytes_len[linedef_data] == linedefs\bytes) and
+      (bytes_len[thing_data] == things\bytes) and
+      (bytes_len[sidedef_data] == sidedefs\bytes) and
+      (bytes_len[seg_data] == segs\bytes) and
+      (bytes_len[subsector_data] == subsectors\bytes) and
+      (bytes_len[node_data] == nodes\bytes) and
+      (bytes_len[sector_data] == sectors\bytes)) () else (
+    => doom_map_error["short map lump read"];
+  )
+  let base = doom_map_parse[
+    selector, vertex_data, linedef_data, thing_data
+  ];
+  if (base\ok == 1) () else ( => base; )
+  => doom_map_parse_geometry[
+    base, linedef_data, sidedef_data, seg_data,
+    subsector_data, node_data, sector_data
+  ];
+)
+
 op doom_map_node_side [map, x, y, node_index] (
   if ((node_index >= 0) and (node_index < map\node_count)) () else (
     fall "doom_map_node_side: node index outside BSP";

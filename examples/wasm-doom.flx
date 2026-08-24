@@ -1,0 +1,509 @@
+// Local WAD -> checked Freelang parser -> real classic BSP frame -> Canvas.
+//
+// Build:
+//   FREELANG_HEAP_BYTES=128M node freelang.js examples/wasm-doom.flx \
+//     /tmp/wasm-doom --target=wasm --emit=web \
+//     --wasm-export=wasm_frame,wasm_input,wasm_choice_available,wasm_choice_select,wasm_choice_current,wasm_diagnostic \
+//     --wasm-file-handler=wasm_file_loaded \
+//     --wasm-derived-cache-handler=wasm_derived_cache_result
+//
+// JavaScript selects and caches bytes; Freelang validates the archive, loads
+// the selected map plus its complete checked texture/sprite/UI bank, runs the
+// shared native Doom session and owns every world, weapon and status pixel.
+// Canonical speaker-v2 frames cross one separately declared audio authority.
+
+credits: <../games/doom-frame.flx> <../games/doom-session.flx>
+         <../games/doom-audio.flx>
+         <f/wasm> <f/gui> <f/audio> <f/bytes> <f/derived-cache>;
+
+let pixels = gui_buffer[320, 200];
+let font = gui_font[];
+let app = {
+  loaded: 0, width: 320, height: 200, viewport_height: 168,
+  input_trace: 0, input_signature: 0 - 1,
+  wad: bytes_new[0], catalog: bytes_new[0], code: 0,
+  session: 0, events: [], work: 0, status_cache: 0, last_view: 0,
+  audio_ready: 0, audio_clip_count: 0, audio_commands: 0,
+  audio_effects: [], music_skip: 0, music_request_id: 0,
+  music_pending: 0, music_load_map: 0, music_selector: "", music_code: 0,
+  music_prepared: 0,
+  pixels: pixels, font: font
+};
+
+op doom_web_present [] (
+  let state = app;
+  wasm_present[state\pixels, state\width, state\height];
+  => 0;
+) has scope { app }
+
+op doom_web_message [heading, detail, red, green, blue] (
+  let state = app;
+  gui_fill[state\pixels, gui_rgb[12, 10, 14]];
+  gui_text_scaled[
+    state\pixels, state\width, state\height, state\font,
+    (state\width - str_len[heading] * 16) / 2, 67,
+    heading, gui_rgb[red, green, blue], 2
+  ];
+  gui_text[
+    state\pixels, state\width, state\height, state\font,
+    (state\width - str_len[detail] * 8) / 2, 108,
+    detail, gui_rgb[214, 205, 184]
+  ];
+  doom_web_present[];
+  => 0;
+) has scope { app }
+
+op doom_web_draw [] (
+  let state = app;
+  if (state\loaded == 1) (
+    let game = state\session;
+    state\last_view = doom_frame_draw[
+      state\pixels, state\width, state\height, state\viewport_height,
+      state\font,
+      game\play_map, state\work,
+      game\player_x, game\player_y, game\angle, game\pitch,
+      game\alive, game\kills, game\enemies, game\misses,
+      game\steps, game\blocked,
+      1, 1, game\combat, game\world, state\status_cache,
+      0, 0, game\controls, game\ui
+    ];
+    doom_web_present[];
+  )
+  => 0;
+) has scope { app }
+
+op doom_web_emit_sounds [] (
+  let state = app;
+  if ((state\loaded == 0) or (state\audio_ready == 0)) ( => 0; )
+  let commands = state\session\sounds;
+  let i = 0;
+  while (i < arr_len[commands]) (
+    let command = commands\\i;
+    let frame = audio_speaker_v2_play[
+      command\voice, command\clip, 0,
+      command\gain, command\gain, state\audio_clip_count
+    ];
+    if (bytes_len[frame] == 28) (
+      wasm_speaker_frame[frame];
+      state\audio_commands = state\audio_commands + 1;
+    )
+    i = i + 1;
+  )
+  => arr_len[commands];
+) has scope { app }
+
+// Each HELLO begins one ordinary protocol-v2 speaker session. BYE ends the
+// prior session before a new map's immutable bank is installed. Clip zero is
+// always the score slot, so every existing semantic effect number is stable.
+op doom_web_replace_audio [score, play_music] (
+  let state = app;
+  if (state\audio_ready == 1) (
+    wasm_speaker_frame[audio_speaker_bye[]];
+    state\audio_ready = 0;
+    state\audio_clip_count = 0;
+  )
+  let clips = [score] + state\audio_effects;
+  let hello = audio_speaker_v2_hello_checked[clips];
+  if (hello\ok == 1) () else (
+    print "wasm-doom: speaker bank unavailable: ^{hello\error}; continuing silent";
+    => 0;
+  )
+  wasm_speaker_frame[hello\frame];
+  state\audio_ready = 1;
+  state\audio_clip_count = arr_len[clips];
+  if (play_music == 1) (
+    let start = audio_speaker_v2_play[0, 0, 1, 176, 176, arr_len[clips]];
+    if (bytes_len[start] == 28) ( wasm_speaker_frame[start]; )
+  )
+  => 1;
+) has scope { app }
+
+// Map switching is an atomic cold-load transaction. The old world remains
+// live until the new geometry, textures, world state and renderer work have all
+// passed their checks and allocations.
+op doom_web_load_map [wad, selector, code] (
+  let state = app;
+  let map = doom_map_load_bytes[wad, selector];
+  if (map\ok == 1) () else (
+    print "wasm-doom: rejected WAD: ^{map\error}";
+    => 1;
+  )
+  map = doom_texture_load_map_bytes[wad, map];
+  if (map\ok == 1) () else (
+    print "wasm-doom: rejected texture bank: ^{map\error}";
+    => 1;
+  )
+
+  // Build all reusable renderer work before publishing the new world into the
+  // application capsule. A failed proof cannot leave a half-loaded map live.
+  let session = doom_session_new[map, [], 0, 1, 0, 0, [selector]];
+  if (state\loaded == 1) (
+    session\combat = doom_combat_carry_inventory[
+      session\play_map, session\combat,
+      state\session\play_map, state\session\combat
+    ];
+    session\alive = session\combat\alive;
+  )
+  let viewport_height = state\height - 32 * state\height / 200;
+  let work = doom_view_work_sized[
+    session\play_map, state\width, viewport_height
+  ];
+  let status_cache = doom_ui_status_cache_new[
+    state\width, state\height, session\play_map\texture_bank
+  ];
+  state\wad = wad;
+  state\code = code;
+  state\session = session;
+  state\events = [];
+  state\work = work;
+  state\status_cache = status_cache;
+  state\viewport_height = viewport_height;
+  state\loaded = 1;
+  doom_web_draw[];
+  print "wasm-doom: parsed ^{selector} and rendered its textured BSP";
+  => 0;
+) has scope { app }
+
+private op doom_web_finish_music [score, play_music, cache_label] (
+  let state = app;
+  let selector = state\music_selector;
+  let code = state\music_code;
+  let load_map = state\music_load_map;
+  state\music_pending = 0;
+  state\music_load_map = 0;
+  state\music_prepared = 0;
+  if ((load_map == 1) and (doom_web_load_map[state\wad, selector, code] != 0)) (
+    doom_web_message["WAD REJECTED", "Selected world could not be loaded", 238, 74, 68];
+    => 1;
+  )
+  doom_web_replace_audio[score, play_music];
+  print "wasm-doom: ^{selector} music ^{cache_label}";
+  => 0;
+) has scope { app }
+
+private op doom_web_music_unavailable [detail] (
+  let state = app;
+  print "wasm-doom: music unavailable: ^{detail}; continuing with effects";
+  => doom_web_finish_music[doom_audio_silence_wav[], 0, "unavailable"];
+) has scope { app }
+
+// Map loading waits only on the disposable cache transaction. A hit is
+// revalidated by Freelang; a miss renders the exact MUS/GENMIDI inputs here in
+// the Dedicated Worker and publishes the resulting opaque WAV best-effort.
+op doom_web_begin_music [selector, code, load_map] (
+  let state = app;
+  let prepared = doom_audio_prepare_map_opl2_bytes[state\wad, selector];
+  if (prepared\ok == 1) () else (
+    state\music_selector = selector;
+    state\music_code = code;
+    state\music_load_map = load_map;
+    => doom_web_music_unavailable[prepared\error];
+  )
+  state\music_request_id = state\music_request_id + 1;
+  if (state\music_request_id > 2147483647) ( state\music_request_id = 1; )
+  state\music_pending = state\music_request_id;
+  state\music_load_map = load_map;
+  state\music_selector = selector;
+  state\music_code = code;
+  state\music_prepared = prepared;
+  if (load_map == 1) (
+    doom_web_message[
+      "LOADING MUSIC", "Checking the local derived cache for ^{selector}",
+      246, 192, 74
+    ];
+  )
+  let request = derived_cache_get_frame[state\music_pending, prepared\key];
+  if (bytes_len[request] > 0) (
+    wasm_derived_cache_frame[request];
+    => 0;
+  )
+  => doom_web_music_unavailable["invalid derived-cache key"];
+) has scope { app }
+
+op wasm_derived_cache_result [frame] (
+  let state = app;
+  let response = derived_cache_inspect_response[frame];
+  if ((response\ok == 1) and (state\music_pending > 0) and
+      (response\request_id == state\music_pending)) () else ( => 1; )
+  let prepared = state\music_prepared;
+  if ((response\hit == 1) and
+      (doom_audio_cache_wav_valid[response\value, prepared\samples] == 1)) (
+    => doom_web_finish_music[response\value, 1, "loaded from browser cache"];
+  )
+  if (state\music_load_map == 1) (
+    doom_web_message[
+      "GENERATING MUSIC", "Synthesizing ^{state\music_selector} GENMIDI FM audio",
+      246, 192, 74
+    ];
+  )
+  let rendered = doom_audio_render_prepared_opl2[prepared];
+  if (rendered\ok == 1) () else ( => doom_web_music_unavailable[rendered\error]; )
+  if (doom_audio_cache_wav_valid[rendered\wav, prepared\samples] == 1) (
+    let publish = derived_cache_put_frame[
+      state\music_pending, prepared\key, rendered\wav
+    ];
+    if (bytes_len[publish] > 0) ( wasm_derived_cache_frame[publish]; )
+  )
+  => doom_web_finish_music[rendered\wav, 1, "generated in Freelang WASM"];
+) has scope { app }
+
+private op doom_web_begin_map [wad, selector, code] (
+  let state = app;
+  state\wad = wad;
+  if (state\music_skip == 1) (
+    if (doom_web_load_map[wad, selector, code] == 0) (
+      if (state\audio_ready == 0) (
+        doom_web_replace_audio[doom_audio_silence_wav[], 0];
+      )
+      => 0;
+    )
+    => 1;
+  )
+  => doom_web_begin_music[selector, code, 1];
+) has scope { app }
+
+// Explicit byte-ingress handler selected by --wasm-file-handler. The compiler
+// gives this operation one rooted canonical bytes value only after the host's
+// measured copy has committed. The app intentionally retains that measured
+// value so later map selection remains an in-module transaction.
+op wasm_file_loaded [wad] (
+  let state = app;
+  let catalog = doom_map_catalog_bytes[wad];
+  if (catalog\ok == 1) () else (
+    print "wasm-doom: rejected WAD catalog: ^{catalog\error}";
+    doom_web_message["WAD REJECTED", "Map directory could not be loaded", 238, 74, 68];
+    => 1;
+  )
+  let slot = 0;
+  while ((slot < bytes_len[catalog\available]) and
+         (bytes_get[catalog\available, slot] == 0)) (
+    slot = slot + 1;
+  )
+  if (slot < bytes_len[catalog\available]) () else (
+    print "wasm-doom: WAD has no complete classic map namespace";
+    doom_web_message["WAD REJECTED", "No classic maps were found", 238, 74, 68];
+    => 1;
+  )
+  let code = doom_map_code_from_catalog_slot[slot];
+  let selector = doom_map_selector_from_code[code];
+  state\catalog = catalog\available;
+  state\wad = wad;
+  doom_web_message[
+    "LOADING AUDIO", "Preparing the canonical effect bank", 246, 192, 74
+  ];
+  let effects = doom_audio_render_effects_bytes[wad];
+  if (effects\ok == 1) (
+    state\audio_effects = effects\wavs;
+    print "wasm-doom: admitted ^{arr_len[effects\wavs]} canonical PCM effects";
+  ) else (
+    state\audio_effects = [];
+    print "wasm-doom: effects unavailable: ^{effects\error}; continuing without effects";
+  )
+  // A newly selected archive owns a newly derived effect bank. If music is
+  // skipped, install that bank now instead of retaining clips from the prior
+  // WAD; normal music startup installs the same effects with its score later.
+  if (state\music_skip == 1) (
+    doom_web_replace_audio[doom_audio_silence_wav[], 0];
+  )
+  if (doom_web_begin_map[wad, selector, code] == 0) ( => 0; )
+  doom_web_message[
+    "WAD REJECTED", "First world texture bank could not be loaded", 238, 74, 68
+  ];
+  => 1;
+) has scope { app }
+
+op wasm_choice_available [control, value] (
+  let state = app;
+  if (control == 1) (
+    let slot = doom_map_catalog_slot_from_code[value];
+    if ((state\loaded == 1) and (state\music_pending == 0) and (slot >= 0) and
+        (slot < bytes_len[state\catalog])) (
+      => bytes_get[state\catalog, slot];
+    )
+  )
+  if (control == 2) (
+    if ((value == 320) or (value == 640) or
+        (value == 960) or (value == 1280)) ( => 1; )
+  )
+  if ((control == 3) and ((value == 0) or (value == 1))) ( => 1; )
+  => 0;
+) has scope { app }
+
+op wasm_choice_current [control] (
+  if (control == 1) ( => app\code; )
+  if (control == 2) ( => app\width; )
+  if (control == 3) ( => app\music_skip; )
+  => 0;
+) has scope { app }
+
+op wasm_choice_select [control, value] (
+  let state = app;
+  if ((control == 1) and (wasm_choice_available[control, value] == 1)) (
+    let selector = doom_map_selector_from_code[value];
+    if (doom_web_begin_map[state\wad, selector, value] == 0) ( => value; )
+    => state\code;
+  )
+  if ((control == 2) and (wasm_choice_available[control, value] == 1)) (
+    if (value == state\width) ( => value; )
+    let height = value * 5 / 8;
+    let viewport_height = height - 32 * height / 200;
+    let next_pixels = gui_buffer[value, height];
+    let next_work = state\work;
+    let next_status_cache = state\status_cache;
+    if (state\loaded == 1) (
+      next_work = doom_view_work_sized[
+        state\session\play_map, value, viewport_height
+      ];
+      next_status_cache = doom_ui_status_cache_new[
+        value, height, state\session\play_map\texture_bank
+      ];
+    )
+    state\pixels = next_pixels;
+    state\width = value;
+    state\height = height;
+    state\viewport_height = viewport_height;
+    state\work = next_work;
+    state\status_cache = next_status_cache;
+    if (state\loaded == 1) (
+      doom_web_draw[];
+    ) else (
+      doom_web_message[
+        "FREELANG DOOM", "Choose a local classic IWAD/PWAD", 194, 42, 34
+      ];
+    )
+    print "wasm-doom: logical resolution ^{value}x^{height}";
+    => value;
+  )
+  if ((control == 3) and (wasm_choice_available[control, value] == 1)) (
+    if (value == state\music_skip) ( => value; )
+    state\music_skip = value;
+    if (value == 1) (
+      let pending_load = state\music_load_map;
+      let pending_selector = state\music_selector;
+      let pending_code = state\music_code;
+      state\music_pending = 0;
+      state\music_load_map = 0;
+      state\music_prepared = 0;
+      if (pending_load == 1) (
+        doom_web_load_map[state\wad, pending_selector, pending_code];
+      )
+      doom_web_replace_audio[doom_audio_silence_wav[], 0];
+      print "wasm-doom: music skipped; effects remain active";
+    ) else if (state\loaded == 1) (
+      doom_web_begin_music[
+        doom_map_selector_from_code[state\code], state\code, 0
+      ];
+    )
+    => value;
+  )
+  => wasm_choice_current[control];
+) has scope { app }
+
+op doom_web_trace_input [] (
+  let state = app;
+  if ((state\input_trace == 0) or (state\loaded == 0)) ( => 0; )
+  let game = state\session;
+  let controls = game\controls;
+  let held_w = doom_input_held[controls, 119];
+  let held_s = doom_input_held[controls, 115];
+  let held_a = doom_input_held[controls, 97];
+  let held_d = doom_input_held[controls, 100];
+  let held_left = doom_input_held[controls, gui_key_left[]];
+  let held_right = doom_input_held[controls, gui_key_right[]];
+  let held_use = doom_input_held[controls, 101];
+  let held_jump = doom_input_held[controls, 32];
+  let held_fire = doom_input_fire_held[controls];
+  let signature = controls\focused + controls\captured * 2 +
+    held_w * 4 + held_s * 8 + held_a * 16 + held_d * 32 +
+    held_left * 64 + held_right * 128 + held_use * 256 +
+    held_jump * 512 + held_fire * 1024;
+  if (signature != state\input_signature) (
+    state\input_signature = signature;
+    print "input-freelang frame=^{game\frame_index} epoch=^{controls\input_epoch} focus=^{controls\focused} capture=^{controls\captured} w=^{held_w} s=^{held_s} a=^{held_a} d=^{held_d} left=^{held_left} right=^{held_right} use=^{held_use} jump=^{held_jump} fire=^{held_fire} forward=^{doom_input_forward_axis[controls]} strafe=^{doom_input_strafe_axis[controls]} pos=^{game\player_x},^{game\player_y} angle=^{game\angle}";
+  )
+  => signature;
+) has scope { app }
+
+// A manifest-declared diagnostic toggle. The Worker knows only numeric
+// diagnostic kind 1; all interpretation and game-state reporting stays here.
+op wasm_diagnostic [kind, enabled] (
+  let state = app;
+  if (kind == 1) (
+    state\input_trace = enabled;
+    state\input_signature = 0 - 1;
+  )
+  => state\input_trace;
+) has scope { app }
+
+// Animation scheduling is lifecycle authority only. Every browser frame folds
+// one bounded presenter-protocol batch through the same session operation used
+// by native Doom; the timestamp is retained only as the generated host's
+// lifecycle acknowledgement.
+op wasm_frame [now_ms] (
+  let state = app;
+  if (state\loaded == 1) (
+    state\session = doom_session_step[state\session, state\events, 0];
+    state\events = [];
+    doom_web_emit_sounds[];
+    doom_web_trace_input[];
+    doom_web_draw[];
+  )
+  => now_ms;
+) has scope { app }
+
+// Kind 0 is a read-only Node-oracle query; the presenter never sends it.
+// Kinds 1..13 are the exact finite f/gui presenter records. The web agent
+// batches at most 513 complete records per frame, and no browser event object
+// or callback enters Freelang.
+op wasm_input [kind, a, b, mods] (
+  let state = app;
+  if (kind == 0) (
+    if (a == 21) ( => state\music_skip; )
+    if (a == 22) ( => state\music_pending; )
+    if (a == 23) ( => state\audio_clip_count; )
+  )
+  if ((kind == 0) and (state\loaded == 1)) (
+    let game = state\session;
+    if (a == 0) ( => game\angle; )
+    if (a == 1) ( => game\player_x; )
+    if (a == 2) ( => game\player_y; )
+    if (a == 3) ( => game\world\player_z; )
+    if (a == 4) ( => game\world\grounded; )
+    if (a == 5) ( => game\world\tick; )
+    if (a == 6) ( => game\play_map\texture_bank\sprite_ready; )
+    if (a == 7) ( => game\play_map\texture_bank\ui_ready; )
+    if (a == 8) ( => game\play_map\texture_bank\sprite_loaded; )
+    if (a == 9) ( => game\play_map\texture_bank\ui_slots; )
+    if (a == 10) ( => game\combat\health; )
+    if (a == 11) ( => game\combat\ammo; )
+    if (a == 12) ( => game\combat\enemy_count; )
+    if (a == 13) ( => game\combat\shots; )
+    if (a == 14) ( => state\last_view\visible_enemies; )
+    if (a == 15) ( => state\last_view\visible_pickups; )
+    if (a == 16) ( => state\last_view\visible_props; )
+    if (a == 17) ( => state\last_view\visible_combat_items; )
+    if (a == 18) ( => state\audio_ready; )
+    if (a == 19) ( => state\audio_commands; )
+    if (a == 20) ( => state\last_view\textured; )
+  )
+  if ((state\loaded == 1) and (kind >= gui_ev_key_down[]) and
+      (kind <= gui_ev_key_held[]) and (arr_len[state\events] < 513)) (
+    state\events = state\events + [
+      { kind: kind, a: a, b: b, mods: mods }
+    ];
+  )
+  if (state\loaded == 1) ( => state\session\angle; )
+  => 0;
+) has scope { app }
+
+doom_web_message["FREELANG DOOM", "Choose a local classic IWAD/PWAD", 194, 42, 34];
+// Concrete call reachability plus explicit backend export roots keep the named
+// lifecycle operations independently inspectable in IR.
+wasm_input[0, 0, 0, 0];
+wasm_frame[0];
+wasm_choice_available[0, 0];
+wasm_choice_select[0, 0];
+wasm_choice_current[0];
+wasm_diagnostic[0, 0];
+wasm_derived_cache_result[bytes_new[0]];
+print "wasm-doom: waiting for local WAD bytes";

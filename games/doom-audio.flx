@@ -118,6 +118,50 @@ private op doom_audio_load_sound [path, directory, lump_count,
   => doom_audio_render_sound_lump[sound];
 )
 
+private op doom_audio_load_sound_bytes [wad, directory, lump_count, name] (
+  let lump = doom_audio_find_lump[directory, lump_count, name];
+  if (lump >= 0) () else (
+    => { ok: 0, error: "WAD has no effective ^{name}",
+         wav: bytes_new[0], ticks: 0 };
+  )
+  let offset = doom_wad_u32le[directory, lump * 16];
+  let count = doom_wad_u32le[directory, lump * 16 + 4];
+  let file_bytes = bytes_len[wad];
+  if ((offset <= file_bytes) and (count <= file_bytes - offset)) () else (
+    => { ok: 0, error: "^{name} exceeds WAD bytes",
+         wav: bytes_new[0], ticks: 0 };
+  )
+  => doom_audio_render_sound_lump[bytes_slice[wad, offset, count]];
+)
+
+op doom_audio_effect_names [] (
+  => [
+    "DSSAWFUL", "DSPISTOL", "DSSHOTGN", "DSRLAUNC",
+    "DSITEMUP", "DSWPNUP", "DSDOROPN", "DSDORCLS",
+    "DSSWTCHN", "DSSWTCHX", "DSTELEPT", "DSBAREXP",
+    "DSPLPAIN", "DSPOSIT1", "DSSGTSIT", "DSBGSIT1",
+    "DSSGTATK", "DSCLAW", "DSPOPAIN", "DSDMPAIN",
+    "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD",
+    "DSFIRSHT", "DSFIRXPL", "DSCACSIT", "DSBRSSIT",
+    "DSCYBSIT", "DSSPISIT", "DSSKLATK", "DSCACDTH",
+    "DSBRSDTH", "DSSKLDTH", "DSCYBDTH", "DSSPIDTH",
+    "DSPLASMA", "DSBFG", "DSGETPOW"
+  ];
+)
+
+// SFX-only speakers retain the native mixer's clip numbering by reserving
+// slot zero for a one-sample silent score. This is still canonical PCM and
+// requires no browser-side knowledge of Doom's bank layout.
+op doom_audio_silence_wav [] (
+  let sound = bytes_new[9];
+  doom_audio_put_u16[sound, 0, 3];
+  doom_audio_put_u16[sound, 2, 8000];
+  doom_audio_put_u32[sound, 4, 1];
+  bytes_set[sound, 8, 128];
+  let rendered = doom_audio_render_sound_lump[sound];
+  => rendered\wav;
+)
+
 // Semantic effect slots live beside the stable WAD-lump bank they address.
 // Gameplay emits only weapon/world/actor identities; orchestration never
 // duplicates the numeric clip catalog.
@@ -211,23 +255,47 @@ op doom_audio_render_effects [path] (
   )
   // Stable game-owned order. The general mixer receives only this resulting
   // array of canonical WAV clips and has no knowledge of Doom lump semantics.
-  let names = [
-    "DSSAWFUL", "DSPISTOL", "DSSHOTGN", "DSRLAUNC",
-    "DSITEMUP", "DSWPNUP", "DSDOROPN", "DSDORCLS",
-    "DSSWTCHN", "DSSWTCHX", "DSTELEPT", "DSBAREXP",
-    "DSPLPAIN", "DSPOSIT1", "DSSGTSIT", "DSBGSIT1",
-    "DSSGTATK", "DSCLAW", "DSPOPAIN", "DSDMPAIN",
-    "DSPODTH1", "DSSGTDTH", "DSBGDTH1", "DSRXPLOD",
-    "DSFIRSHT", "DSFIRXPL", "DSCACSIT", "DSBRSSIT",
-    "DSCYBSIT", "DSSPISIT", "DSSKLATK", "DSCACDTH",
-    "DSBRSDTH", "DSSKLDTH", "DSCYBDTH", "DSSPIDTH",
-    "DSPLASMA", "DSBFG", "DSGETPOW"
-  ];
+  let names = doom_audio_effect_names[];
   let wavs = [];
   let i = 0;
   while (i < arr_len[names]) (
     let effect = doom_audio_load_sound[
       path, directory, lump_count, file_bytes, names\\i
+    ];
+    if (effect\ok == 1) () else (
+      => doom_audio_effects_error[effect\error];
+    )
+    wavs = wavs + [effect\wav];
+    i = i + 1;
+  )
+  => { ok: 1, error: "", wavs: wavs };
+)
+
+// In-memory twin of doom_audio_render_effects. Browser-selected WAD authority
+// never becomes a path: Freelang validates directory spans and converts Doom
+// format-3 sound lumps into the same canonical WAV bank used by native Doom.
+op doom_audio_render_effects_bytes [wad] (
+  let file_bytes = bytes_len[wad];
+  if (file_bytes >= 12) () else ( => doom_audio_effects_error["short WAD bytes"]; )
+  let magic = bytes_slice[wad, 0, 4];
+  if ((doom_wad_magic[magic, 73, 87, 65, 68] == 1) or
+      (doom_wad_magic[magic, 80, 87, 65, 68] == 1)) () else (
+    => doom_audio_effects_error["not an IWAD or PWAD"];
+  )
+  let lump_count = doom_wad_u32le[wad, 4];
+  let directory_offset = doom_wad_u32le[wad, 8];
+  let directory_bytes = lump_count * 16;
+  if ((lump_count <= 65536) and (directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => doom_audio_effects_error["invalid WAD directory"];
+  )
+  let directory = bytes_slice[wad, directory_offset, directory_bytes];
+  let names = doom_audio_effect_names[];
+  let wavs = [];
+  let i = 0;
+  while (i < arr_len[names]) (
+    let effect = doom_audio_load_sound_bytes[
+      wad, directory, lump_count, names\\i
     ];
     if (effect\ok == 1) () else (
       => doom_audio_effects_error[effect\error];
@@ -330,6 +398,24 @@ private op doom_audio_load_raw_lump [path, directory, lump_count,
   => { ok: 1, error: "", data: data };
 )
 
+private op doom_audio_load_raw_lump_bytes [wad, directory, lump_count,
+                                           name, maximum] (
+  let lump = doom_audio_find_lump[directory, lump_count, name];
+  if (lump >= 0) () else (
+    => { ok: 0, error: "WAD has no effective ^{name}", data: bytes_new[0] };
+  )
+  let offset = doom_wad_u32le[directory, lump * 16];
+  let count = doom_wad_u32le[directory, lump * 16 + 4];
+  let file_bytes = bytes_len[wad];
+  if ((count > 0) and (count <= maximum)) () else (
+    => { ok: 0, error: "^{name} exceeds its byte bound", data: bytes_new[0] };
+  )
+  if ((offset <= file_bytes) and (count <= file_bytes - offset)) () else (
+    => { ok: 0, error: "^{name} exceeds WAD bytes", data: bytes_new[0] };
+  )
+  => { ok: 1, error: "", data: bytes_slice[wad, offset, count] };
+)
+
 private op doom_audio_opl2_inputs_error [message] (
   => {
     ok: 0, error: message, track: "",
@@ -390,6 +476,51 @@ private op doom_audio_load_map_opl2_inputs [path, map_name] (
   };
 )
 
+// In-memory twin for browser-selected authority. It applies the same
+// last-wins directory policy and exact MUS/GENMIDI bounds without inventing a
+// path or moving archive interpretation into JavaScript.
+op doom_audio_load_map_opl2_inputs_bytes [wad, map_name] (
+  let wanted = doom_audio_track_for_map[map_name];
+  if (str_len[wanted] > 0) () else (
+    => doom_audio_opl2_inputs_error[
+      "no bounded music mapping for ^{map_name}"
+    ];
+  )
+  let file_bytes = bytes_len[wad];
+  if (file_bytes >= 12) () else (
+    => doom_audio_opl2_inputs_error["short WAD bytes"];
+  )
+  let magic = bytes_slice[wad, 0, 4];
+  if ((doom_wad_magic[magic, 73, 87, 65, 68] == 1) or
+      (doom_wad_magic[magic, 80, 87, 65, 68] == 1)) () else (
+    => doom_audio_opl2_inputs_error["not an IWAD or PWAD"];
+  )
+  let lump_count = doom_wad_u32le[wad, 4];
+  let directory_offset = doom_wad_u32le[wad, 8];
+  let directory_bytes = lump_count * 16;
+  if ((lump_count <= 65536) and (directory_offset <= file_bytes) and
+      (directory_bytes <= file_bytes - directory_offset)) () else (
+    => doom_audio_opl2_inputs_error["invalid WAD directory"];
+  )
+  let directory = bytes_slice[wad, directory_offset, directory_bytes];
+  let mus = doom_audio_load_raw_lump_bytes[
+    wad, directory, lump_count, wanted, 1048576
+  ];
+  if (mus\ok == 1) () else (
+    => doom_audio_opl2_inputs_error[mus\error];
+  )
+  let bank = doom_audio_load_raw_lump_bytes[
+    wad, directory, lump_count, "GENMIDI", 65536
+  ];
+  if (bank\ok == 1) () else (
+    => doom_audio_opl2_inputs_error[bank\error];
+  )
+  => {
+    ok: 1, error: "", track: wanted,
+    mus: mus\data, bank: bank\data
+  };
+)
+
 // Render one admitted map through the WAD's effective GENMIDI bank. The
 // complete bounded WAV remains Freelang-owned; f/audio receives no path or
 // WAD semantics and the protocol remains the single-WAV v1 contract.
@@ -415,7 +546,7 @@ op doom_audio_cache_disabled [] (
 )
 
 private op doom_audio_cache_sep [] (
-  if (_intrinsic_os[] == 2) ( => "\"; )
+  if (os[] == 2) ( => "\"; )
   => "/";
 )
 
@@ -427,10 +558,10 @@ private op doom_audio_cache_join [base, name] (
 
 private op doom_audio_cache_ensure_dir [path] (
   if (str_len[path] == 0) ( => 0; )
-  if (_intrinsic_fs_is_dir[path] == 1) ( => 1; )
-  if (_intrinsic_fs_exists[path] == 1) ( => 0; )
-  _intrinsic_fs_mkdir[path];
-  => _intrinsic_fs_is_dir[path];
+  if (is_dir_raw[path] == 1) ( => 1; )
+  if (exists_raw[path] == 1) ( => 0; )
+  mkdir_raw[path];
+  => is_dir_raw[path];
 )
 
 // Explicit-root constructor is primarily a deterministic test seam and a
@@ -453,9 +584,9 @@ op doom_audio_cache_default [] (
   let override = getenv["FREELANG_DOOM_MUSIC_CACHE"];
   if (str_len[override] > 0) ( => doom_audio_cache_at[override]; )
 
-  let os = _intrinsic_os[];
+  let platform = os[];
   let base = "";
-  if (os == 1) (
+  if (platform == 1) (
     let home = getenv["HOME"];
     if (str_len[home] > 0) (
       base = doom_audio_cache_join[home, "Library"];
@@ -463,7 +594,7 @@ op doom_audio_cache_default [] (
         base = doom_audio_cache_join[base, "Caches"];
       ) else ( base = ""; )
     )
-  ) else if (os == 0) (
+  ) else if (platform == 0) (
     base = getenv["XDG_CACHE_HOME"];
     if (str_len[base] == 0) (
       let home = getenv["HOME"];
@@ -471,7 +602,7 @@ op doom_audio_cache_default [] (
         base = doom_audio_cache_join[home, ".cache"];
       )
     )
-  ) else if (os == 2) (
+  ) else if (platform == 2) (
     base = getenv["LOCALAPPDATA"];
   )
   if (doom_audio_cache_ensure_dir[base] == 1) () else (
@@ -494,6 +625,46 @@ op doom_audio_cache_key [mus, bank] (
   let material = doom_audio_opl2_cache_version[] +
     "|mus=" + rainbow256[mus] + "|genmidi=" + rainbow256[bank];
   => rainbow256[string_to_utf8_bytes[material]];
+)
+
+private op doom_audio_prepared_error [message] (
+  => {
+    ok: 0, error: message, track: "", key: "",
+    mus: bytes_new[0], bank: bytes_new[0],
+    ticks: 0, samples: 0, events: 0
+  };
+)
+
+// Prepare the exact semantic cache key and expected WAV shape without paying
+// the FM renderer. This is the async browser seam: a cache miss later renders
+// from these retained Freelang-owned inputs inside the WASM Worker.
+op doom_audio_prepare_map_opl2_bytes [wad, map_name] (
+  let inputs = doom_audio_load_map_opl2_inputs_bytes[wad, map_name];
+  if (inputs\ok == 1) () else ( => doom_audio_prepared_error[inputs\error]; )
+  let bank_valid = doom_opl_bank_validate[inputs\bank];
+  if (bank_valid\ok == 1) () else ( => doom_audio_prepared_error[bank_valid\error]; )
+  let decoded = doom_mus_decode[inputs\mus];
+  if (decoded\ok == 1) () else ( => doom_audio_prepared_error[decoded\error]; )
+  let samples = decoded\ticks * 22050 / 140;
+  if ((samples > 0) and (samples <= 22050 * 600)) () else (
+    => doom_audio_prepared_error["render exceeds ten minutes"];
+  )
+  => {
+    ok: 1, error: "", track: inputs\track,
+    key: doom_audio_cache_key[inputs\mus, inputs\bank],
+    mus: inputs\mus, bank: inputs\bank,
+    ticks: decoded\ticks, samples: samples, events: decoded\events
+  };
+)
+
+op doom_audio_render_prepared_opl2 [prepared] (
+  if (prepared\ok == 1) () else ( => doom_audio_error[prepared\error]; )
+  let rendered = doom_mus_render_opl2_wav[prepared\mus, prepared\bank];
+  if (rendered\ok == 1) () else ( => doom_audio_error[rendered\error]; )
+  => doom_audio_result[
+    1, "", prepared\track, rendered\wav, rendered\ticks,
+    rendered\samples, rendered\events, 0
+  ];
 )
 
 private op doom_audio_cache_key_ok [key] (
@@ -538,20 +709,20 @@ private op doom_audio_cache_named_map_entry [name, map_name] (
 // change. Unrecognized files are never removed.
 private op doom_audio_cache_prune_map [cache, map_name, keep_name] (
   if (cache\enabled == 1) () else ( => 0; )
-  let names = _intrinsic_fs_list_dir[cache\dir];
+  let names = list_raw[cache\dir];
   let i = 0;
   while (i < arr_len[names]) (
     let name = names\\i;
     if ((doom_audio_cache_named_map_entry[name, map_name] == 1) and
         (string_eq[name, keep_name] == 0)) (
-      _intrinsic_fs_remove[cache\dir + name];
+      remove_raw[cache\dir + name];
     )
     i = i + 1;
   )
   => 0;
 )
 
-private op doom_audio_cache_wav_valid [wav, expected_samples] (
+op doom_audio_cache_wav_valid [wav, expected_samples] (
   let n = bytes_len[wav];
   if ((expected_samples > 0) and
       (expected_samples <= 22050 * 600) and
@@ -573,10 +744,10 @@ private op doom_audio_cache_wav_valid [wav, expected_samples] (
 )
 
 op doom_audio_cache_read_wav [path, expected_samples] (
-  if (_intrinsic_fs_is_file[path] == 1) () else ( => bytes_new[0]; )
-  let n = _intrinsic_fs_size[path];
+  if (is_file_raw[path] == 1) () else ( => bytes_new[0]; )
+  let n = size_raw[path];
   if (n == 44 + expected_samples) () else ( => bytes_new[0]; )
-  let wav = _intrinsic_fs_read_bytes[path];
+  let wav = read_bytes_raw[path];
   if (doom_audio_cache_wav_valid[wav, expected_samples] == 1) ( => wav; )
   => bytes_new[0];
 )
@@ -586,17 +757,17 @@ op doom_audio_cache_read_wav [path, expected_samples] (
 op doom_audio_cache_publish_wav [path, wav, expected_samples] (
   if (doom_audio_cache_wav_valid[wav, expected_samples] == 1) () else ( => 0; )
   let tmp = "^{path}.^{pid[]}.tmp";
-  if (_intrinsic_fs_exists[tmp] == 1) ( _intrinsic_fs_remove[tmp]; )
-  if (_intrinsic_fs_write_bytes[tmp, wav] == 0) () else ( => 0; )
-  let stored = _intrinsic_fs_read_bytes[tmp];
+  if (exists_raw[tmp] == 1) ( remove_raw[tmp]; )
+  if (write_bytes_raw[tmp, wav] == 0) () else ( => 0; )
+  let stored = read_bytes_raw[tmp];
   let exact = doom_audio_cache_wav_valid[stored, expected_samples] and
     string_eq[rainbow256[stored], rainbow256[wav]];
   if (exact == 1) () else (
-    _intrinsic_fs_remove[tmp];
+    remove_raw[tmp];
     => 0;
   )
-  if (_intrinsic_fs_move[tmp, path] == 0) ( => 1; )
-  _intrinsic_fs_remove[tmp];
+  if (move_raw[tmp, path] == 0) ( => 1; )
+  remove_raw[tmp];
   => 0;
 )
 

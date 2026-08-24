@@ -170,7 +170,14 @@ expect[(doom_input_forward_axis[snap] == 0) and
        (doom_input_strafe_axis[snap] == 0),
        "simultaneous opposite physical keys cancel without event priority"];
 snap = doom_input_next[snap, [
-  { kind: gui_ev_input_state[], a: 43, b: 0, mods: 7 },
+  { kind: gui_ev_input_state[], a: 43, b: 3, mods: 0 },
+  { kind: gui_ev_key_held[], a: 101, b: 0, mods: 0 },
+  { kind: gui_ev_key_held[], a: 113, b: 0, mods: 0 }
+]];
+expect[doom_input_strafe_axis[snap] == 0,
+       "only A/D may strafe; E remains use-only"];
+snap = doom_input_next[snap, [
+  { kind: gui_ev_input_state[], a: 44, b: 0, mods: 7 },
   { kind: gui_ev_key_held[], a: 119, b: 13, mods: 0 }
 ]];
 expect[(snap\focused == 0) and (doom_input_held[snap, 119] == 0) and

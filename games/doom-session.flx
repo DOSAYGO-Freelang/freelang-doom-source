@@ -1,0 +1,571 @@
+// Presenter-independent Doom session state and one complete frame transition.
+// The caller supplies the finite f/gui event records produced by its presenter
+// and consumes pixels, diagnostics and sound commands at its own capability
+// edges. Map interpretation, input folding, UI policy, combat, collision,
+// movement and world scheduling remain one Freelang implementation.
+
+credits: <../games/doom-input.flx> <../games/doom-view.flx>
+         <../games/doom-world.flx>
+         <../games/doom-ui.flx> <../games/doom-demo.flx>
+         <../games/doom-audio.flx> <f/arrays> <f/bytes> <f/trig>;
+
+private op doom_session_note_compatibility [map_name, world, combat] (
+  let actions = world\unsupported_actions;
+  let enemies = combat\unsupported_enemies;
+  if ((actions > 0) or (enemies > 0)) (
+    let detail = "^{actions} ACTIONS, ^{enemies} ENEMIES INERT";
+    eprint["doom-play: ^{map_name}: limited compatibility: ^{detail}"];
+    world\pickup_message = "LIMITED MAP: ^{detail}";
+    world\pickup_tick = 300;
+  )
+  => world;
+)
+
+private op doom_session_sound_state [world, combat] (
+  => {
+    world: world\sound_serial,
+    explosion: combat\explosion_serial,
+    projectile: combat\projectile_impacts,
+    monster_projectile: combat\monster_projectile_impacts,
+    alert: combat\monster_alert_serial,
+    attack: combat\monster_attack_serial,
+    pain: combat\monster_pain_serial,
+    death: combat\monster_death_serial,
+    player_pain: combat\player_pain_serial
+  };
+)
+
+private op doom_session_sound_add [commands, voice, clip, gain] (
+  => commands + [{ voice: voice, clip: clip, gain: gain }];
+)
+
+// Convert changed simulation serials into bounded semantic playback commands.
+// No mixer or browser object crosses this operation.
+private op doom_session_collect_sounds [combat_mode, world, combat,
+                                        seen, commands] (
+  let out = commands;
+  if (world\sound_serial != seen\world) (
+    let clip = doom_audio_world_clip[world\sound_kind];
+    if (clip > 0) (
+      let voice = 3;
+      if (world\sound_kind == 5) ( voice = 4; )
+      out = doom_session_sound_add[out, voice, clip, 256];
+    )
+    seen\world = world\sound_serial;
+  )
+  if (combat_mode == 0) ( => { seen: seen, commands: out }; )
+  if (combat\explosion_serial != seen\explosion) (
+    out = doom_session_sound_add[out, 5, 12, 256];
+    seen\explosion = combat\explosion_serial;
+  )
+  if (combat\projectile_impacts != seen\projectile) (
+    out = doom_session_sound_add[out, 5, 24, 256];
+    seen\projectile = combat\projectile_impacts;
+  )
+  if (combat\monster_projectile_impacts != seen\monster_projectile) (
+    out = doom_session_sound_add[out, 5, 26, 240];
+    seen\monster_projectile = combat\monster_projectile_impacts;
+  )
+  if (combat\monster_alert_serial != seen\alert) (
+    let clip = doom_audio_monster_alert_clip[combat\monster_alert_kind];
+    if (clip > 0) (
+      out = doom_session_sound_add[out, 6, clip, 224];
+    )
+    seen\alert = combat\monster_alert_serial;
+  )
+  if (combat\monster_attack_serial != seen\attack) (
+    let clip = doom_audio_monster_attack_clip[combat\monster_attack_kind];
+    if (clip > 0) (
+      out = doom_session_sound_add[out, 7, clip, 240];
+    )
+    seen\attack = combat\monster_attack_serial;
+  )
+  if (combat\monster_pain_serial != seen\pain) (
+    let clip = doom_audio_monster_pain_clip[combat\monster_pain_kind];
+    if (clip > 0) (
+      out = doom_session_sound_add[out, 8, clip, 224];
+    )
+    seen\pain = combat\monster_pain_serial;
+  )
+  if (combat\monster_death_serial != seen\death) (
+    let clip = doom_audio_monster_death_clip[combat\monster_death_kind];
+    if (clip > 0) (
+      out = doom_session_sound_add[out, 9, clip, 240];
+    )
+    seen\death = combat\monster_death_serial;
+  )
+  if (combat\player_pain_serial != seen\player_pain) (
+    out = doom_session_sound_add[out, 10, 13, 256];
+    seen\player_pain = combat\player_pain_serial;
+  )
+  => { seen: seen, commands: out };
+)
+
+private op doom_session_empty_move [x, y] (
+  => {
+    x: x, y: y, moved: 0, blocked: 0,
+    blocker_kind: 0, blocker_index: 0 - 1,
+    teleported: 0, teleport_angle: 0
+  };
+)
+
+op doom_session_new [map, initial_events, demo_mode, combat_mode,
+                     diag_mode, start_menu, menu_maps] (
+  let world = doom_world_new[map];
+  let play_map = doom_world_map[map, world];
+  let controls = doom_input_next[doom_input_new[], initial_events];
+  let ui = doom_ui_new_for_maps[menu_maps, map\name];
+  if ((demo_mode == 0) and (start_menu == 1)) ( ui\open = 1; )
+  let demo = doom_demo_idle_new_mode[map, combat_mode];
+  if (demo_mode == 1) ( demo = doom_demo_new_mode[map, combat_mode]; )
+  let alive = bytes_new[map\thing_count];
+  let enemies = 0;
+  let i = 0;
+  while (i < map\thing_count) (
+    let kind = buf_get[map\things, i * 4 + 2];
+    if (doom_map_thing_is_enemy[kind] == 1) (
+      bytes_set[alive, i, 1];
+      enemies = enemies + 1;
+    )
+    i = i + 1;
+  )
+  let combat = doom_combat_new[play_map];
+  if (combat_mode == 1) (
+    alive = combat\alive;
+    enemies = combat\enemy_count;
+  )
+  world = doom_session_note_compatibility[map\name, world, combat];
+  => {
+    map: map, play_map: play_map,
+    demo_mode: demo_mode, combat_mode: combat_mode, diag_mode: diag_mode,
+    controls: controls, ui: ui, demo: demo, demo_phase_seen: 0 - 1,
+    world: world, combat: combat, alive: alive,
+    sound_state: doom_session_sound_state[world, combat], sounds: [],
+    player_x: map\player_x, player_y: map\player_y,
+    angle: trig_from_degrees[map\player_angle], pitch: 0,
+    steps: 0, blocked: 0, kills: 0, misses: 0, enemies: enemies,
+    running: 1, requested_episode: 0, frame_index: 0,
+    blocked_streak: 0, contact_streak: 0,
+    transition_frame: 0, forward: 0, strafe: 0,
+    jump_requested: 0, jump_result: 0 - 1,
+    move_dx: 0, move_dy: 0,
+    move_from_x: map\player_x, move_from_y: map\player_y,
+    move_player_z: world\player_z, move_player_vz: 0,
+    move_grounded: 0, move_from_sector: 0 - 1,
+    move_moved: 0, move_blocked: 0,
+    move_result: doom_session_empty_move[map\player_x, map\player_y],
+    previous_contact_streak: 0
+  };
+)
+
+private op doom_session_reset [st] (
+  let map = st\map;
+  st\player_x = map\player_x;
+  st\player_y = map\player_y;
+  st\angle = trig_from_degrees[map\player_angle];
+  st\pitch = 0;
+  st\steps = 0;
+  st\blocked = 0;
+  st\kills = 0;
+  st\misses = 0;
+  let i = 0;
+  while (i < map\thing_count) (
+    let kind = buf_get[map\things, i * 4 + 2];
+    bytes_set[st\alive, i, doom_map_thing_is_enemy[kind]];
+    i = i + 1;
+  )
+  st\world = doom_world_new[map];
+  st\play_map = doom_world_map[map, st\world];
+  if (st\combat_mode == 1) (
+    st\combat = doom_combat_new[st\play_map];
+    st\alive = st\combat\alive;
+    st\enemies = st\combat\enemy_count;
+  )
+  st\world = doom_session_note_compatibility[
+    map\name, st\world, st\combat
+  ];
+  st\sound_state = doom_session_sound_state[st\world, st\combat];
+  st\demo = doom_demo_idle_new_mode[map, st\combat_mode];
+  if (st\demo_mode == 1) (
+    st\demo = doom_demo_new_mode[map, st\combat_mode];
+  )
+  st\demo_phase_seen = 0 - 1;
+  => st;
+)
+
+// Advance exactly one application frame after one presenter transaction.
+// `retain_evidence` is diagnostic policy supplied by the native trace adapter;
+// it does not alter simulation results.
+op doom_session_step [st, events, retain_evidence] (
+  let map = st\map;
+  let play_map = st\play_map;
+  let demo_mode = st\demo_mode;
+  let combat_mode = st\combat_mode;
+  let diag_mode = st\diag_mode;
+  let controls = st\controls;
+  let ui = st\ui;
+  let demo = st\demo;
+  let demo_phase_seen = st\demo_phase_seen;
+  let world = st\world;
+  let combat = st\combat;
+  let alive = st\alive;
+  let sound_state = st\sound_state;
+  let player_x = st\player_x;
+  let player_y = st\player_y;
+  let angle = st\angle;
+  let pitch = st\pitch;
+  let steps = st\steps;
+  let blocked = st\blocked;
+  let kills = st\kills;
+  let misses = st\misses;
+  let enemies = st\enemies;
+  let running = st\running;
+  let requested_episode = st\requested_episode;
+  let frame_index = st\frame_index;
+  let blocked_streak = st\blocked_streak;
+  let contact_streak = st\contact_streak;
+  let sounds = [];
+
+  if (gui_has_close[events] == 1) ( running = 0; )
+  if (demo_mode == 0) ( ui = doom_ui_next[ui, events]; )
+  if (ui\selection > 0) (
+    requested_episode = ui\selection;
+    running = 0;
+  )
+  controls = doom_input_next[controls, events];
+
+  st\play_map = play_map;
+  st\world = world;
+  st\combat = combat;
+  st\alive = alive;
+  st\player_x = player_x;
+  st\player_y = player_y;
+  st\angle = angle;
+  st\pitch = pitch;
+  st\steps = steps;
+  st\blocked = blocked;
+  st\kills = kills;
+  st\misses = misses;
+  st\enemies = enemies;
+  st\demo = demo;
+  st\demo_phase_seen = demo_phase_seen;
+  if (gui_key_pressed[events, 114] == 1) (
+    st = doom_session_reset[st];
+    play_map = st\play_map;
+    world = st\world;
+    combat = st\combat;
+    alive = st\alive;
+    sound_state = st\sound_state;
+    player_x = st\player_x;
+    player_y = st\player_y;
+    angle = st\angle;
+    pitch = st\pitch;
+    steps = st\steps;
+    blocked = st\blocked;
+    kills = st\kills;
+    misses = st\misses;
+    enemies = st\enemies;
+    demo = st\demo;
+    demo_phase_seen = st\demo_phase_seen;
+  )
+
+  let turn = 0;
+  let forward = 0;
+  let strafe = 0;
+  let fire = doom_input_fire_held[controls];
+  let jump_requested = 0;
+  let jump_result = 0 - 1;
+  if (demo_mode == 1) (
+    if (demo\phase != demo_phase_seen) (
+      if (demo\phase == 2) (
+        demo\aim_heading = demo\first_aim;
+        if (combat_mode == 1) (
+          demo\aim_heading = doom_combat_demo_heading[
+            play_map, combat, player_x, player_y, demo\first_aim
+          ];
+        )
+      )
+      if (demo\phase == 5) (
+        demo\aim_heading = demo\second_aim;
+        if (combat_mode == 1) (
+          demo\aim_heading = doom_combat_demo_heading[
+            play_map, combat, player_x, player_y, demo\second_aim
+          ];
+        )
+      )
+      demo_phase_seen = demo\phase;
+    )
+    let command = doom_demo_next[demo, player_x, player_y];
+    demo = command\state;
+    angle = trig_from_degrees[command\heading];
+    pitch = command\pitch;
+    forward = command\forward;
+    if (command\fire == 1) ( fire = 1; )
+    if (command\finished == 1) ( running = 0; )
+  ) else if (ui\open == 0) (
+    if (doom_input_held[controls, gui_key_left[]] == 1) ( turn = turn + 2; )
+    if (doom_input_held[controls, gui_key_right[]] == 1) ( turn = turn - 2; )
+    if (turn != 0) ( angle = angle + trig_from_degrees[turn]; )
+    if (controls\mouse_dx != 0) (
+      angle = angle - trig_from_degrees[controls\mouse_dx * ui\look_speed];
+    )
+    if (controls\mouse_dy != 0) (
+      pitch = doom_input_pitch[pitch, controls\mouse_dy * ui\look_speed];
+    )
+    forward = doom_input_forward_axis[controls] * 8;
+    strafe = doom_input_strafe_axis[controls] * 6;
+    if (gui_key_pressed[events, 32] == 1) (
+      jump_requested = 1;
+      jump_result = doom_world_jump[play_map, world, player_x, player_y];
+    )
+    if ((gui_key_pressed[events, 101] == 1) or
+        (gui_key_pressed[events, 69] == 1)) (
+      doom_world_use[play_map, world, player_x, player_y, angle];
+    )
+    if (combat_mode == 1) (
+      let weapon_key = 1;
+      while (weapon_key <= 7) (
+        if (gui_key_pressed[events, 48 + weapon_key] == 1) (
+          combat = doom_combat_select_weapon[combat, weapon_key];
+        )
+        weapon_key = weapon_key + 1;
+      )
+      if (controls\scroll_y > 0) (
+        combat = doom_combat_cycle_weapon[combat, 0 - 1];
+      )
+      if (controls\scroll_y < 0) (
+        combat = doom_combat_cycle_weapon[combat, 1];
+      )
+      if (gui_key_pressed[events, 91] == 1) (
+        combat = doom_combat_cycle_weapon[combat, 0 - 1];
+      )
+      if (gui_key_pressed[events, 93] == 1) (
+        combat = doom_combat_cycle_weapon[combat, 1];
+      )
+    )
+  )
+  if (ui\open == 1) ( fire = 0; forward = 0; strafe = 0; )
+  if ((combat_mode == 1) and
+      ((combat\health == 0) or (world\exited == 1))) (
+    fire = 0;
+    forward = 0;
+    strafe = 0;
+  )
+  if (fire == 1) (
+    if (combat_mode == 1) (
+      let shots_before = combat\shots;
+      let misses_before = combat\misses;
+      let kills_before = combat\kills;
+      let shot_target_kind = 0;
+      let shot_target_index = 0 - 1;
+      let shot_target_distance = 0;
+      if ((diag_mode == 1) and (combat\shot_cooldown == 0) and
+          (doom_combat_current_ammo[combat] > 0) and
+          (combat\selected_weapon <= 4)) (
+        let shot_target = doom_combat_hitscan_at[
+          play_map, combat, player_x, player_y, world\player_z, angle, 1024
+        ];
+        shot_target_kind = shot_target\kind;
+        shot_target_index = shot_target\index;
+        shot_target_distance = shot_target\distance;
+      )
+      combat = doom_combat_fire_at[
+        play_map, combat, player_x, player_y, world\player_z, angle
+      ];
+      if (combat\shots > shots_before) (
+        sounds = doom_session_sound_add[
+          sounds, 1, doom_audio_weapon_clip[combat\selected_weapon], 256
+        ];
+        doom_world_shoot[play_map, world, player_x, player_y, angle];
+        if (diag_mode == 1) (
+          eprint[
+            "doom-diag shot frame=^{frame_index} weapon=^{combat\selected_weapon} target_kind=^{shot_target_kind} target_index=^{shot_target_index} distance=^{shot_target_distance} misses_delta=^{combat\misses - misses_before} kills_delta=^{combat\kills - kills_before}"
+          ];
+          if (shot_target_kind == 1) (
+            let shot_actor = combat\actors\\shot_target_index;
+            eprint[
+              "doom-diag shot actor kind=^{shot_actor\kind} health=^{shot_actor\health} phase=^{doom_combat_actor_phase_name[shot_actor]}"
+            ];
+          ) else if (shot_target_kind == 2) (
+            let shot_barrel = combat\barrels\\shot_target_index;
+            eprint[
+              "doom-diag shot barrel health=^{shot_barrel\health} state=^{shot_barrel\state} phase_tick=^{shot_barrel\phase_tick}"
+            ];
+          )
+        )
+      )
+    ) else (
+      let target = doom_view_hitscan_target[
+        play_map, alive, player_x, player_y, angle, 1024
+      ];
+      if (target >= 0) (
+        bytes_set[alive, target, 0];
+        kills = kills + 1;
+      ) else (
+        misses = misses + 1;
+      )
+    )
+  )
+
+  let move_dx = 0;
+  let move_dy = 0;
+  let move_from_x = player_x;
+  let move_from_y = player_y;
+  let move_player_z = world\player_z;
+  let move_player_vz = 0;
+  let move_grounded = 0;
+  let move_from_sector = 0 - 1;
+  if (retain_evidence == 1) (
+    move_player_vz = world\player_vz;
+    move_grounded = world\grounded;
+    move_from_sector = doom_map_point_sector[play_map, move_from_x, move_from_y];
+  )
+  let move_moved = 0;
+  let move_blocked = 0;
+  let move_result = doom_session_empty_move[player_x, player_y];
+  if ((forward != 0) or (strafe != 0)) (
+    let direction = trig_sincos[angle];
+    let motion = doom_input_motion[
+      direction\sin, direction\cos, forward, strafe
+    ];
+    move_dx = motion\dx;
+    move_dy = motion\dy;
+    move_result = doom_world_slide_move[
+      play_map, world, player_x, player_y, move_dx, move_dy
+    ];
+    if (combat_mode == 1) (
+      move_result = doom_world_slide_move_combat[
+        play_map, world, combat, player_x, player_y, move_dx, move_dy
+      ];
+    )
+    blocked = blocked + move_result\blocked;
+    move_moved = move_result\moved;
+    move_blocked = move_result\blocked;
+    if (move_result\moved == 1) (
+      player_x = move_result\x;
+      player_y = move_result\y;
+      if (move_result\teleported == 1) (
+        angle = trig_from_degrees[move_result\teleport_angle];
+      )
+      steps = steps + 1;
+    )
+  )
+  let previous_contact_streak = contact_streak;
+  if (((forward != 0) or (strafe != 0)) and
+      (move_blocked == 1) and (move_moved == 0)) (
+    blocked_streak = blocked_streak + 1;
+  ) else (
+    blocked_streak = 0;
+  )
+  if (((forward != 0) or (strafe != 0)) and (move_blocked == 1)) (
+    contact_streak = contact_streak + 1;
+  ) else (
+    contact_streak = 0;
+  )
+
+  if ((demo_mode == 1) or (ui\open == 0)) (
+    if (combat_mode == 1) (
+      let collected = doom_world_collect[
+        play_map, world, combat, player_x, player_y
+      ];
+      if (collected > 0) (
+        let pickup_clip = 5;
+        if (doom_world_pickup_is_weapon[world\pickup_kind] == 1) (
+          pickup_clip = 6;
+        ) else if (doom_world_pickup_is_power[world\pickup_kind] == 1) (
+          pickup_clip = 39;
+        )
+        sounds = doom_session_sound_add[sounds, 2, pickup_clip, 256];
+      )
+      if (world\exited == 0) (
+        combat = doom_combat_tick_at[
+          play_map, combat, player_x, player_y, world\player_z
+        ];
+      )
+    )
+    world = doom_world_tick[play_map, world, player_x, player_y];
+    if (combat_mode == 1) (
+      combat = doom_world_apply_hazard[
+        play_map, world, combat, player_x, player_y
+      ];
+      doom_world_apply_boss_actions[play_map, world, combat];
+    )
+  )
+
+  if (retain_evidence == 1) (
+    let move_to_sector = doom_map_point_sector[play_map, player_x, player_y];
+    let vertical_milestone = (move_from_sector != move_to_sector) or
+      (move_grounded != world\grounded);
+    if ((world\grounded == 0) and (frame_index % 8 == 0)) (
+      vertical_milestone = 1;
+    )
+    if ((diag_mode == 1) and (vertical_milestone == 1)) (
+      eprint[
+        "doom-diag vertical frame=^{frame_index} from=^{move_from_x},^{move_from_y},^{move_player_z} to=^{player_x},^{player_y},^{world\player_z} sector=^{move_from_sector},^{move_to_sector} vz=^{move_player_vz},^{world\player_vz} grounded=^{move_grounded},^{world\grounded} moved=^{move_moved} blocked=^{move_blocked} blocker=^{doom_world_blocker_name[move_result\blocker_kind]},^{move_result\blocker_index}"
+      ];
+    )
+  )
+
+  let sound_result = doom_session_collect_sounds[
+    combat_mode, world, combat, sound_state, sounds
+  ];
+  sound_state = sound_result\seen;
+  sounds = sound_result\commands;
+
+  if (diag_mode == 1) (
+    if ((blocked_streak == 1) or
+        ((blocked_streak > 0) and (blocked_streak % 30 == 0))) (
+      eprint[
+        "doom-diag blocked frame=^{frame_index} streak=^{blocked_streak} pos=^{player_x},^{player_y},^{world\player_z} forward=^{forward} strafe=^{strafe} focused=^{controls\focused} held_w=^{doom_input_held[controls, 119]} held_up=^{doom_input_held[controls, gui_key_up[]]} blocker=^{doom_world_blocker_name[move_result\blocker_kind]},^{move_result\blocker_index}"
+      ];
+    )
+    if (jump_requested == 1) (
+      eprint[
+        "doom-diag jump frame=^{frame_index} result=^{jump_result} pos=^{player_x},^{player_y},^{world\player_z} grounded=^{world\grounded} motion=^{move_dx},^{move_dy} moved=^{move_moved} blocked=^{move_blocked}"
+      ];
+    )
+  )
+
+  st\play_map = play_map;
+  st\controls = controls;
+  st\ui = ui;
+  st\demo = demo;
+  st\demo_phase_seen = demo_phase_seen;
+  st\world = world;
+  st\combat = combat;
+  st\alive = alive;
+  st\sound_state = sound_state;
+  st\sounds = sounds;
+  st\player_x = player_x;
+  st\player_y = player_y;
+  st\angle = angle;
+  st\pitch = pitch;
+  st\steps = steps;
+  st\blocked = blocked;
+  st\kills = kills;
+  st\misses = misses;
+  st\enemies = enemies;
+  st\running = running;
+  st\requested_episode = requested_episode;
+  st\blocked_streak = blocked_streak;
+  st\contact_streak = contact_streak;
+  st\transition_frame = frame_index;
+  st\forward = forward;
+  st\strafe = strafe;
+  st\jump_requested = jump_requested;
+  st\jump_result = jump_result;
+  st\move_dx = move_dx;
+  st\move_dy = move_dy;
+  st\move_from_x = move_from_x;
+  st\move_from_y = move_from_y;
+  st\move_player_z = move_player_z;
+  st\move_player_vz = move_player_vz;
+  st\move_grounded = move_grounded;
+  st\move_from_sector = move_from_sector;
+  st\move_moved = move_moved;
+  st\move_blocked = move_blocked;
+  st\move_result = move_result;
+  st\previous_contact_streak = previous_contact_streak;
+  st\frame_index = frame_index + 1;
+  => st;
+)

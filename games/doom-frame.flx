@@ -1,0 +1,77 @@
+// Presenter-independent composition of one immutable Doom frame. Native and
+// WASM callers supply the same session-owned state and receive the same
+// already-implemented world, weapon, status and menu composition. No
+// simulation or capability authority lives here.
+
+credits: <../games/doom-view.flx> <../games/doom-ui.flx>
+         <../games/doom-input.flx>;
+
+op doom_frame_draw [buf, w, h, viewport_h, font, map, work,
+                    player_x, player_y, angle, pitch,
+                    alive, kills, enemies, misses, steps, blocked,
+                    texture_mode, combat_mode, combat, world,
+                    status_cache, diag_mode, demo_mode,
+                    controls, ui] (
+  let view = 0;
+  let scan_mode =
+    (texture_mode == 1) and (combat_mode == 1) and (ui\open == 0) and
+    (doom_input_held[controls, gui_key_tab[]] == 1);
+  if (scan_mode == 1) (
+    view = doom_view_draw_scan_world_pitched[
+      buf, w, viewport_h, font, map, work,
+      player_x, player_y, angle, pitch, combat, world, steps, blocked
+    ];
+  ) else if (texture_mode == 1) (
+    if (combat_mode == 1) (
+      view = doom_view_draw_world_pitched[
+        buf, w, viewport_h, font, map, work,
+        player_x, player_y, angle, pitch, combat, world, steps, blocked
+      ];
+    ) else (
+      view = doom_view_draw_pitched[
+        buf, w, viewport_h, font, map, work,
+        player_x, player_y, angle, pitch,
+        alive, kills, enemies, misses, steps, blocked
+      ];
+    )
+  ) else if (combat_mode == 1) (
+    view = doom_view_draw_world_flat_pitched[
+      buf, w, viewport_h, font, map, work,
+      player_x, player_y, angle, pitch, combat, world, steps, blocked
+    ];
+  ) else (
+    view = doom_view_draw_flat_pitched[
+      buf, w, viewport_h, font, map, work,
+      player_x, player_y, angle, pitch,
+      alive, kills, enemies, misses, steps, blocked
+    ];
+  )
+  if ((combat_mode == 1) and (texture_mode == 1) and (ui\open == 0)) (
+    doom_ui_draw_status_cached[
+      buf, w, h, map\texture_bank, status_cache, combat, world
+    ];
+  ) else if ((combat_mode == 1) and (texture_mode == 1)) (
+    // The episode menu owns the complete framebuffer. Force one exact status
+    // reconstruction after it closes, but do no hidden strip work beneath it.
+    status_cache\valid = 0;
+  )
+  if (diag_mode == 1) (
+    let sector = doom_map_point_sector[map, player_x, player_y];
+    gui_text[
+      buf, w, h, font, 10, 46,
+      "POS ^{player_x},^{player_y},^{world\player_z}  VZ ^{world\player_vz}  G ^{world\grounded}  SEC ^{sector}",
+      gui_rgb[255, 220, 96]
+    ];
+  )
+  if (demo_mode == 1) (
+    gui_text[buf, w, h, font, 10, 34,
+      "DETERMINISTIC ^{map\name} DEMO", gui_rgb[80, 220, 210]];
+  ) else if ((controls\captured == 0) and (ui\open == 0)) (
+    gui_text[buf, w, h, font, 10, 34,
+      "CLICK TO CAPTURE — ESC AGAIN FOR MENU", gui_rgb[255, 200, 80]];
+  )
+  if ((combat_mode == 1) and (texture_mode == 1)) (
+    doom_ui_draw_menu[buf, w, h, map\texture_bank, ui];
+  )
+  => view;
+)

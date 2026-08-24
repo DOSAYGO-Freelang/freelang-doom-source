@@ -8,10 +8,14 @@ does not make every payload a linked module of the Doom application.
 
 | Component | Form | Distribution position |
 | --- | --- | --- |
-| Freelang Doom application | Source under `games/`, tests, tools and supporting documentation; compiled application operations in a native release | GPL-2.0-or-later |
+| Freelang Doom application | Source under `games/` and `examples/`, tests, tools and supporting documentation; compiled application operations in native or browser releases | GPL-2.0-or-later |
 | Freelang compiler and builder environment | Separately installed build tools; not included in this repository | Separately licensed proprietary software |
 | GUI presenter sidecar | Generic native executable stored as inert data, extracted and executed in its own process | Separately licensed proprietary software |
 | PCM speaker sidecar | Generic native executable stored as inert data, extracted and executed in its own process | Separately licensed proprietary software |
+| Browser presenter agent | Generic Canvas/DOM/input capability over a private port; not included in this repository | Separately licensed proprietary software |
+| Browser local-artifact agent | Generic explicit-file selection and one-record primary cache; not included in this repository | Separately licensed proprietary software |
+| Browser derived-artifact agent | Generic bounded opaque-byte cache with primary-cache quota reserve; not included in this repository | Separately licensed proprietary software |
+| Browser speaker agent | Generic byte-compatible speaker-v2/WebAudio capability; not included in this repository | Separately licensed proprietary software |
 | Host frameworks and system libraries | Operating-system APIs used by a sidecar | Governed by the host SDK and operating-system terms |
 | IWADs, PWADs and game media | Caller-supplied runtime data; never included or downloaded | Not licensed by this repository |
 
@@ -29,10 +33,13 @@ component.
 ## Sidecar source and dependency audit
 
 This audit closes the sidecar set reachable by Freelang Doom Source at the
-current synchronization checkpoint `373ab2781ac3` (`v6.4.0`).
+current synchronization checkpoint `d8ebabc3bbdf02cd5989394342090cf2cce2ab37`
+(source synchronized after the `v6.9.0` milestone).
 
-A focused native ARM64 build with an exact compiler size report retained only
-these payloads:
+The exact native payload evidence below was measured at `373ab2781ac3`
+(`v6.4.0`). The native GUI/speaker sources and their build paths are unchanged
+between that checkpoint and the current source checkpoint, so no new native
+payload enters the Doom application:
 
 | Payload | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -60,6 +67,14 @@ relevant source and dependency findings are:
 - The Linux GUI path speaks X11 directly from Freelang and retains no GUI
   presenter payload. The checkpoint has no default Linux or Windows speaker
   payload.
+
+The browser target adds four separately supplied generic agents: presenter-v1,
+local-artifact-v1, derived-artifact-v1 and speaker-v2. They use only browser
+Canvas/DOM/input, File, IndexedDB, SHA-256, WebAudio and lifecycle facilities;
+they have no package imports, WAD parser, map state, renderer, combat or other
+Doom policy. Each receives finite checked protocol messages over a private
+`MessagePort`, cannot access the Freelang heap, and is excluded from this
+repository.
 
 Repository history and line attribution assign all three sidecar source files
 to DOSAYGO Engineering. Their build scripts compile those source files

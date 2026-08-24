@@ -11,6 +11,7 @@ bash tests/run-all.sh --hide-passes \
   /path/to/freelang-doom-source/tests/doom-actions.flx \
   /path/to/freelang-doom-source/tests/doom-audio.flx \
   /path/to/freelang-doom-source/tests/doom-combat.flx \
+  /path/to/freelang-doom-source/tests/doom-session.flx \
   /path/to/freelang-doom-source/tests/doom-texture.flx \
   /path/to/freelang-doom-source/tests/doom-world.flx \
   /path/to/freelang-doom-source/tests/doom-bsp.flx

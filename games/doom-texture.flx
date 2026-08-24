@@ -14,6 +14,18 @@ private op doom_texture_read_range [path, offset, count] (
   => read_range[path, offset, count] with chaos { _ => bytes_new[0] };
 )
 
+// A retained WAD owner is the browser/native-neutral texture source.  Every
+// caller has already proved the directory entry against the owner's exact
+// measurement, but keep this leaf independently bounded so no future catalog
+// path can turn bytes_slice's caller contract into an unchecked read.
+private op doom_texture_read_wad [wad, offset, count] (
+  if ((is_bytes[wad] == 1) and (offset >= 0) and (count >= 0) and
+      (offset <= bytes_len[wad]) and (count <= bytes_len[wad] - offset)) (
+    => bytes_slice[wad, offset, count];
+  )
+  => bytes_new[0];
+)
+
 private op doom_texture_s16 [b, offset] (
   let value = doom_wad_u16le[b, offset];
   if (value >= 32768) ( => value - 65536; )
@@ -704,9 +716,21 @@ private op doom_texture_sprite_spec [family, frame, rotation] (
   => doom_texture_standard_sprite_spec[base, letter, rotation];
 )
 
+// Lost Souls own vanilla's full SKULF0--SKULK0 terminal sequence. Every
+// ordinary family retains the five sampled death frames that end in a corpse.
+op doom_texture_sprite_death_frame_count [family] (
+  if ((family >= 0) and (family < 9)) () else (
+    fall "doom_texture_sprite_death_frame_count: family outside bounded atlas";
+  )
+  if (family == 5) ( => 6; )
+  => 5;
+)
+
 private op doom_texture_sprite_death_frame [family, frame] (
-  if ((family >= 0) and (family < 9) and
-      (frame >= 0) and (frame < 5)) () else ( => ""; )
+  if ((family >= 0) and (family < 9) and (frame >= 0) and
+      (frame < doom_texture_sprite_death_frame_count[family])) () else (
+    => "";
+  )
   if ((family == 0) or (family == 1)) (
     if (frame == 0) ( => "H"; ) if (frame == 1) ( => "I"; )
     if (frame == 2) ( => "J"; ) if (frame == 3) ( => "K"; )
@@ -729,7 +753,8 @@ private op doom_texture_sprite_death_frame [family, frame] (
   )
   if (family == 5) (
     if (frame == 0) ( => "F"; ) if (frame == 1) ( => "G"; )
-    if (frame == 2) ( => "H"; ) if (frame == 3) ( => "J"; )
+    if (frame == 2) ( => "H"; ) if (frame == 3) ( => "I"; )
+    if (frame == 4) ( => "J"; )
     => "K";
   )
   if (family == 6) (
@@ -945,9 +970,11 @@ private op doom_texture_weapon_offset [weapon] (
 )
 
 // Each family owns eight directional frame ranges (A..H) and the five-frame
-// regular death sequence. The following alphabetic frames begin the separate
-// extreme-death sequence and must never become the stable corpse. POSS/SPOS
-// deliberately leave directional H empty; TROO uses it for pain.
+// regular death sequence. Lost Soul's sixth and terminal death frame lives in
+// one append-only atlas slot so existing actor, weapon and effect IDs stay
+// stable. The following alphabetic frames begin the separate extreme-death
+// sequence and must never become the stable corpse. POSS/SPOS deliberately
+// leave directional H empty; TROO uses it for pain.
 op doom_texture_sprite_family_stride [] ( => 69; )
 op doom_texture_sprite_family_slots [] ( => 621; )
 op doom_texture_weapon_slots [] ( => 22; )
@@ -965,7 +992,8 @@ op doom_texture_caco_ball_slots [] ( => 5; )
 op doom_texture_baron_ball_slots [] ( => 4; )
 op doom_texture_plasma_ball_slots [] ( => 7; )
 op doom_texture_bfg_ball_slots [] ( => 8; )
-op doom_texture_sprite_slots [] ( => 1027; )
+op doom_texture_lost_soul_terminal_slot [] ( => 1027; )
+op doom_texture_sprite_slots [] ( => 1028; )
 
 // WAD-native status, font and episode-menu patches occupy a separate immutable
 // atlas. The old new-game/options/quit/pause art is deliberately absent: the
@@ -1072,8 +1100,12 @@ op doom_texture_sprite_directional_slot [family, frame, rotation] (
 
 op doom_texture_sprite_death_slot [family, frame] (
   if ((family >= 0) and (family < 9) and
-      (frame >= 0) and (frame < 5)) () else (
+      (frame >= 0) and
+      (frame < doom_texture_sprite_death_frame_count[family])) () else (
     fall "doom_texture_sprite_death_slot: index outside bounded atlas";
+  )
+  if ((family == 5) and (frame == 5)) (
+    => doom_texture_lost_soul_terminal_slot[];
   )
   => family * doom_texture_sprite_family_stride[] + 64 + frame;
 )
@@ -1286,7 +1318,7 @@ private op doom_texture_load_sprite_patch [path, directory, first, last,
     => { ok: 0, error: "sprite ^{name} exceeds the current WAD",
          data: bytes_new[0] };
   )
-  let data = doom_texture_read_range[path, entry\offset, entry\bytes];
+  let data = doom_texture_read_wad[path, entry\offset, entry\bytes];
   if (bytes_len[data] == entry\bytes) () else (
     => { ok: 0, error: "short sprite ^{name} read", data: bytes_new[0] };
   )
@@ -1314,6 +1346,7 @@ private op doom_texture_sprite_slot_spec [slot] (
   let caco_end = imp_end + doom_texture_caco_ball_slots[];
   let baron_end = caco_end + doom_texture_baron_ball_slots[];
   let plasma_end = baron_end + doom_texture_plasma_ball_slots[];
+  let bfg_end = plasma_end + doom_texture_bfg_ball_slots[];
   if ((slot < 0) or (slot >= doom_texture_sprite_slots[])) ( => spec; )
   if (slot < actor_end) (
     let family = slot / doom_texture_sprite_family_stride[];
@@ -1397,9 +1430,11 @@ private op doom_texture_sprite_slot_spec [slot] (
   ) else if (slot < plasma_end) (
     frame = slot - baron_end;
     name = doom_texture_plasma_ball_name[frame];
-  ) else (
+  ) else if (slot < bfg_end) (
     frame = slot - plasma_end;
     name = doom_texture_bfg_ball_name[frame];
+  ) else (
+    => doom_texture_sprite_death_spec[5, 5];
   )
   if (str_len[name] > 0) ( => { ok: 1, name: name, flip: 0 }; )
   => spec;
@@ -1473,7 +1508,7 @@ private op doom_texture_load_sprites [path, directory, lump_count,
         frame = frame + 1;
       )
       let death = 0;
-      while (death < 5) (
+      while (death < doom_texture_sprite_death_frame_count[family]) (
         bytes_set[
           required, doom_texture_sprite_death_slot[family, death], 1
         ];
@@ -1696,7 +1731,7 @@ private op doom_texture_load_named [path, directory, lump_count, file_bytes,
   if (doom_texture_entry_fits[entry, file_bytes] == 1) () else (
     => { ok: 0, error: "named lump exceeds the current WAD", data: bytes_new[0] };
   )
-  let data = doom_texture_read_range[path, entry\offset, entry\bytes];
+  let data = doom_texture_read_wad[path, entry\offset, entry\bytes];
   if (bytes_len[data] == entry\bytes) () else (
     => { ok: 0, error: "short named lump read", data: bytes_new[0] };
   )
@@ -1718,7 +1753,7 @@ private op doom_texture_load_catalog_lump [path, directory, lump_count,
     => { ok: 0, error: "^{name} exceeds the current WAD", index: lump,
          data: bytes_new[0] };
   )
-  let data = doom_texture_read_range[path, entry\offset, entry\bytes];
+  let data = doom_texture_read_wad[path, entry\offset, entry\bytes];
   if (bytes_len[data] == entry\bytes) () else (
     => { ok: 0, error: "short ^{name} read", index: lump,
          data: bytes_new[0] };
@@ -1878,7 +1913,7 @@ private op doom_texture_load_flats [path, directory, lump_count,
       directory, lump_count, names, flat * 8
     ];
     let entry = doom_texture_entry[directory, lump];
-    let data = doom_texture_read_range[path, entry\offset, 4096];
+    let data = doom_texture_read_wad[path, entry\offset, 4096];
     if (bytes_len[data] == 4096) () else (
       => doom_texture_flat_error["short sector flat read"];
     )
@@ -1968,8 +2003,13 @@ private op doom_texture_load_colours [path, directory, lump_count,
 // This is the cold-load asset pipeline. It validates the effective catalog
 // lumps, computes bounded atlas sizes before allocation, composes indexed
 // pixels once, then binds map side/sector names to immutable atlas slots. The
-// per-frame renderer therefore performs no filesystem access or patch parsing.
-op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
+// source is one measured WAD owner; the per-frame renderer therefore performs
+// no filesystem access or patch parsing.  `complete` admits the sprite/UI
+// catalogs used by the native game.  The first browser frame deliberately
+// selects the world-only bank, which proves walls, flats and colour tables
+// without requiring unrelated status/weapon art from a synthetic oracle WAD.
+private op doom_texture_load_bank_mode [path, directory, lump_count,
+                                        file_bytes, map, complete] (
   let colour_bank = doom_texture_load_colours[
     path, directory, lump_count, file_bytes
   ];
@@ -2214,17 +2254,27 @@ op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
   let flat_names = flats\names;
   let flat_pixels = flats\pixels;
   let sky_flat = flats\sky;
-  let sprites = doom_texture_load_sprites[
-    path, directory, lump_count, file_bytes, map
-  ];
-  if (sprites\ok == 1) () else (
-    => doom_texture_bank_error[sprites\error];
-  )
-  let ui = doom_texture_load_ui[
-    path, directory, lump_count, file_bytes
-  ];
-  if (ui\ok == 1) () else (
-    => doom_texture_bank_error[ui\error];
+  let sprites = {
+    ok: 1, error: "", slots: 0, loaded: 0,
+    meta: %32[], pixels: bytes_new[0], opaque: bytes_new[0]
+  };
+  let ui = {
+    ok: 1, error: "", slots: 0,
+    meta: %32[], pixels: bytes_new[0], opaque: bytes_new[0]
+  };
+  if (complete == 1) (
+    sprites = doom_texture_load_sprites[
+      path, directory, lump_count, file_bytes, map
+    ];
+    if (sprites\ok == 1) () else (
+      => doom_texture_bank_error[sprites\error];
+    )
+    ui = doom_texture_load_ui[
+      path, directory, lump_count, file_bytes
+    ];
+    if (ui\ok == 1) () else (
+      => doom_texture_bank_error[ui\error];
+    )
   )
 
   => {
@@ -2233,14 +2283,20 @@ op doom_texture_load_bank [path, directory, lump_count, file_bytes, map] (
     texture_pixels: texture_pixels, texture_opaque: texture_opaque,
     flat_count: flat_count, flat_names: flat_names,
     flat_pixels: flat_pixels, sky_flat: sky_flat, sky_texture: sky_texture,
-    sprite_ready: 1, sprite_slots: sprites\slots,
+    sprite_ready: complete, sprite_slots: sprites\slots,
     sprite_loaded: sprites\loaded, sprite_meta: sprites\meta,
     sprite_pixels: sprites\pixels, sprite_opaque: sprites\opaque,
-    ui_ready: 1, ui_slots: ui\slots, ui_meta: ui\meta,
+    ui_ready: complete, ui_slots: ui\slots, ui_meta: ui\meta,
     ui_pixels: ui\pixels, ui_opaque: ui\opaque,
     palette: palette, colormap: colormap,
     colours: colours, rgbx_colours: rgbx_colours
   };
+)
+
+op doom_texture_load_bank [wad, directory, lump_count, file_bytes, map] (
+  => doom_texture_load_bank_mode[
+    wad, directory, lump_count, file_bytes, map, 1
+  ];
 )
 
 op doom_texture_colour [bank, palette_index, light] (
@@ -2252,10 +2308,15 @@ op doom_texture_colour [bank, palette_index, light] (
 
 // Texture loading is intentionally separate from doom_map_load: the automap
 // keeps its geometry-only cost, while the first-person application explicitly
-// asks for the asset authority it uses.
-op doom_texture_load_map [path, map] (
+// asks for the asset authority it uses.  Parsing below is authority-free: one
+// measured bytes owner supplies every checked directory/lump slice.
+private op doom_texture_load_map_bytes_mode [wad, map, complete] (
   if (map\ok == 1) () else ( => map; )
-  let header = doom_texture_read_range[path, 0, 12];
+  if (is_bytes[wad] == 1) () else (
+    => map + { ok: 0, error: "textures: WAD source is not bytes" };
+  )
+  let file_bytes = bytes_len[wad];
+  let header = doom_texture_read_wad[wad, 0, 12];
   if (bytes_len[header] == 12) () else (
     => map + { ok: 0, error: "textures: short WAD header read" };
   )
@@ -2264,7 +2325,6 @@ op doom_texture_load_map [path, map] (
       (bytes_get[header, 3] == 68)) () else (
     => map + { ok: 0, error: "textures: bad WAD magic" };
   )
-  let file_bytes = size[path] with chaos { _ => 0 - 1 };
   let lump_count = doom_wad_u32le[header, 4];
   let directory_offset = doom_wad_u32le[header, 8];
   if ((file_bytes >= 12) and (lump_count <= 65536)) () else (
@@ -2275,14 +2335,14 @@ op doom_texture_load_map [path, map] (
       (directory_bytes <= file_bytes - directory_offset)) () else (
     => map + { ok: 0, error: "textures: WAD directory exceeds the file" };
   )
-  let directory = doom_texture_read_range[
-    path, directory_offset, directory_bytes
+  let directory = doom_texture_read_wad[
+    wad, directory_offset, directory_bytes
   ];
   if (bytes_len[directory] == directory_bytes) () else (
     => map + { ok: 0, error: "textures: short WAD directory read" };
   )
-  let bank = doom_texture_load_bank[
-    path, directory, lump_count, file_bytes, map
+  let bank = doom_texture_load_bank_mode[
+    wad, directory, lump_count, file_bytes, map, complete
   ];
   if (bank\ready == 1) () else (
     => map + {
@@ -2290,4 +2350,34 @@ op doom_texture_load_map [path, map] (
     };
   )
   => map + { texture_bank: bank };
+)
+
+// Complete native/browser asset bank, including sprites and UI art.
+op doom_texture_load_map_bytes [wad, map] (
+  => doom_texture_load_map_bytes_mode[wad, map, 1];
+)
+
+// World-only first-frame bank: checked PLAYPAL/COLORMAP, wall patches and
+// sector flats.  Sprite and UI readiness remain explicitly false rather than
+// pretending that synthetic evidence contains the whole game catalog.
+op doom_texture_load_map_bytes_world [wad, map] (
+  => doom_texture_load_map_bytes_mode[wad, map, 0];
+)
+
+// Native path authority is confined to one measured whole-file acquisition;
+// all catalog validation and composition then takes the same bytes path as
+// WASM.  The file operation is unreachable when only the browser entry point
+// above is rooted, so the reduced-authority target does not credit filesystem
+// access merely because this source module also supports native Doom.
+op doom_texture_load_map [path, map] (
+  if (map\ok == 1) () else ( => map; )
+  let file_bytes = size[path] with chaos { _ => 0 - 1 };
+  if (file_bytes >= 12) () else (
+    => map + { ok: 0, error: "textures: invalid WAD size" };
+  )
+  let wad = doom_texture_read_range[path, 0, file_bytes];
+  if (bytes_len[wad] == file_bytes) () else (
+    => map + { ok: 0, error: "textures: short WAD read" };
+  )
+  => doom_texture_load_map_bytes[wad, map];
 )

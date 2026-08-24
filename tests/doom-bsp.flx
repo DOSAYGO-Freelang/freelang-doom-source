@@ -15,6 +15,55 @@ op doom_bsp_u16 [b, offset, value] (
   => 0;
 )
 
+op doom_bsp_sprite_meta [meta, slot, width, height, left, top] (
+  let mb = slot * 6;
+  buf_set[meta, mb, width];
+  buf_set[meta, mb + 1, height];
+  buf_set[meta, mb + 2, 0];
+  buf_set[meta, mb + 3, left];
+  buf_set[meta, mb + 4, top];
+  buf_set[meta, mb + 5, 0];
+  => 0;
+)
+
+op doom_bsp_expect_muzzle [bank, weapon, frame,
+                            left, top, width, height, label] (
+  let placement = doom_view_muzzle_position[
+    320, 168, bank,
+    doom_texture_weapon_slot_for[weapon, 0],
+    doom_texture_muzzle_slot_for[weapon, frame]
+  ];
+  doom_bsp_expect[
+    (placement\left == left) and (placement\top == top) and
+    (placement\width == width) and (placement\height == height),
+    label
+  ];
+  => 0;
+)
+
+op doom_bsp_expect_weapon [bank, weapon, frame,
+                            left, top, width, height, label] (
+  let placement = doom_view_weapon_position[
+    320, 168, bank, doom_texture_weapon_slot_for[weapon, frame]
+  ];
+  doom_bsp_expect[
+    (placement\left == left) and (placement\top == top) and
+    (placement\width == width) and (placement\height == height),
+    label
+  ];
+  => 0;
+)
+
+op doom_bsp_frame_checksum [frame] (
+  let checksum = 0;
+  let i = 0;
+  while (i < bytes_len[frame]) (
+    checksum = (checksum * 31 + bytes_get[frame, i]) % 1000000007;
+    i = i + 1;
+  )
+  => checksum;
+)
+
 let vertices = bytes_new[24];
 doom_bsp_u16[vertices, 0, 0]; doom_bsp_u16[vertices, 2, 0];
 doom_bsp_u16[vertices, 4, 100]; doom_bsp_u16[vertices, 6, 0];
@@ -106,6 +155,19 @@ doom_bsp_expect[doom_map_point_subsector[map, 50, 50] == 0, "west subsector"];
 doom_bsp_expect[doom_map_point_subsector[map, 150, 50] == 1, "east subsector"];
 doom_bsp_expect[doom_map_point_sector[map, 50, 50] == 0, "west sector"];
 doom_bsp_expect[doom_map_point_sector[map, 150, 50] == 1, "east sector"];
+doom_bsp_expect[
+  (doom_view_portal_ceiling_plane_differs[128, 0, 160, 128, 0, 160] == 0) and
+  (doom_view_portal_ceiling_plane_differs[128, 0, 160, 96, 0, 160] == 1),
+  "unequal adjacent sky heights retain a front ceiling-plane interval"
+];
+doom_bsp_expect[
+  (doom_view_infinite_backdrop_v[128, 660, 660, 0] == 0) and
+  (doom_view_infinite_backdrop_v[128, 660, 660, 659] == 64) and
+  (doom_view_infinite_backdrop_v[128, 660, 336, 0] == 32) and
+  (doom_view_infinite_backdrop_v[128, 660, 336, 335] == 64) and
+  (doom_view_infinite_backdrop_v[128, 660, 5, 0] == 64),
+  "infinite backdrop uses maximum look-up scale at every pitch"
+];
 
 // A raised destination floor can hide an actor even though the XY ray crosses
 // a two-sided line. Rendering and combat must agree on that portal horizon.
@@ -329,61 +391,171 @@ let bank = map\texture_bank + {
 };
 map = map + { texture_bank: bank };
 
-// PISGA0 and PISFA0 use one shared psprite origin. Their real WAD offsets
-// place the flash fourteen logical pixels right and forty above the body;
-// independent bottom-centering used to paint it at the hand.
+// Audit every first-person flash frame against the registered Doom 1.9 WAD.
+// The neutral body supplies only the accepted horizontal presentation anchor;
+// vertical placement uses Doom's fixed logical psprite Y rather than assuming
+// that every neutral body patch has the same bottom extent.
 let psprite_meta = buf_new[32, doom_texture_sprite_slots[] * 6];
-let pistol_body = doom_texture_weapon_slot_for[2, 0];
-let pistol_flash = doom_texture_muzzle_slot_for[2, 0];
-let shotgun_anchor = doom_texture_weapon_slot_for[3, 0];
-let shotgun_flash = doom_texture_muzzle_slot_for[3, 0];
-let pistol_mb = pistol_body * 6;
-let pistol_flash_mb = pistol_flash * 6;
-let shotgun_mb = shotgun_anchor * 6;
-let shotgun_flash_mb = shotgun_flash * 6;
-buf_set[psprite_meta, pistol_mb, 57];
-buf_set[psprite_meta, pistol_mb + 1, 62];
-buf_set[psprite_meta, pistol_mb + 2, 0];
-buf_set[psprite_meta, pistol_mb + 3, 0 - 126];
-buf_set[psprite_meta, pistol_mb + 4, 0 - 106];
-buf_set[psprite_meta, pistol_flash_mb, 41];
-buf_set[psprite_meta, pistol_flash_mb + 1, 38];
-buf_set[psprite_meta, pistol_flash_mb + 2, 3534];
-buf_set[psprite_meta, pistol_flash_mb + 3, 0 - 140];
-buf_set[psprite_meta, pistol_flash_mb + 4, 0 - 66];
-// SHTGB-D change box width and left offset during the pump animation. SHTGA
-// remains the shared psprite anchor for both SHTFA/B flash patches.
-buf_set[psprite_meta, shotgun_mb, 79];
-buf_set[psprite_meta, shotgun_mb + 1, 60];
-buf_set[psprite_meta, shotgun_mb + 2, 5092];
-buf_set[psprite_meta, shotgun_mb + 3, 0 - 121];
-buf_set[psprite_meta, shotgun_mb + 4, 0 - 108];
-buf_set[psprite_meta, shotgun_flash_mb, 44];
-buf_set[psprite_meta, shotgun_flash_mb + 1, 31];
-buf_set[psprite_meta, shotgun_flash_mb + 2, 9832];
-buf_set[psprite_meta, shotgun_flash_mb + 3, 0 - 141];
-buf_set[psprite_meta, shotgun_flash_mb + 4, 0 - 95];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[2, 0], 57, 62, 0 - 126, 0 - 106
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[3, 0], 79, 60, 0 - 121, 0 - 108
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[4, 0], 114, 83, 0 - 104, 0 - 117
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[5, 0], 87, 79, 0 - 119, 0 - 121
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[6, 0], 83, 61, 0 - 123, 0 - 107
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[7, 0], 170, 84, 0 - 81, 0 - 116
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[2, 1], 79, 82, 0 - 104, 0 - 86
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[3, 1], 119, 121, 0 - 43, 0 - 47
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[3, 2], 87, 151, 0 - 30, 0 - 17
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[3, 3], 113, 131, 0 - 29, 0 - 37
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[4, 1], 114, 81, 0 - 104, 0 - 119
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[5, 1], 102, 75, 0 - 112, 0 - 125
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[6, 1], 104, 111, 0 - 64, 0 - 57
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[7, 1], 170, 84, 0 - 81, 0 - 116
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_weapon_slot_for[7, 2], 156, 83, 0 - 88, 0 - 117
+];
+
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[2, 0], 41, 38, 0 - 140, 0 - 66
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[3, 0], 44, 31, 0 - 141, 0 - 95
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[3, 1], 54, 44, 0 - 136, 0 - 86
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[4, 0], 86, 46, 0 - 118, 0 - 98
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[4, 1], 85, 47, 0 - 120, 0 - 97
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[5, 0], 53, 31, 0 - 136, 0 - 105
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[5, 1], 73, 51, 0 - 126, 0 - 101
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[5, 2], 88, 58, 0 - 117, 0 - 94
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[5, 3], 105, 79, 0 - 112, 0 - 81
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[6, 0], 83, 75, 0 - 123, 0 - 93
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[6, 1], 85, 73, 0 - 122, 0 - 95
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[7, 0], 82, 40, 0 - 125, 0 - 98
+];
+doom_bsp_sprite_meta[
+  psprite_meta, doom_texture_muzzle_slot_for[7, 1], 139, 67, 0 - 97, 0 - 77
+];
 let psprite_bank = bank + {
   sprite_meta: psprite_meta,
-  sprite_pixels: bytes_new[11196], sprite_opaque: bytes_new[11196]
+  sprite_pixels: bytes_new[20000], sprite_opaque: bytes_new[20000]
 };
-let muzzle_position = doom_view_muzzle_position[
-  320, 200, psprite_bank, pistol_body, pistol_flash
+doom_bsp_expect_weapon[psprite_bank, 2, 0, 127, 122, 57, 62,
+  "pistol neutral body retains its exact visible rectangle"];
+doom_bsp_expect_weapon[psprite_bank, 2, 1, 105, 102, 79, 82,
+  "pistol firing body follows its authored top offset"];
+doom_bsp_expect_weapon[psprite_bank, 3, 0, 122, 124, 79, 60,
+  "shotgun neutral body retains its exact visible rectangle"];
+doom_bsp_expect_weapon[psprite_bank, 3, 1, 44, 63, 119, 121,
+  "shotgun recoil body follows its authored top offset"];
+doom_bsp_expect_weapon[psprite_bank, 3, 2, 31, 33, 87, 151,
+  "shotgun pump body C follows its authored top offset"];
+doom_bsp_expect_weapon[psprite_bank, 3, 3, 30, 53, 113, 131,
+  "shotgun pump body D follows its authored top offset"];
+doom_bsp_expect_weapon[psprite_bank, 4, 0, 105, 133, 114, 83,
+  "chaingun body extends thirty-two logical pixels below the viewport"];
+doom_bsp_expect_weapon[psprite_bank, 4, 1, 105, 135, 114, 81,
+  "alternate chaingun body shares the clipped canonical origin"];
+doom_bsp_expect_weapon[psprite_bank, 5, 0, 120, 137, 87, 79,
+  "rocket body retains its clipped canonical origin"];
+doom_bsp_expect_weapon[psprite_bank, 5, 1, 113, 141, 102, 75,
+  "rocket firing body retains its clipped canonical origin"];
+doom_bsp_expect_weapon[psprite_bank, 6, 0, 124, 123, 83, 61,
+  "plasma neutral body retains its exact visible rectangle"];
+doom_bsp_expect_weapon[psprite_bank, 6, 1, 65, 73, 104, 111,
+  "plasma refire body follows its authored top offset"];
+doom_bsp_expect_weapon[psprite_bank, 7, 0, 82, 132, 170, 84,
+  "BFG neutral body retains its clipped canonical origin"];
+doom_bsp_expect_weapon[psprite_bank, 7, 1, 82, 132, 170, 84,
+  "BFG firing body retains its clipped canonical origin"];
+doom_bsp_expect_weapon[psprite_bank, 7, 2, 89, 133, 156, 83,
+  "BFG followthrough body retains its clipped canonical origin"];
+doom_bsp_expect_muzzle[psprite_bank, 2, 0, 141, 82, 41, 38,
+  "pistol flash retains the accepted control placement"];
+doom_bsp_expect_muzzle[psprite_bank, 3, 0, 142, 111, 44, 31,
+  "shotgun flash A follows the shared psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 3, 1, 137, 102, 54, 44,
+  "shotgun flash B follows the shared psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 4, 0, 119, 114, 86, 46,
+  "chaingun flash A uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 4, 1, 121, 113, 85, 47,
+  "chaingun flash B uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 5, 0, 137, 121, 53, 31,
+  "rocket flash A uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 5, 1, 127, 117, 73, 51,
+  "rocket flash B uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 5, 2, 118, 110, 88, 58,
+  "rocket flash C uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 5, 3, 113, 97, 105, 79,
+  "rocket flash D uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 6, 0, 124, 109, 83, 75,
+  "plasma flash A uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 6, 1, 123, 111, 85, 73,
+  "plasma flash B uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 7, 0, 126, 114, 82, 40,
+  "BFG flash A uses the canonical psprite origin"];
+doom_bsp_expect_muzzle[psprite_bank, 7, 1, 98, 93, 139, 67,
+  "BFG flash B uses the canonical psprite origin"];
+let pistol_960 = doom_view_weapon_position[
+  960, 504, psprite_bank, doom_texture_weapon_slot_for[2, 0]
 ];
 doom_bsp_expect[
-  (muzzle_position\left == 146) and (muzzle_position\top == 98) and
-  (muzzle_position\width == 41) and (muzzle_position\height == 38),
-  "muzzle flash preserves the shared WAD psprite origin at the barrel tip"
+  (pistol_960\left == 381) and (pistol_960\top == 366) and
+  (pistol_960\width == 171) and (pistol_960\height == 186),
+  "960-wide psprite uses full-screen scale rather than viewport height"
 ];
-let shotgun_muzzle_position = doom_view_muzzle_position[
-  320, 200, psprite_bank, shotgun_anchor, shotgun_flash
+let pistol_1280 = doom_view_weapon_position[
+  1280, 672, psprite_bank, doom_texture_weapon_slot_for[2, 0]
 ];
 doom_bsp_expect[
-  (shotgun_muzzle_position\left == 141) and
-  (shotgun_muzzle_position\top == 127) and
-  (shotgun_muzzle_position\width == 44) and
-  (shotgun_muzzle_position\height == 31),
-  "shotgun flash stays on the neutral psprite origin during pump frames"
+  (pistol_1280\left == 508) and (pistol_1280\top == 488) and
+  (pistol_1280\width == 228) and (pistol_1280\height == 248),
+  "1280-wide psprite reaches through the status-bar boundary"
 ];
 pi = 0;
 while (pi < map\sector_count * 2) (
@@ -439,6 +611,42 @@ while (pi < bytes_len[pixels]) (
 doom_bsp_expect[red_pixels > 0, "indexed wall texels reach the frame"];
 doom_bsp_expect[blue_pixels > 0, "depth-tested enemy sprite reaches the frame"];
 doom_bsp_expect[green_pixels > 0, "first-person weapon sprite reaches the frame"];
+
+// A four-height portal corpus crosses the closed-door terminal case, two
+// partial apertures and the fully open room. Both native and WASM execute this
+// exact source, so any clipping experiment must preserve every framebuffer.
+let door_checksums = buf_new[32, 4];
+let door_panels = buf_new[32, 4];
+let door_columns = buf_new[32, 4];
+let door_heights = %32[24, 40, 64, 96];
+let door_height_index = 0;
+while (door_height_index < 4) (
+  buf_set[map\sectors, 6, buf_get[door_heights, door_height_index]];
+  let door_view = doom_view_draw[
+    pixels, 320, 200, gui_font[], map, textured_work,
+    50, 50, trig_from_degrees[0], alive, 0, 1, 0, 0, 0
+  ];
+  buf_set[
+    door_checksums, door_height_index, doom_bsp_frame_checksum[pixels]
+  ];
+  buf_set[door_panels, door_height_index, door_view\panels];
+  buf_set[door_columns, door_height_index, door_view\columns];
+  door_height_index = door_height_index + 1;
+)
+doom_bsp_expect[
+  (buf_get[door_checksums, 0] == 12229868) and
+  (buf_get[door_checksums, 1] == 363852408) and
+  (buf_get[door_checksums, 2] == 572912286) and
+  (buf_get[door_checksums, 3] == 636618499),
+  "closed, partial and open portal frames retain exact pixels"
+];
+doom_bsp_expect[
+  (buf_get[door_panels, 0] == 1) and
+  (buf_get[door_columns, 0] == 320) and
+  (buf_get[door_panels, 1] > buf_get[door_panels, 0]),
+  "closed portal culls fully occluded wall commands"
+];
+buf_set[map\sectors, 6, 96];
 
 // Two disconnected leaves can refer to one physical sector-plane. They must
 // retain distinct records even when their rendering code (height/flat/light)

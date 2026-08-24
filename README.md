@@ -7,15 +7,17 @@ source, focused synthetic tests and supporting engineering evidence. It is
 licensed under [`GPL-2.0-or-later`](LICENSE). A compatible, separately licensed
 Freelang builder environment is required to compile it.
 
-Freelang Doom Engine reads caller-supplied Doom-format WAD data, opens a native
-window, renders the game in software, runs bounded combat and world simulation,
-and synthesizes the selected map's MUS score through a pure-Freelang
-GENMIDI/FM model.
+Freelang Doom Engine reads caller-supplied Doom-format WAD data, renders the
+game in software, runs bounded combat and world simulation, and synthesizes the
+selected map's MUS score through a pure-Freelang GENMIDI/FM model. The same
+Freelang session/frame source drives native windows and the reduced-authority
+browser target.
 
 WAD parsing, map and texture validation, BSP traversal, rendering, input state,
 combat, world updates, menu composition, MUS decoding, FM synthesis and
-derived-audio caching are expressed in Freelang. Native GUI and audio authority
-stays behind process-isolated sidecars.
+derived-audio caching are expressed in Freelang. Host GUI, audio and artifact
+storage authority stays behind finite sidecar protocols: separate processes on
+native systems and private-port capability agents in the browser.
 
 ## Distribution boundary
 
@@ -29,18 +31,19 @@ WAD through its bounded load/render/close path, with deeper interactive and
 deterministic coverage centered on E1M1, E1M2 and E2M1. The WAD is neither
 included nor downloaded by this repository.
 
-This snapshot corresponds to Freelang milestone **v6.4.0**. Native play at a
-1280x800 logical raster is accepted as fast and playable; the retained
-software renderer keeps BSP traversal and world decisions in Freelang while
-using independently bounded raster batches for repeated pixel projection.
+This snapshot corresponds to Freelang milestone **v6.9.0**. Native play at a
+1280x800 logical raster is accepted as fast and playable. The retained browser
+workload renders the same shared session at about 26 frames per second at that
+resolution. BSP traversal and world decisions remain in Freelang while
+independently bounded raster operations accelerate repeated pixel projection.
 
 The application source is the Builder's Kit component named **Freelang Doom
-Source**. The Freelang compiler and native sidecar implementations are separate
-programs, separately licensed, and are not included in this repository. A
-compatible, separately licensed Freelang toolchain is required to rebuild the
-application. Published native Freelang Doom Engine distributions can be run
-without that toolchain; the source remains the readable and modifiable
-application proof.
+Source**. The Freelang compiler and host sidecar/agent implementations are
+separate programs, separately licensed, and are not included in this
+repository. A compatible, separately licensed Freelang toolchain is required
+to rebuild the application. Published native or browser Freelang Doom Engine
+distributions can be run without that toolchain; the source remains the
+readable and modifiable application proof.
 
 A native distribution may be a self-extracting aggregate. In that form,
 generic native sidecar executables are stored as inert payload bytes in the
@@ -79,6 +82,13 @@ doom-play /games/DOOM.WAD E1M2 --no-music
 When no map is named, the first complete classic `ExMy` namespace is selected
 and the map menu opens. The engine never searches for or downloads a WAD.
 
+A compatible builder can also emit the browser application from this same
+entry point. The generated HTML, loader, Worker, WASM module and generic web
+capability agents are build/distribution artifacts and are deliberately not
+part of this Doom-source mirror. In the browser the user explicitly selects a
+WAD; one measured copy may be cached in IndexedDB under the local-artifact
+capability, with a separate disposable cache for validated derived music.
+
 Inside a licensed Freelang builder environment, the source entry point is
 `games/doom-play.flx`. The compiler launchers are supplied by that environment,
 not this repository. For example:
@@ -98,12 +108,13 @@ pwsh C:\path\to\freelang\flx.ps1 games/doom-play.flx C:\games\DOOM.WAD E1M1
 | Mouse | Look while the pointer is captured |
 | Left mouse or Control | Fire; holding repeats through weapon cooldown |
 | W / Up, S / Down | Move forward / backward |
-| A / Q, D / held E | Strafe left / right |
+| A, D | Strafe left / right |
 | Left / Right arrows | Turn without the mouse |
 | Press E | Use a supported door, lift or exit line |
 | Space | Jump |
-| 1–5 | Select an owned weapon |
+| 1–7 | Select an owned weapon |
 | Mouse wheel or `[` / `]` | Cycle owned weapons |
+| Hold Tab | Tactical linedef scan with actors/items in night-vision color |
 | R | Reset the current map state |
 | Escape | Release pointer capture; press again to open or close the map menu |
 | Up / Down, Return | Move through the menu and start the selected map |
@@ -127,14 +138,17 @@ not depend on receiving every native key edge.
 | `--input-log=PATH` | Retain a bounded input/movement/blocker trace for a later repro analysis |
 
 Music is synthesized from the selected WAD's effective MUS and GENMIDI lumps.
-The first cold render can take several seconds. A validated derived WAV is then
-cached under the host's platform cache directory; the cache key includes the
-exact MUS, GENMIDI bank, renderer version and output format. Cache corruption or
-write failure becomes an ordinary synthesis miss and never prevents silent
-gameplay. `FREELANG_DOOM_MUSIC_CACHE` selects an exact cache root. WAD-native
-player weapons/pain, supported monster combat, pickup, door, switch, teleport,
-rocket and barrel sounds share the session through the bounded general mixer;
-no effect audio is embedded in the binary.
+The first cold render can take several seconds and is surfaced as loading or
+generation work. A validated derived WAV is then cached under the native
+platform cache directory or the browser's bounded derived-artifact cache; the
+cache key includes the exact MUS, GENMIDI bank, renderer version and output
+format. The browser always reserves storage for the selected-WAD cache before
+derived music. Cache corruption or write failure becomes an ordinary synthesis
+miss and never prevents silent gameplay. `FREELANG_DOOM_MUSIC_CACHE` selects an
+exact native cache root. WAD-native player weapons/pain, supported monster
+combat, pickup, door, switch, teleport, rocket and barrel sounds share the
+session through the bounded 16-voice mixer; no effect audio is embedded in the
+binary. Skip music leaves effects enabled.
 
 ## Compatibility scope
 
@@ -156,7 +170,10 @@ The default path includes textured walls and planes, directional animated
 sprites, status/menu art, pickups, several doors and lifts, exits, hazards,
 player height and jumping, five weapon selections, hitscan/projectile combat,
 explosive barrels, visible dropped clips, mutable switch faces, guarded tagged
-teleports with native fog animation and WAD-derived gameplay effects.
+teleports with native fog animation and WAD-derived gameplay effects. Within
+one process/page session, map choices retain the player's earned weapons,
+ammunition, armor and health. Holding Tab replaces textured surfaces with a
+linedef tactical scan while preserving the same simulation state.
 
 ## Architecture
 
@@ -175,16 +192,20 @@ presenter snapshot ─> input intent ─> collision/world/combat ─> renderer
                                                                └─> pixels ─> f/gui
 ```
 
-One frame in `doom-play.flx` is deliberately ordered: draw the current state,
-present it and receive one complete input snapshot, fold menu/input intent,
-resolve movement and collision, update world/combat state, and finally retain
-optional diagnostics. There are no native callbacks into game state.
+One `doom_session_step` transition is deliberately ordered: draw the current
+state, consume one complete input snapshot, fold menu/input intent, resolve
+movement and collision, update world/combat state, and finally retain optional
+diagnostics and semantic sound commands. The native/browser adapter presents
+the returned pixels and capability commands; there are no host callbacks into
+game state.
 
 The principal modules are:
 
 | Module | Responsibility |
 | --- | --- |
-| `doom-play.flx` | Executable policy, map handoff and the explicit frame transaction |
+| `doom-play.flx` | Executable policy, map handoff and host-capability lifecycle |
+| `doom-session.flx` | Presenter-independent session state, input folding, simulation and semantic sound commands |
+| `doom-frame.flx` | Shared frame composition, including status, weapon and tactical scan presentation |
 | `doom-stock.flx` | Central stock THING, action, sprite and sound-family policy |
 | `doom-profile.flx` | Deterministic real-WAD renderer workload and checksum harness |
 | `doom-format.flx` | Filesystem-neutral little-endian and WAD-name primitives |
@@ -219,8 +240,9 @@ Several conventions are intentional:
   reserved for an invariant that validated application state should not break.
 - `--flat`, `--static-sprites`, `--no-music` and `--demo` retain smaller
   independent oracles rather than forcing every test through the newest path.
-- GUI and audio sidecars receive pixels, input records and bounded canonical
-  WAV clips; they receive no WAD parser, map, combat or game-policy authority.
+- GUI, audio and artifact sidecars receive pixels/input records, bounded
+  canonical WAV clips or explicitly selected opaque bytes; they receive no WAD
+  parser, map, combat or game-policy authority.
 
 The `tests/doom-*.flx` fixtures exercise parser rejection, BSP traversal,
 texture composition, input snapshots, menu behavior, deterministic drives,
@@ -230,6 +252,8 @@ contain no commercial Doom assets.
 ## Repository contents
 
 - `games/` contains the engine and its smaller retained oracles.
+- `examples/wasm-doom.flx` is the Freelang browser application entry point;
+  its generated host and generic web capability agents are not included.
 - `tests/` contains Doom-specific synthetic fixtures and expected output.
 - `tools/` contains music comparison and geometry probes.
 - `docs/dev/` and `docs/spec/` describe current behavior and process protocols.

@@ -199,10 +199,46 @@ doom_ui_test_expect[
   status_equal == 1,
   "cached static strip plus live overlays matches direct composition"
 ];
+let stable_redraws = status_cache\redraws;
+doom_ui_draw_status_cached[
+  cached_large_buf, 640, 400, bank, status_cache,
+  status_combat, status_world
+];
+doom_ui_test_expect[
+  status_cache\redraws == stable_redraws,
+  "unchanged status presentation retains its persistent framebuffer suffix"
+];
+status_combat\ammo = status_combat\ammo - 1;
+doom_ui_draw_status_cached[
+  cached_large_buf, 640, 400, bank, status_cache,
+  status_combat, status_world
+];
+doom_ui_test_expect[
+  status_cache\redraws == stable_redraws + 1,
+  "changed status authority reconstructs its cached strip exactly once"
+];
+status_combat\ammo = status_combat\ammo + 1;
 ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_esc[]]]];
 doom_ui_test_expect[
   doom_ui_draw_menu[buf, 320, 200, bank, ui] == 1,
   "open menu composes entirely in Freelang"
+];
+// Reuse the already-measured 640x400 owner: this test intentionally runs on
+// the small default heap and must not retain a third full-frame fixture merely
+// to prove menu scaling.
+gui_fill[large_buf, 0];
+doom_ui_test_expect[
+  (doom_ui_draw_menu[large_buf, 640, 400, bank, ui] == 1) and
+  (doom_ui_text_width_scaled[bank, "E1M1", 2, 1] ==
+   doom_ui_text_width[bank, "E1M1"] * 2),
+  "menu glyph geometry follows the logical-raster scale"
+];
+let large_logo_top_left = (20 * 640 + 319) * 4;
+let large_logo_bottom_right = (21 * 640 + 320) * 4;
+doom_ui_test_expect[
+  (bytes_get[large_buf, large_logo_top_left] == 200) and
+  (bytes_get[large_buf, large_logo_bottom_right] == 200),
+  "scaled menu patch covers the complete two-by-two logical block"
 ];
 
 print "doom UI state ok";

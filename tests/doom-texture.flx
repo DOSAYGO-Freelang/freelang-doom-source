@@ -199,7 +199,7 @@ doom_texture_test_expect[
   "every stock E1-E3 corpse, gore, light and decoration kind is classified"
 ];
 doom_texture_test_expect[
-  (doom_texture_sprite_slots[] == 1027) and
+  (doom_texture_sprite_slots[] == 1028) and
   (doom_texture_sprite_directional_slot[0, 0, 5] == 4) and
   (doom_texture_sprite_directional_slot[1, 0, 1] == 69) and
   (doom_texture_sprite_directional_slot[2, 7, 8] == 201) and
@@ -209,6 +209,8 @@ doom_texture_test_expect[
   (doom_texture_sprite_death_slot[0, 0] == 64) and
   (doom_texture_sprite_death_slot[2, 4] == 206) and
   (doom_texture_sprite_death_slot[3, 4] == 275) and
+  (doom_texture_sprite_death_frame_count[5] == 6) and
+  (doom_texture_sprite_death_slot[5, 5] == 1027) and
   (doom_texture_sprite_death_slot[8, 4] == 620) and
   (doom_texture_weapon_slot[4] == 629) and
   (doom_texture_weapon_slot_for[3, 0] == 630) and

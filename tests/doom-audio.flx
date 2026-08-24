@@ -1,4 +1,4 @@
-credits: <../games/doom-audio.flx> <f/bytes>;
+credits: <../games/doom-audio.flx> <f/bytes> <f/derived-cache>;
 
 op doom_audio_test_expect [condition, label] (
   if (condition == 1) () else (
@@ -49,10 +49,10 @@ while (i < 8) (
   bytes_set[wad, 44 + i, bytes_get[name, i]];
   i = i + 1;
 )
-doom_audio_test_expect[_intrinsic_fs_write_bytes[path, wad] == 0, "fixture write"];
+doom_audio_test_expect[write_bytes_raw[path, wad] == 0, "fixture write"];
 let rendered = doom_audio_render_map[path, "E1M1"];
 let missing_bank = doom_audio_render_map_opl2[path, "E1M1"];
-_intrinsic_fs_remove[path];
+remove_raw[path];
 doom_audio_test_expect[rendered\ok == 1, "E1M1 render"];
 doom_audio_test_expect[string_eq[rendered\track, "D_E1M1"] == 1, "track mapping"];
 doom_audio_test_expect[rendered\samples == 157, "two-tick synthesis"];
@@ -119,11 +119,34 @@ while (i < 8) (
   bytes_set[opl_wad, 6368 + i, bank_name\@i];
   i = i + 1;
 )
+let prepared_bytes = doom_audio_prepare_map_opl2_bytes[opl_wad, "E1M1"];
 doom_audio_test_expect[
-  _intrinsic_fs_write_bytes[opl_path, opl_wad] == 0, "OPL2 fixture write"
+  (prepared_bytes\ok == 1) and (prepared_bytes\samples == 315) and
+  (str_len[prepared_bytes\key] == 64),
+  "in-memory OPL2 inputs produce a bounded semantic cache key"
+];
+let rendered_bytes = doom_audio_render_prepared_opl2[prepared_bytes];
+doom_audio_test_expect[
+  (rendered_bytes\ok == 1) and
+  (doom_audio_cache_wav_valid[rendered_bytes\wav, 315] == 1),
+  "prepared in-memory OPL2 inputs render canonical WAV"
+];
+let get_frame = derived_cache_get_frame[7, prepared_bytes\key];
+let miss_frame = bytes_new[12];
+doom_audio_test_u32[miss_frame, 0, 12];
+doom_audio_test_u32[miss_frame, 4, 32770];
+doom_audio_test_u32[miss_frame, 8, 7];
+let miss = derived_cache_inspect_response[miss_frame];
+doom_audio_test_expect[
+  (bytes_len[get_frame] == 80) and (doom_wad_u32le[get_frame, 4] == 1) and
+  (miss\ok == 1) and (miss\hit == 0) and (miss\request_id == 7),
+  "derived-cache GET and MISS retain their bounded frame contract"
+];
+doom_audio_test_expect[
+  write_bytes_raw[opl_path, opl_wad] == 0, "OPL2 fixture write"
 ];
 let stress = string_eq[getenv["FREELANG_GC_STRESS"], "1"];
-let windows_stress = (_intrinsic_os[] == 2) and stress;
+let windows_stress = (os[] == 2) and stress;
 let cache_dir = "";
 let cache = doom_audio_cache_disabled[];
 if (windows_stress == 0) (
@@ -150,7 +173,7 @@ if (windows_stress == 0) (
     "0000000000000000000000000000000000000000000000000000000000000000"
   ];
   doom_audio_test_expect[
-    _intrinsic_fs_write_bytes[stale_entry, %[1, 2, 3]] == 0,
+    write_bytes_raw[stale_entry, %[1, 2, 3]] == 0,
     "stale map cache fixture write"
   ];
   opl_rendered = doom_audio_render_map_opl2_cached[
@@ -160,10 +183,10 @@ if (windows_stress == 0) (
     opl_rendered\cache_status == 2, "OPL2 cache miss stored"
   ];
   doom_audio_test_expect[
-    _intrinsic_fs_exists[stale_entry] == 0,
+    exists_raw[stale_entry] == 0,
     "older same-map cache entry pruned"
   ];
-  let cache_names = _intrinsic_fs_list_dir[cache\dir];
+  let cache_names = list_raw[cache\dir];
   doom_audio_test_expect[
     arr_len[cache_names] == 1, "one retained map cache entry"
   ];
@@ -192,7 +215,7 @@ if (windows_stress == 0) (
   ];
   let short_cache = %[82, 73, 70, 70];
   doom_audio_test_expect[
-    _intrinsic_fs_write_bytes[cache_entry, short_cache] == 0,
+    write_bytes_raw[cache_entry, short_cache] == 0,
     "corrupt cache fixture write"
   ];
   doom_audio_test_expect[
@@ -213,19 +236,19 @@ if (windows_stress == 0) (
     "republished cache validates"
   ];
   doom_audio_test_expect[
-    _intrinsic_fs_exists["^{cache_entry}.^{pid[]}.tmp"] == 0,
+    exists_raw["^{cache_entry}.^{pid[]}.tmp"] == 0,
     "cache publication leaves no temp"
   ];
-  _intrinsic_fs_remove[cache_entry];
+  remove_raw[cache_entry];
 )
-_intrinsic_fs_remove[opl_path];
+remove_raw[opl_path];
 if (windows_stress == 0) (
   doom_audio_test_expect[opl_rendered\ok == 1, "OPL2 map render"];
   doom_audio_test_expect[opl_rendered\samples == 315, "OPL2 map samples"];
   doom_audio_test_expect[
     bytes_len[opl_rendered\wav] == 359, "OPL2 map WAV bytes"
   ];
-  _intrinsic_fs_rmdir[cache_dir];
+  rmdir_raw[cache_dir];
 )
 let sound = bytes_new[12];
 doom_audio_test_u16[sound, 0, 3];
@@ -291,11 +314,11 @@ while (i < effect_count) (
   i = i + 1;
 )
 doom_audio_test_expect[
-  _intrinsic_fs_write_bytes[effects_path, effects_wad] == 0,
+  write_bytes_raw[effects_path, effects_wad] == 0,
   "effects fixture write"
 ];
 let effects = doom_audio_render_effects[effects_path];
-_intrinsic_fs_remove[effects_path];
+remove_raw[effects_path];
 doom_audio_test_expect[
   (effects\ok == 1) and (arr_len[effects\wavs] == 39) and
   (bytes_len[effects\wavs\@0] == 48) and

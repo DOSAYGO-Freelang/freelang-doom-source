@@ -221,10 +221,9 @@ op doom_input_forward_axis [st] (
 op doom_input_strafe_axis [st] (
   let positive = 0;
   let negative = 0;
-  if ((doom_input_held[st, 97] == 1) or
-      (doom_input_held[st, 113] == 1)) ( positive = 1; )
-  if ((doom_input_held[st, 100] == 1) or
-      (doom_input_held[st, 101] == 1)) ( negative = 1; )
+  if (doom_input_held[st, 97] == 1) ( positive = 1; )
+  // E is the finite use/action binding. It must never also create movement.
+  if (doom_input_held[st, 100] == 1) ( negative = 1; )
   => positive - negative;
 )
 

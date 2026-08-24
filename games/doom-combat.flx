@@ -38,6 +38,17 @@ op doom_combat_actor_targetable [actor] (
   };
 )
 
+// Ordinary dead actors retain a corpse sprite. Vanilla Lost Souls instead
+// leave the world after their six-frame terminal animation reaches S_NULL.
+op doom_combat_actor_renderable [actor] (
+  if ((actor\family == 5) and
+      (actor\phase == DoomEnemyPhase\Death) and
+      (actor\phase_tick >= 36)) (
+    => 0;
+  )
+  => 1;
+)
+
 private op doom_combat_attack_sprite_slot [actor, rotation] (
   let frame = 4 + (actor\phase_tick / 5) % 2;
   if ((actor\family == 2) or (actor\family == 3) or
@@ -77,8 +88,14 @@ private op doom_combat_walk_sprite_slot [actor, rotation, dormant] (
 )
 
 private op doom_combat_death_sprite_slot [actor] (
-  let frame = actor\phase_tick / 5;
-  if (frame > 4) ( frame = 4; )
+  let frame_ticks = 5;
+  let terminal_frame = 4;
+  if (actor\family == 5) (
+    frame_ticks = 6;
+    terminal_frame = 5;
+  )
+  let frame = actor\phase_tick / frame_ticks;
+  if (frame > terminal_frame) ( frame = terminal_frame; )
   => doom_texture_sprite_death_slot[actor\family, frame];
 )
 
@@ -98,28 +115,36 @@ op doom_combat_weapon_frame [combat] (
     => 1 + cooldown % 3;
   )
   if (combat\selected_weapon == 2) (
-    if (cooldown >= 9) ( => 1; )
-    if (cooldown >= 7) ( => 2; )
-    if (cooldown >= 4) ( => 3; )
-    if (cooldown >= 2) ( => 4; )
+    // Vanilla holds PISGA for four tics before A_FirePistol advances the
+    // body to PISGB and creates PISFA. The bounded ten-tic cycle retains
+    // that ordering and uses the remaining six tics for the firing frame.
+    if (cooldown >= 7) ( => 0; )
+    if (cooldown > 0) ( => 1; )
   )
   if (combat\selected_weapon == 3) (
-    if (cooldown >= 20) ( => 1; )
-    if (cooldown >= 13) ( => 2; )
-    if (cooldown >= 5) ( => 3; )
+    // S_SGUN1 and S_SGUN2 both use SHTGA: the three-tic wind-up is dark,
+    // then the two flash states finish before SHTGB/C/D begin the pump.
+    if (cooldown >= 15) ( => 0; )
+    if (cooldown >= 10) ( => 1; )
+    if (cooldown >= 5) ( => 2; )
+    if (cooldown > 0) ( => 3; )
   )
   if ((combat\selected_weapon == 4) and (cooldown > 0)) (
-    => 1;
+    => (combat\shots + 1) % 2;
   )
-  if ((combat\selected_weapon == 5) and (cooldown >= 16)) (
+  if ((combat\selected_weapon == 5) and (cooldown > 0)) (
     => 1;
   )
   if ((combat\selected_weapon == 6) and (cooldown > 0)) (
-    => combat\shots % 2;
+    // S_PLASMA1 stays on PLSGA for its three firing tics; PLSGB is the
+    // refire state. Flash choice is independent of the body frame.
+    if (cooldown >= 2) ( => 0; )
+    => 1;
   )
   if (combat\selected_weapon == 7) (
-    if (cooldown >= 20) ( => 1; )
-    if (cooldown >= 10) ( => 2; )
+    // Keep vanilla's full twenty-tic BFGGA charge before the gun flash.
+    if (cooldown >= 11) ( => 0; )
+    if (cooldown > 0) ( => 1; )
   )
   => 0;
 )
@@ -135,27 +160,35 @@ op doom_combat_weapon_slot [combat] (
 op doom_combat_muzzle_slot [combat] (
   let cooldown = combat\shot_cooldown;
   let weapon = combat\selected_weapon;
-  if ((weapon == 2) and (cooldown >= 8)) (
+  if ((weapon == 2) and (cooldown <= 6) and (cooldown > 0)) (
     => doom_texture_muzzle_slot_for[2, 0];
   )
-  if ((weapon == 3) and (cooldown >= 17)) (
+  if ((weapon == 3) and (cooldown <= 21) and (cooldown >= 15)) (
     let frame = 0;
-    if (cooldown < 21) ( frame = 1; )
+    if (cooldown <= 17) ( frame = 1; )
     => doom_texture_muzzle_slot_for[3, frame];
   )
   if ((weapon == 4) and (cooldown > 0)) (
-    => doom_texture_muzzle_slot_for[4, combat\shots % 2];
+    => doom_texture_muzzle_slot_for[4, (combat\shots + 1) % 2];
   )
-  if ((weapon == 5) and (cooldown >= 22)) (
-    let frame = (30 - cooldown) / 2;
-    if (frame > 3) ( frame = 3; )
+  if ((weapon == 5) and (cooldown >= 16)) (
+    // MISFA-D retain their original 3/4/4/4-tic durations.
+    let elapsed = 30 - cooldown;
+    let frame = 0;
+    if (elapsed >= 3) ( frame = 1; )
+    if (elapsed >= 7) ( frame = 2; )
+    if (elapsed >= 11) ( frame = 3; )
     => doom_texture_muzzle_slot_for[5, frame];
   )
   if ((weapon == 6) and (cooldown > 0)) (
-    => doom_texture_muzzle_slot_for[6, combat\shots % 2];
+    => doom_texture_muzzle_slot_for[6, (combat\shots + 1) % 2];
   )
-  if ((weapon == 7) and (cooldown >= 18)) (
-    => doom_texture_muzzle_slot_for[7, (30 - cooldown) % 2];
+  if ((weapon == 7) and (cooldown <= 10) and (cooldown > 0)) (
+    // The bounded cycle preserves the twenty-tic charge exactly, then
+    // compresses the 11/6 flash pair into the ten remaining tics.
+    let frame = 0;
+    if (cooldown <= 3) ( frame = 1; )
+    => doom_texture_muzzle_slot_for[7, frame];
   )
   => 0 - 1;
 )
@@ -475,11 +508,16 @@ op doom_combat_validate [map, combat] (
   let i = 0;
   while (i < combat\enemy_count) (
     let actor = combat\actors\\i;
+    let phase_tick_limit = 30;
+    if ((actor\family == 5) and (actor\phase == DoomEnemyPhase\Death)) (
+      phase_tick_limit = 36;
+    )
     if ((actor\thing >= 0) and (actor\thing < map\thing_count) and
         (actor\family >= 0) and (actor\family < 9) and
         (actor\health >= 0) and (actor\health <= actor\max_health) and
         (actor\max_health == doom_combat_actor_max_health[actor\kind]) and
-        (actor\phase_tick >= 0) and (actor\phase_tick <= 30) and
+        (actor\phase_tick >= 0) and
+        (actor\phase_tick <= phase_tick_limit) and
         (actor\attack_cooldown >= 0) and (actor\attack_cooldown <= 60)) () else (
       fall "doom_combat_validate: enemy invariant violated";
     )
@@ -615,6 +653,39 @@ op doom_combat_new [map] (
   bytes_set[combat\weapons, 2, 1];
   doom_combat_validate[map, combat];
   => combat;
+)
+
+// Carry only durable player inventory into a freshly constructed map combat
+// state. Map actors, drops, projectiles, counters, cooldowns and timed powers
+// remain owned by `fresh`; keys remain world state and are therefore absent
+// here. A new weapon owner prevents one map session from mutating another.
+op doom_combat_carry_inventory [fresh_map, fresh, prior_map, prior] (
+  doom_combat_validate[fresh_map, fresh];
+  doom_combat_validate[prior_map, prior];
+
+  let weapons = bytes_new[8];
+  let weapon = 0;
+  while (weapon < bytes_len[weapons]) (
+    bytes_set[weapons, weapon, bytes_get[prior\weapons, weapon]];
+    weapon = weapon + 1;
+  )
+
+  fresh\health = prior\health;
+  fresh\armor = prior\armor;
+  fresh\backpack = prior\backpack;
+  fresh\max_ammo = 200 + fresh\backpack * 200;
+  fresh\max_shells = 50 + fresh\backpack * 50;
+  fresh\max_rockets = 50 + fresh\backpack * 50;
+  fresh\max_cells = 300 + fresh\backpack * 300;
+  fresh\ammo = prior\ammo;
+  fresh\shells = prior\shells;
+  fresh\rockets = prior\rockets;
+  fresh\cells = prior\cells;
+  fresh\weapons = weapons;
+  fresh\selected_weapon = prior\selected_weapon;
+
+  doom_combat_validate[fresh_map, fresh];
+  => fresh;
 )
 
 // Player inventory is combat authority. World collection decides whether a
@@ -1674,7 +1745,9 @@ op doom_combat_tick_at [map, combat, player_x, player_y, player_z] (
         )
       )
       Death => (
-        if (actor\phase_tick < 25) (
+        let terminal_tick = 25;
+        if (actor\family == 5) ( terminal_tick = 36; )
+        if (actor\phase_tick < terminal_tick) (
           actor\phase_tick = actor\phase_tick + 1;
         )
       )

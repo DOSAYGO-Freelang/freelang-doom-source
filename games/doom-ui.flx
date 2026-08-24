@@ -138,7 +138,7 @@ op doom_ui_draw_patch_scaled [buf, w, h, bank, slot, x, y,
   // avoiding repeated nearest-neighbour division and opacity reads.
   let integer_scale = scale_numerator / scale_denominator;
   if (((integer_scale == 1) or (integer_scale == 2) or
-       (integer_scale == 4)) and
+       (integer_scale == 3) or (integer_scale == 4)) and
       (scale_numerator == integer_scale * scale_denominator)) (
     let sy = 0;
     while (sy < ph) (
@@ -210,37 +210,51 @@ private op doom_ui_patch_width [bank, slot] (
   => 0;
 )
 
-op doom_ui_text_width [bank, text] (
+op doom_ui_text_width_scaled [bank, text, numerator, denominator] (
+  if ((numerator > 0) and (denominator > 0)) () else ( => 0; )
   let width = 0;
   let i = 0;
   while (i < str_len[text]) (
     let c = text\\i;
-    if (c == 32) ( width = width + 4; )
+    if (c == 32) ( width = width + 4 * numerator / denominator; )
     else if ((c >= 33) and (c <= 95)) (
-      width = width + doom_ui_patch_width[
-        bank, doom_texture_ui_font_slot[c]
-      ] + 1;
+      width = width +
+        (doom_ui_patch_width[bank, doom_texture_ui_font_slot[c]] + 1) *
+          numerator / denominator;
     )
     i = i + 1;
   )
   => width;
 )
 
-op doom_ui_draw_text [buf, w, h, bank, x, y, text] (
+op doom_ui_text_width [bank, text] (
+  => doom_ui_text_width_scaled[bank, text, 1, 1];
+)
+
+op doom_ui_draw_text_scaled [buf, w, h, bank, x, y, text,
+                             numerator, denominator] (
+  if ((numerator > 0) and (denominator > 0)) () else ( => 0; )
   let cursor = x;
   let i = 0;
   while (i < str_len[text]) (
     let c = text\\i;
     if (c == 32) (
-      cursor = cursor + 4;
+      cursor = cursor + 4 * numerator / denominator;
     ) else if ((c >= 33) and (c <= 95)) (
       let slot = doom_texture_ui_font_slot[c];
-      doom_ui_draw_patch[buf, w, h, bank, slot, cursor, y];
-      cursor = cursor + doom_ui_patch_width[bank, slot] + 1;
+      doom_ui_draw_patch_scaled[
+        buf, w, h, bank, slot, cursor, y, numerator, denominator
+      ];
+      cursor = cursor +
+        (doom_ui_patch_width[bank, slot] + 1) * numerator / denominator;
     )
     i = i + 1;
   )
   => cursor - x;
+)
+
+op doom_ui_draw_text [buf, w, h, bank, x, y, text] (
+  => doom_ui_draw_text_scaled[buf, w, h, bank, x, y, text, 1, 1];
 )
 
 private op doom_ui_number_width [bank, text, small, yellow] (
@@ -478,13 +492,19 @@ private op doom_ui_draw_status_layers [buf, w, h, bank, combat, world,
     by + 22 * scale_n / scale_d, combat\max_cells, 1, 1, scale_n, scale_d
   ];
 
+  => 1;
+)
+
+// Pickup text lives in the 3D viewport, which is repainted every frame. Keep
+// it outside the persistent status-strip cache even when its value is stable.
+private op doom_ui_draw_pickup_message [buf, w, h, bank, world] (
   if (world\pickup_tick > 0) (
     let message_x = (w - doom_ui_text_width[bank, world\pickup_message]) / 2;
     doom_ui_draw_text[
       buf, w, h, bank, message_x, 12, world\pickup_message
     ];
   )
-  => 1;
+  => 0;
 )
 
 // Cache only the immutable WAD status artwork. Live ammunition, health,
@@ -499,11 +519,21 @@ op doom_ui_status_cache_new [w, h, bank] (
   )
   let pixels = gui_buffer[w, status_h];
   doom_ui_draw_status_static[pixels, w, status_h, bank, h, 200, 0, 0];
-  => { pixels: pixels, width: w, frame_height: h, height: status_h };
+  => {
+    pixels: pixels, width: w, frame_height: h, height: status_h,
+    valid: 0, face: 0 - 1, current_ammo: 0 - 1,
+    health: 0 - 1, armor: 0 - 1, weapons: 0 - 1, keys: 0 - 1,
+    ammo: 0 - 1, shells: 0 - 1, rockets: 0 - 1, cells: 0 - 1,
+    max_ammo: 0 - 1, max_shells: 0 - 1,
+    max_rockets: 0 - 1, max_cells: 0 - 1,
+    redraws: 0
+  };
 )
 
 op doom_ui_draw_status [buf, w, h, bank, combat, world] (
-  => doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 1];
+  doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 1];
+  doom_ui_draw_pickup_message[buf, w, h, bank, world];
+  => 1;
 )
 
 op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
@@ -515,56 +545,118 @@ op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
       (bytes_len[cached_pixels] == w * status_h * 4)) () else (
     fall "doom_ui_draw_status_cached: cache dimensions disagree";
   )
-  view cached_words as %32le[] over cached_pixels;
-  view frame_words as %32le[] over buf;
-  let target = (h - status_h) * w;
-  let i = 0;
-  while (i < buf_len[cached_words]) (
-    frame_words@(target + i) = cached_words@i;
-    i = i + 1;
+  let face = doom_ui_face_slot[combat];
+  let current_ammo = doom_combat_current_ammo[combat];
+  let weapons = 0;
+  let weapon = 1;
+  while (weapon <= 7) (
+    weapons = weapons * 2 + doom_combat_weapon_owned[combat, weapon];
+    weapon = weapon + 1;
   )
-  => doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 0];
+  let keys = world\blue_key + world\blue_skull * 2 +
+    world\yellow_key * 4 + world\yellow_skull * 8 +
+    world\red_key * 16 + world\red_skull * 32;
+  let unchanged =
+    (cache\valid == 1) and (cache\face == face) and
+    (cache\current_ammo == current_ammo) and
+    (cache\health == combat\health) and (cache\armor == combat\armor) and
+    (cache\weapons == weapons) and (cache\keys == keys) and
+    (cache\ammo == combat\ammo) and (cache\shells == combat\shells) and
+    (cache\rockets == combat\rockets) and (cache\cells == combat\cells) and
+    (cache\max_ammo == combat\max_ammo) and
+    (cache\max_shells == combat\max_shells) and
+    (cache\max_rockets == combat\max_rockets) and
+    (cache\max_cells == combat\max_cells);
+  if (unchanged == 0) (
+    view cached_words as %32le[] over cached_pixels;
+    view frame_words as %32le[] over buf;
+    let target = (h - status_h) * w;
+    let i = 0;
+    while (i < buf_len[cached_words]) (
+      frame_words@(target + i) = cached_words@i;
+      i = i + 1;
+    )
+    doom_ui_draw_status_layers[buf, w, h, bank, combat, world, 0];
+    cache\valid = 1;
+    cache\face = face;
+    cache\current_ammo = current_ammo;
+    cache\health = combat\health;
+    cache\armor = combat\armor;
+    cache\weapons = weapons;
+    cache\keys = keys;
+    cache\ammo = combat\ammo;
+    cache\shells = combat\shells;
+    cache\rockets = combat\rockets;
+    cache\cells = combat\cells;
+    cache\max_ammo = combat\max_ammo;
+    cache\max_shells = combat\max_shells;
+    cache\max_rockets = combat\max_rockets;
+    cache\max_cells = combat\max_cells;
+    cache\redraws = cache\redraws + 1;
+  )
+  doom_ui_draw_pickup_message[buf, w, h, bank, world];
+  => 1;
 )
 
-private op doom_ui_draw_centered_patch [buf, w, h, bank, slot, y] (
-  let x = (w - doom_ui_patch_width[bank, slot]) / 2;
-  => doom_ui_draw_patch[buf, w, h, bank, slot, x, y];
+private op doom_ui_draw_centered_patch_scaled [buf, w, h, bank, slot, y,
+                                               numerator, denominator] (
+  let drawn_width =
+    doom_ui_patch_width[bank, slot] * numerator / denominator;
+  let x = (w - drawn_width) / 2;
+  => doom_ui_draw_patch_scaled[
+    buf, w, h, bank, slot, x, y, numerator, denominator
+  ];
 )
 
-private op doom_ui_draw_centered_text [buf, w, h, bank, y, text] (
-  let x = (w - doom_ui_text_width[bank, text]) / 2;
-  => doom_ui_draw_text[buf, w, h, bank, x, y, text];
+private op doom_ui_draw_centered_text_scaled [buf, w, h, bank, y, text,
+                                              numerator, denominator] (
+  let x = (w - doom_ui_text_width_scaled[
+    bank, text, numerator, denominator
+  ]) / 2;
+  => doom_ui_draw_text_scaled[
+    buf, w, h, bank, x, y, text, numerator, denominator
+  ];
 )
 
 op doom_ui_draw_menu [buf, w, h, bank, ui] (
   if ((ui\open == 1) and (bank\ui_ready == 1)) () else ( => 0; )
+  let scale_n = h;
+  let scale_d = 200;
   gui_rect[buf, w, h, 0, 0, w, h, gui_rgb[14, 10, 12]];
-  doom_ui_draw_centered_patch[
-    buf, w, h, bank, doom_texture_ui_logo_slot[], 10
+  doom_ui_draw_centered_patch_scaled[
+    buf, w, h, bank, doom_texture_ui_logo_slot[],
+    10 * scale_n / scale_d, scale_n, scale_d
   ];
-  doom_ui_draw_centered_text[buf, w, h, bank, 66, "SELECT MAP"];
-  let first_y = 84;
+  doom_ui_draw_centered_text_scaled[
+    buf, w, h, bank, 66 * scale_n / scale_d, "SELECT MAP",
+    scale_n, scale_d
+  ];
+  let first_y = 84 * scale_n / scale_d;
   let row = 0;
   let index = ui\top;
   while ((row < 7) and (index < arr_len[ui\maps])) (
-    doom_ui_draw_centered_text[
-      buf, w, h, bank, first_y + row * 13, ui\maps\@index
+    doom_ui_draw_centered_text_scaled[
+      buf, w, h, bank, first_y + row * 13 * scale_n / scale_d,
+      ui\maps\@index, scale_n, scale_d
     ];
     row = row + 1;
     index = index + 1;
   )
   let cursor = ui\cursor;
   let selected = ui\maps\@cursor;
-  let selected_x = (w - doom_ui_text_width[bank, selected]) / 2;
-  let cy = first_y - 5 + (ui\cursor - ui\top) * 13;
-  doom_ui_draw_patch[
+  let selected_x = (w - doom_ui_text_width_scaled[
+    bank, selected, scale_n, scale_d
+  ]) / 2;
+  let cy = first_y - 5 * scale_n / scale_d +
+    (ui\cursor - ui\top) * 13 * scale_n / scale_d;
+  doom_ui_draw_patch_scaled[
     buf, w, h, bank,
     doom_texture_ui_skull1_slot[] + ((ui\cursor + ui\look_speed) % 2),
-    selected_x - 24, cy
+    selected_x - 24 * scale_n / scale_d, cy, scale_n, scale_d
   ];
-  doom_ui_draw_centered_text[
-    buf, w, h, bank, 181,
-    "MAP ^{ui\cursor + 1}/^{arr_len[ui\maps]}"
+  doom_ui_draw_centered_text_scaled[
+    buf, w, h, bank, 181 * scale_n / scale_d,
+    "MAP ^{ui\cursor + 1}/^{arr_len[ui\maps]}", scale_n, scale_d
   ];
   => 1;
 )
