@@ -1,0 +1,128 @@
+{
+  "formatVersion": 1,
+  "target": "wasm-browser",
+  "hostModule": "freelang_host_v1",
+  "imports": [
+    "panic",
+    "write",
+    "present_rgba",
+    "speaker_frame",
+    "derived_cache_frame"
+  ],
+  "exports": [
+    "freelang_main",
+    "freelang_wasm_frame",
+    "freelang_wasm_input",
+    "freelang_wasm_choice_available",
+    "freelang_wasm_choice_select",
+    "freelang_wasm_choice_current",
+    "freelang_wasm_diagnostic",
+    "freelang_host_bytes_begin",
+    "freelang_host_bytes_commit",
+    "freelang_host_bytes_cancel",
+    "freelang_derived_cache_bytes_begin",
+    "freelang_derived_cache_bytes_commit",
+    "freelang_derived_cache_bytes_cancel"
+  ],
+  "lifecycleArguments": "signed i32 integers; adapters box/unbox Freelang values",
+  "memory": {
+    "initialPages": 2104,
+    "maximumPages": 2104,
+    "shadowBase": 458752,
+    "shadowLimit": 1507328,
+    "heapBase": 1507328,
+    "heapLimit": 135725056,
+    "markBitmapBase": 135725056,
+    "markBitmapBytes": 2162688
+  },
+  "dispatch": {
+    "strategy": "basic-block-loop",
+    "functions": 634
+  },
+  "authority": {
+    "presentation": true,
+    "stdio": true,
+    "clock": false,
+    "lifecycle": [
+      "panic"
+    ],
+    "localFileIngress": true,
+    "browserStorage": {
+      "primary": "indexeddb-single-file-sha256-v1",
+      "derived": "indexeddb-bounded-disposable-bytes-v1"
+    },
+    "audio": true
+  },
+  "execution": {
+    "isolation": "dedicated-worker",
+    "transport": "messageport-structured-clone-v1",
+    "sharedMemory": false,
+    "workerScript": "freelang-worker-v1.js",
+    "agents": [
+      {
+        "family": "f/gui",
+        "implementation": "sidecars/f/gui/presenter-web-v1.js",
+        "protocol": "freelang.presenter.web/1",
+        "context": "window-main-thread"
+      },
+      {
+        "family": "f/local-artifact",
+        "implementation": "sidecars/f/local-artifact/local-artifact-web-v1.js",
+        "protocol": "freelang.local-artifact.web/1",
+        "context": "window-main-thread"
+      },
+      {
+        "family": "f/speaker",
+        "implementation": "sidecars/f/speaker/speaker-web-v2.js",
+        "protocol": "freelang.speaker/2",
+        "context": "window-main-thread"
+      },
+      {
+        "family": "f/derived-artifact",
+        "implementation": "sidecars/f/derived-artifact/derived-artifact-web-v1.js",
+        "protocol": "freelang.derived-artifact.web/1",
+        "context": "window-main-thread"
+      }
+    ]
+  },
+  "browserLifecycle": {
+    "frameExport": "freelang_wasm_frame",
+    "inputExport": "freelang_wasm_input",
+    "timing": "requestAnimationFrame argument",
+    "choice": {
+      "availableExport": "freelang_wasm_choice_available",
+      "selectExport": "freelang_wasm_choice_select",
+      "currentExport": "freelang_wasm_choice_current",
+      "maximumOptions": 256,
+      "maximumControls": 16
+    },
+    "diagnostic": {
+      "export": "freelang_wasm_diagnostic",
+      "inputTraceKind": 1
+    },
+    "speaker": {
+      "protocol": "freelang.speaker/2",
+      "maximumFrameBytes": 33557536,
+      "transport": "messageport-frame-v1"
+    },
+    "derivedCache": {
+      "protocol": "freelang.derived-artifact.web/1",
+      "maximumRequestBytes": 16777408,
+      "maximumResponseBytes": 16777276,
+      "beginExport": "freelang_derived_cache_bytes_begin",
+      "commitExport": "freelang_derived_cache_bytes_commit",
+      "cancelExport": "freelang_derived_cache_bytes_cancel",
+      "handler": "wasm_derived_cache_result",
+      "cache": "indexeddb-bounded-disposable-bytes-v1",
+      "primaryReserveBytes": 33554432
+    },
+    "byteIngress": {
+      "handler": "wasm_file_loaded",
+      "beginExport": "freelang_host_bytes_begin",
+      "commitExport": "freelang_host_bytes_commit",
+      "cancelExport": "freelang_host_bytes_cancel",
+      "maximumBytes": 33554432,
+      "cache": "indexeddb-single-file-sha256-v1"
+    }
+  }
+}
