@@ -12,10 +12,10 @@ does not make every payload a linked module of the Doom application.
 | Freelang compiler and builder environment | Separately installed build tools; not included in this repository | Separately licensed proprietary software |
 | GUI presenter sidecar | Generic native executable stored as inert data, extracted and executed in its own process | Separately licensed proprietary software |
 | PCM speaker sidecar | Generic native executable stored as inert data, extracted and executed in its own process | Separately licensed proprietary software |
-| Browser presenter agent | Generic Canvas/DOM/input capability over a private port; not included in this repository | Separately licensed proprietary software |
-| Browser local-artifact agent | Generic explicit-file selection and one-record primary cache; not included in this repository | Separately licensed proprietary software |
-| Browser derived-artifact agent | Generic bounded opaque-byte cache with primary-cache quota reserve; not included in this repository | Separately licensed proprietary software |
-| Browser speaker agent | Generic byte-compatible speaker-v2/WebAudio capability; not included in this repository | Separately licensed proprietary software |
+| Browser presenter agent | Generic Canvas/DOM/input capability over a private port; excluded from `main`, exact runtime copy in generated `gh-pages` distribution | Separately licensed proprietary software |
+| Browser local-artifact agent | Generic explicit-file selection and one-record primary cache; excluded from `main`, exact runtime copy in generated `gh-pages` distribution | Separately licensed proprietary software |
+| Browser derived-artifact agent | Generic bounded opaque-byte cache with primary-cache quota reserve; excluded from `main`, exact runtime copy in generated `gh-pages` distribution | Separately licensed proprietary software |
+| Browser speaker agent | Generic byte-compatible speaker-v2/WebAudio capability; excluded from `main`, exact runtime copy in generated `gh-pages` distribution | Separately licensed proprietary software |
 | Host frameworks and system libraries | Operating-system APIs used by a sidecar | Governed by the host SDK and operating-system terms |
 | IWADs, PWADs and game media | Caller-supplied runtime data; never included or downloaded | Not licensed by this repository |
 
@@ -73,8 +73,9 @@ local-artifact-v1, derived-artifact-v1 and speaker-v2. They use only browser
 Canvas/DOM/input, File, IndexedDB, SHA-256, WebAudio and lifecycle facilities;
 they have no package imports, WAD parser, map state, renderer, combat or other
 Doom policy. Each receives finite checked protocol messages over a private
-`MessagePort`, cannot access the Freelang heap, and is excluded from this
-repository.
+`MessagePort` and cannot access the Freelang heap. Their source is excluded from
+`main`; the generated Pages distribution contains only the exact runtime copies
+named by its target manifest.
 
 Repository history and line attribution assign all three sidecar source files
 to DOSAYGO Engineering. Their build scripts compile those source files

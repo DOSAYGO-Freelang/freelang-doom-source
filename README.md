@@ -39,11 +39,13 @@ independently bounded raster operations accelerate repeated pixel projection.
 
 The application source is the Builder's Kit component named **Freelang Doom
 Source**. The Freelang compiler and host sidecar/agent implementations are
-separate programs, separately licensed, and are not included in this
-repository. A compatible, separately licensed Freelang toolchain is required
-to rebuild the application. Published native or browser Freelang Doom Engine
-distributions can be run without that toolchain; the source remains the
-readable and modifiable application proof.
+separate programs and separately licensed. They are not included in the `main`
+source branch. The generated `gh-pages` distribution carries only the exact
+runtime browser-agent copies required to host the compiled application. A
+compatible, separately licensed Freelang toolchain is required to rebuild the
+application. Published native or browser Freelang Doom Engine distributions
+can be run without that toolchain; the source remains the readable and
+modifiable application proof.
 
 A native distribution may be a self-extracting aggregate. In that form,
 generic native sidecar executables are stored as inert payload bytes in the
@@ -83,11 +85,13 @@ When no map is named, the first complete classic `ExMy` namespace is selected
 and the map menu opens. The engine never searches for or downloads a WAD.
 
 A compatible builder can also emit the browser application from this same
-entry point. The generated HTML, loader, Worker, WASM module and generic web
-capability agents are build/distribution artifacts and are deliberately not
-part of this Doom-source mirror. In the browser the user explicitly selects a
-WAD; one measured copy may be cached in IndexedDB under the local-artifact
-capability, with a separate disposable cache for validated derived music.
+entry point. The latest generated distribution is playable on
+[GitHub Pages](https://dosaygo-freelang.github.io/freelang-doom-source/).
+Generated HTML, loader, Worker, WASM and generic web-agent files live only on
+the orphan `gh-pages` distribution branch, not in the `main` source tree. In
+the browser the user explicitly selects a WAD; one measured copy may be cached
+in IndexedDB under the local-artifact capability, with a separate disposable
+cache for validated derived music.
 
 Inside a licensed Freelang builder environment, the source entry point is
 `games/doom-play.flx`. The compiler launchers are supplied by that environment,
@@ -253,7 +257,8 @@ contain no commercial Doom assets.
 
 - `games/` contains the engine and its smaller retained oracles.
 - `examples/wasm-doom.flx` is the Freelang browser application entry point;
-  its generated host and generic web capability agents are not included.
+  its generated host and generic web capability agents are published only as
+  the separate `gh-pages` distribution.
 - `tests/` contains Doom-specific synthetic fixtures and expected output.
 - `tools/` contains music comparison and geometry probes.
 - `docs/dev/` and `docs/spec/` describe current behavior and process protocols.
