@@ -1,0 +1,23 @@
+// Offline earball helper for the laser's original synthesized sound roster.
+// It writes only four named WAVs; no WAD or movie sample enters the output.
+
+credits: <../games/doom-laser.flx> <f/files>;
+
+write_bytes[
+  "/tmp/wasm-doom/blaster-a-current-cable.wav",
+  doom_laser_sound_variant_wav[0]
+];
+write_bytes[
+  "/tmp/wasm-doom/blaster-b-traction-discharge.wav",
+  doom_laser_sound_variant_wav[1]
+];
+write_bytes[
+  "/tmp/wasm-doom/blaster-c-metallic-lance.wav",
+  doom_laser_sound_variant_wav[2]
+];
+write_bytes[
+  "/tmp/wasm-doom/blaster-d-phase-pulse.wav",
+  doom_laser_sound_variant_wav[3]
+];
+
+print "wrote four original blaster candidates under /tmp/wasm-doom";

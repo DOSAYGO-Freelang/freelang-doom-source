@@ -1,0 +1,327 @@
+\documentclass[10pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[letterpaper,margin=0.68in]{geometry}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\definecolor{Ink}{HTML}{18201D}
+\definecolor{Muted}{HTML}{52605A}
+\definecolor{LaserGreen}{HTML}{16D96B}
+\definecolor{DeepGreen}{HTML}{087A3D}
+\definecolor{PaleGreen}{HTML}{E9F8EF}
+\definecolor{ShieldCyan}{HTML}{2AB9C8}
+\definecolor{PaleCyan}{HTML}{E8F7F8}
+\definecolor{DroneAmber}{HTML}{D98324}
+\definecolor{PaleAmber}{HTML}{FFF3E2}
+\definecolor{RuleGray}{HTML}{CBD4D0}
+\definecolor{PanelGray}{HTML}{F2F5F3}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=DeepGreen,
+  urlcolor=DeepGreen,
+  pdftitle={Freelang Doom Engine v6.11.1 User's Guide},
+  pdfauthor={The Dosyago Corporation},
+  pdfsubject={Quick-start and field guide for Freelang Doom Engine v6.11.1}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlist[itemize]{leftmargin=1.25em,itemsep=2pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=1.4em,itemsep=3pt,topsep=3pt}
+\renewcommand{\arraystretch}{1.22}
+\newcolumntype{K}{>{\raggedright\arraybackslash\bfseries}p{0.25\linewidth}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancyhead[L]{\small\color{Muted} FREELANG DOOM ENGINE}
+\fancyhead[R]{\small\color{Muted} v6.11.1 USER'S GUIDE}
+\fancyfoot[C]{\small\color{Muted} \thepage}
+
+\newcommand{\key}[1]{%
+  \begingroup
+  \setlength{\fboxsep}{2.5pt}%
+  \colorbox{Ink}{\textcolor{white}{\sffamily\bfseries\footnotesize #1}}%
+  \endgroup
+}
+
+\newcommand{\commandline}[1]{%
+  \begingroup
+  \setlength{\fboxsep}{6pt}%
+  \colorbox{Ink}{\parbox{\dimexpr\linewidth-2\fboxsep}{%
+    \textcolor{LaserGreen}{\ttfamily\small #1}}}%
+  \endgroup
+}
+
+\newenvironment{guidepanel}[2]{%
+  \par\medskip
+  \begingroup
+  \def\GuidePanelAccent{#1}%
+  \color{#1}\hrule height 1.4pt
+  \vspace{5pt}%
+  \color{Ink}%
+  \noindent\begin{minipage}{\linewidth}
+}{%
+  \end{minipage}%
+  \vspace{4pt}%
+  \color{\GuidePanelAccent}\hrule height 0.5pt
+  \endgroup
+  \par\medskip
+}
+
+\newcommand{\sectionrule}[1]{%
+  \vspace{2pt}
+  {\color{#1}\rule{\linewidth}{1.5pt}}
+}
+
+\begin{document}
+
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+\thispagestyle{empty}
+\color{Ink}
+
+\vspace*{0.35in}
+{\sffamily\bfseries\fontsize{15}{18}\selectfont THE DOSYAGO CORPORATION}\par
+\vspace{0.12in}
+{\color{LaserGreen}\rule{\linewidth}{4pt}}
+
+\vfill
+{\sffamily\bfseries\fontsize{35}{39}\selectfont FREELANG DOOM\par}
+{\sffamily\bfseries\fontsize{35}{39}\selectfont ENGINE\par}
+\vspace{0.16in}
+{\sffamily\fontsize{19}{23}\selectfont v6.11.1 USER'S GUIDE}\par
+
+\vspace{0.42in}
+{\color{LaserGreen}\rule{0.82\linewidth}{3pt}}\hspace{5pt}%
+{\sffamily\bfseries\fontsize{22}{24}\selectfont\color{LaserGreen} >}\par
+
+\vspace{0.5in}
+\begin{tabularx}{\linewidth}{>{\sffamily\bfseries\Large\color{DeepGreen}}X >{\sffamily\bfseries\Large\color{DroneAmber}}X >{\sffamily\bfseries\Large\color{ShieldCyan}}X}
+LASER & FPV & SHIELD \\
+\end{tabularx}
+
+\vfill
+\begin{guidepanel}{LaserGreen}{PaleGreen}
+\sffamily\bfseries EXPLORER FIELD EDITION\par
+\normalfont
+A compact guide to launching the engine, surviving the first room, flying the
+attack drone, and using the permanent exploration shield. Bring your own
+compatible Doom-format WAD.
+\end{guidepanel}
+
+{\small\color{Muted}
+Independent engine. No WAD is included or downloaded. This guide grants no
+rights to third-party game data or trademarks.}
+\end{titlepage}
+\hypersetup{pageanchor=true}
+\setcounter{page}{1}
+
+\section*{Quick start}
+\sectionrule{LaserGreen}
+
+\begin{enumerate}
+  \item Download the archive for your computer from the v6.11.1 GitHub release.
+  \item Extract it. On macOS or Linux, keep \texttt{doom-play} executable.
+  \item Supply a legally obtained, compatible Doom-format IWAD or PWAD.
+  \item Launch it from a terminal. The map name is optional.
+\end{enumerate}
+
+\commandline{macOS/Linux: ./doom-play /path/to/DOOM.WAD E1M1}
+\vspace{4pt}
+\commandline{Windows: doom-play.exe C:\textbackslash path\textbackslash to\textbackslash DOOM.WAD E1M1}
+
+\begin{guidepanel}{LaserGreen}{PaleGreen}
+\textbf{No map argument?} The engine selects the first complete classic map
+namespace and opens its map menu. It never searches for or downloads a WAD.
+\end{guidepanel}
+
+\subsection*{Core controls}
+
+\begin{tabularx}{\linewidth}{K Y}
+\key{Mouse} & Look while the pointer is captured. Click an uncaptured window to recapture it without firing. \\
+\key{Left click} / \key{Ctrl} & Fire the current player weapon. Hold to repeat through its cooldown. \\
+\key{W} / \key{S} & Move forward / backward. \\
+\key{A} / \key{D} & Strafe left / right. \\
+\key{Left} / \key{Right} & Turn without the mouse. \\
+\key{E} & Use a supported door, lift, switch, or exit line. \\
+\key{Space} & Jump. \\
+\key{Tab} & Hold the phosphor tactical scan from the active camera. \\
+\key{1}-\key{9} & Select an owned weapon. Slot 8 is the laser; slot 9 is the FPV drone. \\
+\key{-} & Select the laser directly. Its key echoes the bolt silhouette. \\
+\key{Wheel} / \key{[} \key{]} & Cycle through owned weapons. \\
+\key{R} & Reset the current map state. \\
+\key{Esc} & Release pointer capture; press again to open or close the map menu. \\
+\end{tabularx}
+
+\subsection*{Map menu}
+
+Use \key{Up} / \key{Down} to choose any complete classic map namespace found
+in the WAD, then press \key{Return}. Player inventory persists when changing
+maps. Focus loss clears retained keys and mouse buttons.
+
+\newpage
+\section*{Explorer field gear}
+\sectionrule{LaserGreen}
+
+The v6.11.1 explorer loadout is intentionally simple: a commodity sidearm, a
+permanent defensive field, and a disposable camera with a large payload.
+
+\begin{guidepanel}{LaserGreen}{PaleGreen}
+{\sffamily\bfseries\large 8 / LASER BLASTER}\par
+\textbf{What it is:} a recoil-free pistol-scale weapon whose exceptional part
+is the bright green bolt, not an elaborate body. The pearl-white pistol keeps
+the original hand pose and a small green muzzle flare.\par
+\textbf{How to use it:} collect the entrance pickup, press \key{8} or \key{-},
+aim with the exact camera ray, and fire. It has unlimited charge, a fast rate,
+and railgun-level direct damage. Pickups for lesser weapons do not displace it.
+\end{guidepanel}
+
+\begin{guidepanel}{ShieldCyan}{PaleCyan}
+{\sffamily\bfseries\large PERMANENT EXPLORATION SHIELD}\par
+\textbf{What it is:} a small glowing bracelet pickup near the entrance. Once
+collected, the shield remains with the player and does not use an armor meter.\par
+\textbf{What it stops:} hitscan fire, energy/projectile attacks, Lost Soul
+charges, and explosions.\par
+\textbf{What still hurts:} real close-range melee attacks and environmental
+hazards. The field is permanent in this release; it does not randomly degrade.
+\end{guidepanel}
+
+\begin{guidepanel}{DroneAmber}{PaleAmber}
+{\sffamily\bfseries\large 9 / FPV ATTACK DRONE}\par
+\textbf{What it is:} a single-use flying weapon with a remote camera and a
+large 768-damage, 240-radius payload. Every level starts you with ten; extra
+pickups are placed from monster-cluster evidence and vary on each load.\par
+\textbf{How to launch it:} press \key{9}, then fire once. The camera transfers
+to the drone. Your body remains in the world and can still be attacked.
+\end{guidepanel}
+
+\subsection*{A useful rhythm}
+
+Take the shield first, select the laser for ordinary exploration, and save the
+drone for dense rooms or large monsters. The shield protects your unattended
+body from ranged fire while piloting, but a monster that reaches melee range
+can still hurt you.
+
+\newpage
+\section*{FPV flight school}
+\sectionrule{DroneAmber}
+
+The drone carries persistent velocity with light periodic drag. Inputs add
+thrust rather than moving a fixed distance, so plan turns early and use
+counter-thrust when you need to slow down quickly.
+
+\begin{tabularx}{\linewidth}{K Y}
+\key{Mouse} & Aim the wide-angle FPV camera. Forward thrust follows its exact center line. \\
+\key{W} / \key{S} & Add forward / reverse thrust. \\
+\key{A} / \key{D} & Add lateral thrust. \\
+\key{Left} / \key{Right} & Turn; the view banks visibly into the turn. \\
+\key{Space} & Climb. \\
+\key{Ctrl} & Descend. Control is not fire while the FPV link is active. \\
+\key{E} & Use doors and supported switches from the drone's position. \\
+\key{Tab} & Hold the phosphor tactical scan from the drone's position and altitude. \\
+\key{X} & Arm the impact fuse for this flight. Arming is one-way. \\
+\key{Click} / \key{F} & Manually detonate. Release before a fresh click can deploy another drone. \\
+\end{tabularx}
+
+\begin{guidepanel}{DroneAmber}{PaleAmber}
+\textbf{Contact rules}\par
+Every launch begins \textbf{SAFE}. While safe, touching geometry or a monster
+stops the drone without detonating it, at any speed. Press \key{X} when you want
+the next real geometry or monster contact to trigger the payload. A false sky
+ceiling never triggers it or imposes a timer, and the drone can remain airborne
+as long as you want. Windows and other legitimate map openings are traversable
+when the map permits the drone's collision volume.
+\end{guidepanel}
+
+\subsection*{Three reliable approaches}
+
+\begin{itemize}
+  \item \textbf{Door scout:} slow before the door, tap \key{E}, then add forward
+  thrust only after the opening is clear.
+  \item \textbf{Window entry:} center the reticle in the opening, build modest
+  speed, and avoid lateral input until the body is through.
+  \item \textbf{Payload run:} line up on a cluster, accelerate on the camera ray,
+  press \key{X} to arm only when committed, then make contact or use click/F
+  when the targets fill the reticle.
+\end{itemize}
+
+\subsection*{If the drone seems to disappear}
+
+The FPV view ends after detonation and returns to the player. An unarmed impact
+can leave the drone stopped against geometry; counter-thrust or turn away. If
+your player body dies while you are flying, the session ends normally.
+
+\newpage
+\section*{Options, audio, and troubleshooting}
+\sectionrule{ShieldCyan}
+
+\subsection*{Useful launch options}
+
+\begin{tabularx}{\linewidth}{K Y}
+\texttt{--resolution=WxH} & Choose a deterministic 8:5 logical raster from 320x200 through 1280x800. \\
+\texttt{--no-music} & Skip music loading, synthesis, cache access, and playback. \\
+\texttt{--diag} & Write sampled frame, shot, and collision diagnostics to standard error. \\
+\texttt{--input-log=PATH} & Save a bounded input, movement, blocker, and FPV lifecycle trace for reproduction. \\
+\texttt{--demo} & Run the deterministic E1M1 or E1M2 evidence drive. \\
+\end{tabularx}
+
+\subsection*{Audio expectations}
+
+macOS packages include the native speaker sidecar. The first map-music render
+can take several seconds; later launches reuse a validated derived WAV cache.
+Windows and Linux v6.11.1 continue silently because those releases do not yet
+admit a native speaker implementation. Gameplay and visual effects still work.
+
+\begin{guidepanel}{ShieldCyan}{PaleCyan}
+\textbf{Signed release}\par
+The macOS arm64 and x64 executables and their embedded presenter/speaker
+components are Developer ID signed; both release archives were accepted by
+Apple's notarization service. The Windows executable and embedded presenter are
+Azure Artifact Signing signed with an RFC 3161 timestamp. Linux is a static
+x86-64 ELF covered by the release checksum and internal release evidence.
+\end{guidepanel}
+
+\subsection*{Fast fixes}
+
+\begin{tabularx}{\linewidth}{K Y}
+No window & Confirm the WAD path exists and names a compatible Doom-format file. Launch from a terminal to read the error. \\
+No sound & Expected on Windows/Linux v6.11.1. On macOS, try \texttt{--no-music} to separate presentation from synthesis/cache issues. \\
+Mouse not turning & Click the game window to capture the pointer. Press Escape once to release it. \\
+Movement feels stuck & Release all keys and refocus the window; focus changes clear retained input. \\
+Map does not appear & Only complete classic ExMy namespaces found in the supplied WAD are listed. Unsupported mechanics may remain inert. \\
+Need a repro & Add \texttt{--input-log=PATH}; the bounded trace records player and drone transitions without containing WAD data. \\
+\end{tabularx}
+
+\subsection*{Scope and rights}
+
+Freelang Doom Engine is an independent, incomplete Doom-format implementation,
+not a source port and not a claim of complete vanilla behavior. Save games,
+multiplayer, automatic campaign progression, and some later-map mechanics are
+outside this version. No WAD or third-party game asset is included.
+
+The license distributed with the release controls Freelang-authored material.
+This guide does not create a commercial compiler license, grant rights to
+third-party assets, or promise a production-support level. DOOM and related
+marks belong to their respective owners; the project is not affiliated with or
+endorsed by id Software, Bethesda Softworks, or ZeniMax Media.
+
+\vfill
+{\color{LaserGreen}\rule{\linewidth}{3pt}}
+\begin{center}
+{\sffamily\bfseries\large FPV / LASER / SHIELD}\par
+{\small\color{Muted} Explore first. Fight when it is interesting.}
+\end{center}
+
+\end{document}

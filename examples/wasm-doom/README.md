@@ -22,12 +22,15 @@ Open `http://127.0.0.1:8765/` and choose a legally obtained classic WAD. The
 grouped map menu exposes only complete namespaces that Freelang found in those
 measured bytes. The logical-resolution menu rebuilds the Freelang framebuffer
 and renderer work, so it measures real WASM cost rather than CSS scaling. W/S
-and A/D are simultaneous held controls; mouse/Control fires, 1–7 and the wheel
-select weapons, Space jumps, E uses, R resets, and clicking the Canvas captures
-smooth relative mouse look until Escape. Holding Tab shows the tactical
-linedef/actor scan. The file is never uploaded. “Forget cached WAD” removes its
-browser-local IndexedDB copy. Weapons, ammunition, health and armor carry
-between maps selected during the same page session.
+and A/D are simultaneous held controls; mouse/Control fires, 1–9 select owned
+weapons, `-` selects the laser, and the wheel or `[`/`]` cycles weapons. The
+slot-9 drone launches safe; X arms its contact fuse while click/F manually
+detonates, and Tab holds the tactical scan from either player or drone camera.
+A detonation click must be released before it can deploy another craft. Space
+jumps (or climbs in FPV), E uses, R resets, and clicking the Canvas captures
+smooth relative mouse look until Escape. The file is never uploaded. “Forget
+cached WAD” removes its
+browser-local IndexedDB copy.
 
 For an input anomaly, add `?freelang-input-trace=1` to the page URL. A bounded
 in-memory log records only state changes: the exact presenter batch before the
@@ -38,12 +41,10 @@ is in flight, so a slow scene lowers frame rate instead of queuing stale input.
 “Download input trace” saves a timestamped `freelang-input-trace-*.log`; no
 trace or WAD bytes are uploaded.
 
-Freelang and its collector run in one Dedicated Worker. The compatible builder
-supplies generic `f/gui`, `f/local-artifact`, `f/derived-artifact` and
-`f/speaker` Web agents outside this source repository. Bounded versioned
-`MessagePort` capsules carry copied frames, complete presenter-v3 input
-batches, measured artifact bytes, disposable derived-cache values and exact
-speaker-v2 frames. None contains Doom or WAD logic, and arbitrary JavaScript
-FFI remains out. OPL2 level music is synthesized in Freelang inside the Worker,
-cached only after Freelang validation, and mixed with effects across sixteen
-voices. The selected-WAD cache retains quota priority over derived music.
+Freelang and its collector run in one Dedicated Worker. Generic `f/gui`,
+`f/local-artifact` and `f/speaker` Web agents live under `sidecars/f/`; bounded
+versioned MessagePort capsules carry copied frames, complete presenter-v3 input
+batches, measured artifact bytes and exact speaker-v2 frames. None contains
+Doom or WAD logic, and arbitrary JavaScript FFI remains out. OPL2 level music
+and its disposable derived cache are the next audio slice; effects already mix
+across sixteen voices.

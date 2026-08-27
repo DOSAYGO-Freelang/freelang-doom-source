@@ -164,6 +164,7 @@ doom_texture_test_expect[
   (doom_texture_pickup_family[39] == 20) and
   (doom_texture_pickup_family[40] == 21) and
   (doom_texture_pickup_family[2004] == 22) and
+  (doom_texture_pickup_family[doom_laser_pickup_kind[]] == 22) and
   (doom_texture_pickup_family[2006] == 23) and
   (doom_texture_pickup_family[2010] == 24) and
   (doom_texture_pickup_family[2047] == 25) and
@@ -224,6 +225,7 @@ doom_texture_test_expect[
   (doom_texture_pickup_slot[38] == 662) and
   (doom_texture_pickup_slot[40] == 664) and
   (doom_texture_pickup_slot[2004] == 665) and
+  (doom_texture_pickup_slot[doom_laser_pickup_kind[]] == 665) and
   (doom_texture_pickup_slot[2045] == 676) and
   (doom_texture_prop_slot[2035] == 677) and
   (doom_texture_prop_slot_for[2035, 2] == 679) and
@@ -258,6 +260,23 @@ doom_texture_test_expect[
   (doom_texture_bfg_ball_slot[0] == 1019) and
   (doom_texture_bfg_ball_slot[7] == 1026),
   "animated sprite atlas ranges are fixed and nonoverlapping"
+];
+let laser_colours = buf_new[32, 8192];
+buf_set[laser_colours, 3, 100 * 65536 + 100 * 256 + 100];
+buf_set[laser_colours, 4, 180 * 65536 + 90 * 256 + 50];
+let laser_tint = doom_laser_tint_colours[laser_colours];
+let laser_weapon_tint = doom_laser_weapon_colours[laser_colours];
+doom_texture_test_expect[
+  (buf_len[laser_tint] == 8192) and
+  (buf_get[laser_tint, 3] == 10 + 114 * 256 + 12 * 65536),
+  "laser tint preserves luminance while making green dominant"
+];
+doom_texture_test_expect[
+  (buf_len[laser_weapon_tint] == 8192) and
+  (buf_get[laser_weapon_tint, 3] == 202 + 202 * 256 + 202 * 65536) and
+  (buf_get[laser_weapon_tint, 4] == 180 + 90 * 256 + 50 * 65536) and
+  (doom_laser_source_weapon[] == 2),
+  "laser body preserves neutral pistol shading while lifting its white shell"
 ];
 doom_texture_test_expect[
   (doom_texture_ui_slots[] == 126) and

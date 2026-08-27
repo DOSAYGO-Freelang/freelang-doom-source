@@ -341,11 +341,29 @@ let weapon_mb = doom_texture_weapon_slot[0] * 6;
 buf_set[sprite_meta, weapon_mb, 1];
 buf_set[sprite_meta, weapon_mb + 1, 1];
 buf_set[sprite_meta, weapon_mb + 2, 1];
+let laser_weapon_mb =
+  doom_texture_weapon_slot_for[doom_laser_source_weapon[], 0] * 6;
+if (laser_weapon_mb != weapon_mb) (
+  buf_set[sprite_meta, laser_weapon_mb, 1];
+  buf_set[sprite_meta, laser_weapon_mb + 1, 1];
+  buf_set[sprite_meta, laser_weapon_mb + 2, 2];
+)
+let laser_flash_mb =
+  doom_texture_muzzle_slot_for[doom_laser_source_weapon[], 0] * 6;
+buf_set[sprite_meta, laser_flash_mb, 1];
+buf_set[sprite_meta, laser_flash_mb + 1, 1];
+buf_set[sprite_meta, laser_flash_mb + 2, 3];
 let clip_mb = doom_texture_pickup_slot[2007] * 6;
 buf_set[sprite_meta, clip_mb, 1];
 buf_set[sprite_meta, clip_mb + 1, 1];
 buf_set[sprite_meta, clip_mb + 2, 2];
 buf_set[sprite_meta, clip_mb + 4, 1];
+let laser_pickup_mb =
+  doom_texture_pickup_slot[doom_laser_pickup_kind[]] * 6;
+buf_set[sprite_meta, laser_pickup_mb, 1];
+buf_set[sprite_meta, laser_pickup_mb + 1, 1];
+buf_set[sprite_meta, laser_pickup_mb + 2, 3];
+buf_set[sprite_meta, laser_pickup_mb + 4, 1];
 let fog_mb = doom_texture_teleport_slot[0] * 6;
 buf_set[sprite_meta, fog_mb, 1];
 buf_set[sprite_meta, fog_mb + 1, 1];
@@ -384,7 +402,7 @@ let bank = map\texture_bank + {
   flat_count: 1, flat_names: bytes_new[8], flat_pixels: flat_pixels,
   sky_flat: 0, sky_texture: 0 - 1,
   palette: bytes_new[0], colormap: bytes_new[0],
-  sprite_ready: 1, sprite_slots: doom_texture_sprite_slots[], sprite_loaded: 4,
+  sprite_ready: 1, sprite_slots: doom_texture_sprite_slots[], sprite_loaded: 5,
   sprite_meta: sprite_meta, sprite_pixels: sprite_pixels,
   sprite_opaque: sprite_opaque,
   colours: colours, rgbx_colours: rgbx_colours
@@ -517,6 +535,16 @@ doom_bsp_expect_weapon[psprite_bank, 7, 2, 89, 133, 156, 83,
   "BFG followthrough body retains its clipped canonical origin"];
 doom_bsp_expect_muzzle[psprite_bank, 2, 0, 141, 82, 41, 38,
   "pistol flash retains the accepted control placement"];
+let laser_muzzle = doom_view_laser_muzzle_position[
+  320, 168, psprite_bank,
+  doom_texture_weapon_slot_for[doom_laser_source_weapon[], 0],
+  doom_texture_muzzle_slot_for[doom_laser_source_weapon[], 0]
+];
+doom_bsp_expect[
+  (laser_muzzle\left == 141) and (laser_muzzle\top == 102) and
+  (laser_muzzle\width == 41) and (laser_muzzle\height == 38),
+  "small laser flare reconnects to the pistol barrel after stock placement"
+];
 doom_bsp_expect_muzzle[psprite_bank, 3, 0, 142, 111, 44, 31,
   "shotgun flash A follows the shared psprite origin"];
 doom_bsp_expect_muzzle[psprite_bank, 3, 1, 137, 102, 54, 44,
@@ -758,6 +786,81 @@ while (pi < bytes_len[pixels]) (
   pi = pi + 4;
 )
 doom_bsp_expect[yellow_pixels > 0, "dropped clip texels reach the frame"];
+
+let laser_pickup_combat = doom_combat_new[map];
+laser_pickup_combat\drops = [{
+  x: 150, y: 50, kind: doom_laser_pickup_kind[], alive: 1
+}];
+let laser_pickup_view = doom_view_draw_combat_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, laser_pickup_combat, 0, 0
+];
+let green_tint_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  let r = bytes_get[pixels, pi];
+  let g = bytes_get[pixels, pi + 1];
+  let b = bytes_get[pixels, pi + 2];
+  if ((g > 100) and (g > r * 4) and (g > b * 4)) (
+    green_tint_pixels = green_tint_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  (laser_pickup_view\visible_combat_items == 1) and
+  (green_tint_pixels > 0),
+  "entrance laser pickup reaches the frame with its green field cue"
+];
+
+let shield_pickup_combat = doom_combat_new[map];
+shield_pickup_combat\drops = [{
+  x: 150, y: 50, kind: doom_shield_pickup_kind[], alive: 1
+}];
+let shield_pickup_view = doom_view_draw_combat_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, shield_pickup_combat, 0, 0
+];
+let amber_bracelet_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  let r = bytes_get[pixels, pi];
+  let g = bytes_get[pixels, pi + 1];
+  let b = bytes_get[pixels, pi + 2];
+  if ((r > 200) and (g > 100) and (r > b * 4)) (
+    amber_bracelet_pixels = amber_bracelet_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  (shield_pickup_view\visible_combat_items == 1) and
+  (amber_bracelet_pixels > 0),
+  "entrance shield reaches the frame as a code-native amber bracelet"
+];
+
+let laser_combat = doom_combat_new[map];
+doom_combat_take_drop[laser_combat, doom_laser_pickup_kind[]];
+laser_combat = doom_combat_fire[
+  map, laser_combat, 50, 50, trig_from_degrees[0]
+];
+laser_combat = doom_combat_tick[map, laser_combat, 50, 50];
+doom_view_draw_combat_pitched[
+  pixels, 320, 200, gui_font[], map, doom_view_work[map],
+  50, 50, trig_from_degrees[0], 0, laser_combat, 0, 0
+];
+let laser_arrow_pixels = 0;
+pi = 0;
+while (pi < bytes_len[pixels]) (
+  if ((bytes_get[pixels, pi] == 104) and
+      (bytes_get[pixels, pi + 1] == 255) and
+      (bytes_get[pixels, pi + 2] == 118)) (
+    laser_arrow_pixels = laser_arrow_pixels + 1;
+  )
+  pi = pi + 4;
+)
+doom_bsp_expect[
+  laser_arrow_pixels > 0,
+  "live laser projectile reaches the depth-tested frame as a bright green arrow"
+];
 
 let prop_map = map + {
   things: %32[50, 50, 1, 7, 150, 50, 30, 7],

@@ -4,19 +4,32 @@
 // simulation or capability authority lives here.
 
 credits: <../games/doom-view.flx> <../games/doom-ui.flx>
-         <../games/doom-input.flx>;
+         <../games/doom-input.flx> <../games/doom-drone-view.flx>;
 
 op doom_frame_draw [buf, w, h, viewport_h, font, map, work,
                     player_x, player_y, angle, pitch,
                     alive, kills, enemies, misses, steps, blocked,
                     texture_mode, combat_mode, combat, world,
+                    drone,
                     status_cache, diag_mode, demo_mode,
                     controls, ui] (
   let view = 0;
+  let drone_mode =
+    (texture_mode == 1) and (combat_mode == 1) and (drone\active == 1);
   let scan_mode =
     (texture_mode == 1) and (combat_mode == 1) and (ui\open == 0) and
     (doom_input_held[controls, gui_key_tab[]] == 1);
-  if (scan_mode == 1) (
+  if ((drone_mode == 1) and (scan_mode == 1)) (
+    view = doom_view_draw_drone_scan_world_pitched[
+      buf, w, viewport_h, font, map, work,
+      drone, combat, world, steps, blocked
+    ];
+  ) else if (drone_mode == 1) (
+    view = doom_view_draw_drone_world_pitched[
+      buf, w, viewport_h, font, map, work,
+      drone, combat, world, steps, blocked
+    ];
+  ) else if (scan_mode == 1) (
     view = doom_view_draw_scan_world_pitched[
       buf, w, viewport_h, font, map, work,
       player_x, player_y, angle, pitch, combat, world, steps, blocked
@@ -46,27 +59,43 @@ op doom_frame_draw [buf, w, h, viewport_h, font, map, work,
       alive, kills, enemies, misses, steps, blocked
     ];
   )
-  if ((combat_mode == 1) and (texture_mode == 1) and (ui\open == 0)) (
+  if ((combat_mode == 1) and (texture_mode == 1) and
+      (ui\open == 0) and (drone_mode == 0)) (
     doom_ui_draw_status_cached[
       buf, w, h, map\texture_bank, status_cache, combat, world
     ];
-  ) else if ((combat_mode == 1) and (texture_mode == 1)) (
+  ) else if ((combat_mode == 1) and (texture_mode == 1) and
+             (drone_mode == 0)) (
     // The episode menu owns the complete framebuffer. Force one exact status
     // reconstruction after it closes, but do no hidden strip work beneath it.
     status_cache\valid = 0;
   )
+  if ((drone_mode == 1) and (ui\open == 0)) (
+    status_cache\valid = 0;
+    doom_drone_apply_bank[buf, w, viewport_h, drone\roll];
+    doom_drone_draw_hud[buf, w, h, font, drone];
+  )
   if (diag_mode == 1) (
-    let sector = doom_map_point_sector[map, player_x, player_y];
+    let diag_x = player_x;
+    let diag_y = player_y;
+    let diag_z = world\player_z;
+    if (drone_mode == 1) (
+      diag_x = drone\x;
+      diag_y = drone\y;
+      diag_z = drone\z;
+    )
+    let sector = doom_map_point_sector[map, diag_x, diag_y];
     gui_text[
       buf, w, h, font, 10, 46,
-      "POS ^{player_x},^{player_y},^{world\player_z}  VZ ^{world\player_vz}  G ^{world\grounded}  SEC ^{sector}",
+      "POS ^{diag_x},^{diag_y},^{diag_z}  VZ ^{world\player_vz}  G ^{world\grounded}  SEC ^{sector}",
       gui_rgb[255, 220, 96]
     ];
   )
   if (demo_mode == 1) (
     gui_text[buf, w, h, font, 10, 34,
       "DETERMINISTIC ^{map\name} DEMO", gui_rgb[80, 220, 210]];
-  ) else if ((controls\captured == 0) and (ui\open == 0)) (
+  ) else if ((controls\captured == 0) and (ui\open == 0) and
+             (drone_mode == 0)) (
     gui_text[buf, w, h, font, 10, 34,
       "CLICK TO CAPTURE — ESC AGAIN FOR MENU", gui_rgb[255, 200, 80]];
   )

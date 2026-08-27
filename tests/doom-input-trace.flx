@@ -81,13 +81,31 @@ trace = doom_input_trace_resume[
   },
   1
 ];
+let drone = doom_drone_new[];
+let drone_combat = {
+  selected_weapon: doom_drone_weapon[], drones: 1,
+  drone_launches: 0, health: 73
+};
+trace = doom_input_trace_drone[trace, 22, drone, drone_combat, 1];
+drone\active = 1;
+drone\x = 120; drone\y = 240; drone\z = 36;
+drone\tick = 1;
+drone_combat\selected_weapon = 2;
+drone_combat\drones = 0;
+drone_combat\drone_launches = 1;
+trace = doom_input_trace_drone[trace, 23, drone, drone_combat, 0];
+drone\active = 0;
+drone\reason = 2;
+drone\target = 7;
+drone\detonations = 1;
+trace = doom_input_trace_drone[trace, 24, drone, drone_combat, 0];
 doom_input_trace_finish[trace, 21];
 let evidence = read[path] with chaos { _ => "" };
 remove[path] with chaos { _ => 0 };
 
-doom_trace_expect[trace\records == 8, "collision and vertical records"];
+doom_trace_expect[trace\records == 11, "collision, vertical and drone records"];
 doom_trace_expect[
-  (string_index_of[evidence, "freelang-doom-input/4", 0] >= 0) and
+  (string_index_of[evidence, "freelang-doom-input/6", 0] >= 0) and
   (string_index_of[evidence, "session map=E2M3", 0] >= 0) and
   (string_index_of[evidence, "raw=1,119,0,0", 0] >= 0) and
   (string_index_of[evidence, "before{focus=1 capture=0 w=0", 0] >= 0) and
@@ -110,7 +128,14 @@ doom_trace_expect[
   (string_index_of[evidence, "forward_dot=32 request_sq=80 actual_sq=16", 0] >= 0) and
   (string_index_of[evidence, "vertical frame=20", 0] >= 0) and
   (string_index_of[evidence, "sector=29,27 vz=8,7 grounded=1,0", 0] >= 0) and
-  (string_index_of[evidence, "resume frame=21", 0] >= 0),
+  (string_index_of[evidence, "resume frame=21", 0] >= 0) and
+  (string_index_of[evidence, "drone frame=22 active=0", 0] >= 0) and
+  (string_index_of[evidence, "inventory=1 selected=1", 0] >= 0) and
+  (string_index_of[evidence, "drone frame=23 active=1", 0] >= 0) and
+  (string_index_of[evidence, "armed=0 fire_ready=0 deploy_ready=0", 0] >= 0) and
+  (string_index_of[evidence, "launches=1 health=73", 0] >= 0) and
+  (string_index_of[evidence, "drone frame=24 active=0", 0] >= 0) and
+  (string_index_of[evidence, "reason=actor target=7 detonations=1", 0] >= 0),
   "raw held state is adjacent to exact persisted movement rejection"
 ];
 

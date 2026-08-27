@@ -374,6 +374,30 @@ op doom_ui_face_slot [combat] (
   => doom_texture_ui_face_straight_slot[tier, (combat\tick / 30) % 3];
 )
 
+// A tiny persistent bracelet icon is live state, not WAD status art. It
+// brightens briefly when the field rejects an attack, making protection
+// visible without adding a durability meter or another presenter control.
+private op doom_ui_draw_shield_bracelet [buf, w, h, combat,
+                                         scale_n, scale_d, bx, by] (
+  if (combat\shielded == 1) () else ( => 0; )
+  let unit = scale_n / scale_d;
+  if (unit < 1) ( unit = 1; )
+  let x = bx + 226 * scale_n / scale_d;
+  let y = by + 22 * scale_n / scale_d;
+  let width = 10 * scale_n / scale_d;
+  let height = 7 * scale_n / scale_d;
+  let colour = gui_rgb[34, 188, 236];
+  let since_block = combat\tick - combat\shield_block_tick;
+  if ((since_block >= 0) and (since_block < 8)) (
+    colour = gui_rgb[176, 255, 255];
+  )
+  gui_rect[buf, w, h, x, y, width, unit, colour];
+  gui_rect[buf, w, h, x, y + height - unit, width, unit, colour];
+  gui_rect[buf, w, h, x, y, unit, height, colour];
+  gui_rect[buf, w, h, x + width - unit, y, unit, height, colour];
+  => 1;
+)
+
 private op doom_ui_draw_status_layers [buf, w, h, bank, combat, world,
                                        draw_static] (
   if (bank\ui_ready == 1) () else ( => 0; )
@@ -443,6 +467,8 @@ private op doom_ui_draw_status_layers [buf, w, h, bank, combat, world,
     scale_n, scale_d
   ];
 
+  // The classic status-bar arms panel has six fixed WAD number positions.
+  // The modular laser remains selectable as slot 8 without widening that art.
   let weapon = 2;
   while (weapon <= 7) (
     let column = (weapon - 2) % 3;
@@ -458,6 +484,10 @@ private op doom_ui_draw_status_layers [buf, w, h, bank, combat, world,
     ];
     weapon = weapon + 1;
   )
+
+  doom_ui_draw_shield_bracelet[
+    buf, w, h, combat, scale_n, scale_d, bx, by
+  ];
 
   doom_ui_draw_number_right_scaled[
     buf, w, h, bank, bx + 288 * scale_n / scale_d,
@@ -522,7 +552,8 @@ op doom_ui_status_cache_new [w, h, bank] (
   => {
     pixels: pixels, width: w, frame_height: h, height: status_h,
     valid: 0, face: 0 - 1, current_ammo: 0 - 1,
-    health: 0 - 1, armor: 0 - 1, weapons: 0 - 1, keys: 0 - 1,
+    health: 0 - 1, armor: 0 - 1, weapons: 0 - 1,
+    shield_flash: 0 - 1, keys: 0 - 1,
     ammo: 0 - 1, shells: 0 - 1, rockets: 0 - 1, cells: 0 - 1,
     max_ammo: 0 - 1, max_shells: 0 - 1,
     max_rockets: 0 - 1, max_cells: 0 - 1,
@@ -549,10 +580,15 @@ op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
   let current_ammo = doom_combat_current_ammo[combat];
   let weapons = 0;
   let weapon = 1;
-  while (weapon <= 7) (
+  while (weapon <= doom_combat_weapon_count[]) (
     weapons = weapons * 2 + doom_combat_weapon_owned[combat, weapon];
     weapon = weapon + 1;
   )
+  weapons = weapons * 2 + combat\shielded;
+  let since_shield_block = combat\tick - combat\shield_block_tick;
+  let shield_flash =
+    combat\shielded and
+    (since_shield_block >= 0) and (since_shield_block < 8);
   let keys = world\blue_key + world\blue_skull * 2 +
     world\yellow_key * 4 + world\yellow_skull * 8 +
     world\red_key * 16 + world\red_skull * 32;
@@ -560,7 +596,8 @@ op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
     (cache\valid == 1) and (cache\face == face) and
     (cache\current_ammo == current_ammo) and
     (cache\health == combat\health) and (cache\armor == combat\armor) and
-    (cache\weapons == weapons) and (cache\keys == keys) and
+    (cache\weapons == weapons) and
+    (cache\shield_flash == shield_flash) and (cache\keys == keys) and
     (cache\ammo == combat\ammo) and (cache\shells == combat\shells) and
     (cache\rockets == combat\rockets) and (cache\cells == combat\cells) and
     (cache\max_ammo == combat\max_ammo) and
@@ -583,6 +620,7 @@ op doom_ui_draw_status_cached [buf, w, h, bank, cache, combat, world] (
     cache\health = combat\health;
     cache\armor = combat\armor;
     cache\weapons = weapons;
+    cache\shield_flash = shield_flash;
     cache\keys = keys;
     cache\ammo = combat\ammo;
     cache\shells = combat\shells;

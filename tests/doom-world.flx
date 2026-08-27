@@ -296,6 +296,36 @@ doom_world_test_expect[
 ];
 
 let combat = doom_combat_new[play_map];
+let laser_world = doom_world_new[play_map];
+let laser_combat = doom_combat_new[play_map];
+let entrance_laser = laser_combat\drops\0;
+doom_world_test_expect[
+  (entrance_laser\kind == doom_laser_pickup_kind[]) and
+  (doom_world_collect[
+     play_map, laser_world, laser_combat,
+     entrance_laser\x, entrance_laser\y
+   ] == 1) and
+  (entrance_laser\alive == 0) and
+  (doom_combat_weapon_owned[laser_combat, doom_laser_weapon[]] == 1) and
+  (laser_combat\selected_weapon == doom_laser_weapon[]) and
+  (laser_world\pickup_kind == doom_laser_pickup_kind[]) and
+  (doom_world_pickup_is_weapon[doom_laser_pickup_kind[]] == 1),
+  "every map combat state publishes one collectible laser near its entrance"
+];
+let shield_world = doom_world_new[play_map];
+let shield_combat = doom_combat_new[play_map];
+let entrance_shield = shield_combat\drops\1;
+doom_world_test_expect[
+  (entrance_shield\kind == doom_shield_pickup_kind[]) and
+  (doom_world_collect[
+     play_map, shield_world, shield_combat,
+     entrance_shield\x, entrance_shield\y
+   ] == 1) and
+  (entrance_shield\alive == 0) and (shield_combat\shielded == 1) and
+  (shield_world\pickup_kind == doom_shield_pickup_kind[]) and
+  (doom_world_pickup_is_power[doom_shield_pickup_kind[]] == 1),
+  "every map publishes one permanent exploration shield pickup"
+];
 let hazard_combat = doom_combat_new[play_map];
 buf_set[world\sectors, 3, 7];
 world\tick = 59;

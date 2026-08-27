@@ -33,8 +33,8 @@ component.
 ## Sidecar source and dependency audit
 
 This audit closes the sidecar set reachable by Freelang Doom Source at the
-current synchronization checkpoint `d8ebabc3bbdf02cd5989394342090cf2cce2ab37`
-(source synchronized after the `v6.9.0` milestone).
+current synchronization checkpoint `d31c926db246a042026d1c5559630e85c3064dfc`
+(the live-accepted `v6.11.1` source candidate).
 
 The exact native payload evidence below was measured at `373ab2781ac3`
 (`v6.4.0`). The native GUI/speaker sources and their build paths are unchanged
@@ -76,6 +76,12 @@ Doom policy. Each receives finite checked protocol messages over a private
 `MessagePort` and cannot access the Freelang heap. Their source is excluded from
 `main`; the generated Pages distribution contains only the exact runtime copies
 named by its target manifest.
+
+The current presenter source SHA-256 is
+`cc2eb2848767a5d055b40d9181cebba95a3d3e574170c5a00eac058db05a004b`.
+Relative to the prior shipped milestone, its only source change is the generic
+mapping of `Minus` and `NumpadSubtract` to key code 45. This remains within the
+same presenter authority and protocol family and adds no Doom policy.
 
 Repository history and line attribution assign all three sidecar source files
 to DOSAYGO Engineering. Their build scripts compile those source files

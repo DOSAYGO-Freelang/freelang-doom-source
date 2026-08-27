@@ -52,13 +52,11 @@ caller-supplied compatibility corpus. It is not present in this repository.
 
 The current source was synchronized from the same private monorepo at:
 
-- commit `d8ebabc3bbdf02cd5989394342090cf2cce2ab37`: the source checkpoint;
-- milestone tag `v6.9.0` at `7e2371b618db10abbe9b4337fe3a0af05c3358a8`;
-- cached browser-music implementation commit
-  `1160a010b4503efac67a4729fcdbe824836818ba`;
-- intrinsic-callability migration commit
-  `c8394557d3dc886234cfb06faca60f4659c17793`;
-- synchronization date 2026-08-24.
+- commit `d31c926db246a042026d1c5559630e85c3064dfc`: the live-accepted
+  v6.11.1 source candidate;
+- prior shipped milestone tag `v6.11.0` at
+  `97d5fe73e98487bccdfbbf4d3d833967b12f8576`;
+- synchronization date 2026-08-26.
 
 The source boundary remains unchanged: only the Freelang Doom application,
 synthetic Doom-specific tests, source tools and supporting documentation are

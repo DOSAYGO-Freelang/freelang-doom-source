@@ -31,10 +31,10 @@ WAD through its bounded load/render/close path, with deeper interactive and
 deterministic coverage centered on E1M1, E1M2 and E2M1. The WAD is neither
 included nor downloaded by this repository.
 
-This snapshot corresponds to Freelang milestone **v6.9.0**. Native play at a
-1280x800 logical raster is accepted as fast and playable. The retained browser
-workload renders the same shared session at about 26 frames per second at that
-resolution. BSP traversal and world decisions remain in Freelang while
+This snapshot is the live-accepted **v6.11.1 source candidate**. Native and
+browser builds run the same shared session, including the laser blaster,
+permanent exploration shield and controllable FPV attack drone. BSP traversal,
+world state, FPV flight, combat and equipment policy remain in Freelang while
 independently bounded raster operations accelerate repeated pixel projection.
 
 The application source is the Builder's Kit component named **Freelang Doom
@@ -116,9 +116,10 @@ pwsh C:\path\to\freelang\flx.ps1 games/doom-play.flx C:\games\DOOM.WAD E1M1
 | Left / Right arrows | Turn without the mouse |
 | Press E | Use a supported door, lift or exit line |
 | Space | Jump |
-| 1–7 | Select an owned weapon |
+| 1–9 | Select an owned weapon; slot 8 is the laser and slot 9 is the FPV drone |
+| `-` | Select the laser directly |
 | Mouse wheel or `[` / `]` | Cycle owned weapons |
-| Hold Tab | Tactical linedef scan with actors/items in night-vision color |
+| Hold Tab | Tactical linedef scan from the active player or FPV camera |
 | R | Reset the current map state |
 | Escape | Release pointer capture; press again to open or close the map menu |
 | Up / Down, Return | Move through the menu and start the selected map |
@@ -127,6 +128,13 @@ A click in an uncaptured window restores pointer capture without also firing.
 Focus loss clears retained controls. Protocol-v3 presenter snapshots replace
 held keyboard and mouse state atomically each frame, so real-time movement does
 not depend on receiving every native key edge.
+
+In FPV mode the mouse aims a wider camera, W/A/S/D add thrust, Space climbs,
+Control descends, E operates supported doors and switches, and Tab scans from
+the drone's position. X explicitly arms contact detonation; until then a
+collision stops the drone safely. Left click or F detonates manually. Release
+the control before clicking again so the detonation does not also deploy the
+next drone.
 
 ### Options
 
@@ -172,12 +180,15 @@ This is a playable engine, not a claim of complete vanilla Doom behavior.
 
 The default path includes textured walls and planes, directional animated
 sprites, status/menu art, pickups, several doors and lifts, exits, hazards,
-player height and jumping, five weapon selections, hitscan/projectile combat,
+player height and jumping, nine weapon selections, hitscan/projectile combat,
 explosive barrels, visible dropped clips, mutable switch faces, guarded tagged
 teleports with native fog animation and WAD-derived gameplay effects. Within
 one process/page session, map choices retain the player's earned weapons,
 ammunition, armor and health. Holding Tab replaces textured surfaces with a
-linedef tactical scan while preserving the same simulation state.
+linedef tactical scan from the active player or FPV camera while preserving the
+same simulation state. The nine-slot explorer loadout adds an unlimited-ammo
+laser blaster, a permanent projectile/explosion shield and single-use FPV
+attack drones.
 
 ## Architecture
 
@@ -217,6 +228,12 @@ The principal modules are:
 | `doom-map.flx` | Checked map records, BSP, collision geometry and target selection |
 | `doom-texture.flx` | Checked PLAYPAL/COLORMAP/PNAMES/TEXTURE/patch/flat/sprite/UI atlases |
 | `doom-world.flx` | Mutable sector/SIDEDEF authority, movers, switches, teleports, pickups, hazards and collision response |
+| `doom-laser.flx` | Commodity blaster identity, entrance tuning, silver pistol palette, green effects and original sound |
+| `doom-shield.flx` | Permanent exploration-shield pickup and explicit ranged/melee damage policy |
+| `doom-drone.flx` | FPV inventory, spawning, persistent flight, collision, arming and detonation policy |
+| `doom-drone-view.flx` | Drone-camera projection, banking and active-camera tactical scan transforms |
+| `doom-aim.flx` | Shared pitch-aware aim-vector and projectile-line helpers |
+| `doom-blaster-audio.flx` | Short layered OPL2 bolt sound variants and selection policy |
 | `doom-combat.flx` | Player resources and bounded actor, projectile, barrel and drop state |
 | `doom-view.flx` | Integer projection, BSP visibility, planes, walls, sprites and weapon rendering |
 | `doom-input.flx` | Authoritative retained controls from presenter snapshots |
@@ -260,7 +277,9 @@ contain no commercial Doom assets.
   its generated host and generic web capability agents are published only as
   the separate `gh-pages` distribution.
 - `tests/` contains Doom-specific synthetic fixtures and expected output.
-- `tools/` contains music comparison and geometry probes.
+- `tools/` contains Doom release/guide builders, browser smoke tests, music
+  comparison tools and geometry probes.
+- `docs/guides/` contains the source for the release user guide.
 - `docs/dev/` and `docs/spec/` describe current behavior and process protocols.
 - `docs/research/` preserves dated experimental evidence; those notes are
   historical and may describe rejected or superseded designs.

@@ -1,0 +1,51 @@
+// FPV presentation owns a packed RGBX bank transaction and a deliberately
+// wider camera focal length without changing the player's established view.
+
+credits: <../games/doom-drone-view.flx> <../games/doom-view.flx>
+         <f/bytes> <f/gui>;
+
+op doom_drone_view_expect [condition, label] (
+  if (condition == 1) () else (
+    print "failed: ^{label}";
+    fall "doom drone view expectation failed";
+  )
+)
+
+let w = 320;
+let h = 40;
+let pixels = gui_buffer[w, h];
+let y = 0;
+while (y < h) (
+  gui_rect[pixels, w, h, 0, y, w, 1, gui_rgb[y, y + 1, y + 2]];
+  y = y + 1;
+)
+
+doom_drone_apply_bank[pixels, w, h, 10];
+
+// At the left edge roll -8 samples source row 8 into destination row 0.
+let left = 0;
+doom_drone_view_expect[
+  (bytes_get[pixels, left] == 8) and
+  (bytes_get[pixels, left + 1] == 9) and
+  (bytes_get[pixels, left + 2] == 10) and
+  (bytes_get[pixels, left + 3] == 0),
+  "banking copies a complete RGBX pixel rather than one byte"
+];
+
+// At the right edge roll +8 uncovers the dark FPV border at row 0.
+let right = (w - 1) * 4;
+doom_drone_view_expect[
+  (bytes_get[pixels, right] == 6) and
+  (bytes_get[pixels, right + 1] == 10) and
+  (bytes_get[pixels, right + 2] == 14) and
+  (bytes_get[pixels, right + 3] == 0),
+  "banking clears uncovered space as one packed RGBX pixel"
+];
+
+doom_drone_view_expect[
+  (doom_view_player_focal[w] == 240) and
+  (doom_view_drone_focal[w] == 160),
+  "FPV projection exposes a wider field of view without changing the player"
+];
+
+print "doom drone view ok";

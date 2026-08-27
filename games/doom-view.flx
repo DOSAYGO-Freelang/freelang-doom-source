@@ -4,6 +4,8 @@
 
 credits: <../games/doom-map.flx> <../games/doom-texture.flx>
          <../games/doom-combat.flx> <../games/doom-world.flx>
+         <../games/doom-laser.flx> <../games/doom-shield.flx>
+         <../games/doom-drone.flx> <../games/doom-drone-view.flx>
          <f/gui> <f/trig> <f/raster>;
 
 private op doom_view_zero_bytes [b] (
@@ -123,6 +125,60 @@ op doom_view_work_sized [map, w, h] (
     ];
     scan_colour = scan_colour + 1;
   )
+  let laser_effect_rgbx_colours = doom_laser_effect_colours[bank\colours];
+  let laser_weapon_rgbx_colours = doom_laser_weapon_colours[bank\colours];
+  // Palette replacement alone cannot distinguish a black interior texel from
+  // the same index used at the transparent silhouette boundary. Retain a tiny
+  // compact copy of the pistol's authored boundary so the white-shell pass can
+  // restore its original antialias ramp after drawing the transformed body.
+  let laser_weapon_width = 0;
+  let laser_weapon_height = 0;
+  let laser_weapon_pixels = bytes_new[0];
+  let laser_weapon_edge_opaque = bytes_new[0];
+  let laser_weapon_slot = doom_texture_weapon_slot_for[
+    doom_laser_source_weapon[], 0
+  ];
+  if (doom_view_sprite_meta_valid[bank, laser_weapon_slot] == 1) (
+    let mb = laser_weapon_slot * 6;
+    laser_weapon_width = buf_get[bank\sprite_meta, mb];
+    laser_weapon_height = buf_get[bank\sprite_meta, mb + 1];
+    let source_offset = buf_get[bank\sprite_meta, mb + 2];
+    let count = laser_weapon_width * laser_weapon_height;
+    laser_weapon_pixels = bytes_new[count];
+    laser_weapon_edge_opaque = bytes_new[count];
+    let pixel = 0;
+    while (pixel < count) (
+      bytes_set[
+        laser_weapon_pixels, pixel,
+        bytes_get[bank\sprite_pixels, source_offset + pixel]
+      ];
+      if (bytes_get[bank\sprite_opaque, source_offset + pixel] == 1) (
+        let sx = pixel % laser_weapon_width;
+        let sy = pixel / laser_weapon_width;
+        let edge = (sx == 0) or (sy == 0) or
+          (sx == laser_weapon_width - 1) or
+          (sy == laser_weapon_height - 1);
+        let ny = sy - 1;
+        while ((ny <= sy + 1) and (edge == 0)) (
+          let nx = sx - 1;
+          while ((nx <= sx + 1) and (edge == 0)) (
+            if ((nx >= 0) and (nx < laser_weapon_width) and
+                (ny >= 0) and (ny < laser_weapon_height) and
+                (bytes_get[
+                   bank\sprite_opaque,
+                   source_offset + ny * laser_weapon_width + nx
+                 ] == 0)) (
+              edge = 1;
+            )
+            nx = nx + 1;
+          )
+          ny = ny + 1;
+        )
+        if (edge == 1) ( bytes_set[laser_weapon_edge_opaque, pixel, 1]; )
+      )
+      pixel = pixel + 1;
+    )
+  )
   view sky_offsets as %32le[] over sky_offsets_storage;
   doom_view_zero_bytes[stamp];
   doom_view_zero_bytes[plane_stamp];
@@ -192,6 +248,12 @@ op doom_view_work_sized [map, w, h] (
     masked_wall_command_count: 0, masked_wall_drawn: 0,
     wall_indexed_alpha: wall_indexed_alpha,
     scan_rgbx_colours: scan_rgbx_colours,
+    laser_effect_rgbx_colours: laser_effect_rgbx_colours,
+    laser_weapon_rgbx_colours: laser_weapon_rgbx_colours,
+    laser_weapon_width: laser_weapon_width,
+    laser_weapon_height: laser_weapon_height,
+    laser_weapon_pixels: laser_weapon_pixels,
+    laser_weapon_edge_opaque: laser_weapon_edge_opaque,
     frame: 0, width: w, height: h, light_amp: 0,
     measure_plane_gaps: 0
   };
@@ -1377,6 +1439,128 @@ private op doom_view_draw_world_sprite [buf, w, h, bank, work, wall_frame,
   ];
 )
 
+// A code-native pickup silhouette keeps the Holtzman shield honest: this is a
+// small glowing bracelet, not a palette-shifted Doom armor helmet. It shares
+// the normal stamped depth authority and scales from world size through the
+// same focal projection used by sprite pickups.
+private op doom_view_draw_shield_bracelet_pickup [
+  buf, w, h, work, wall_frame, screen_x, bottom, depth, depth_key, focal
+] (
+  view rgbx as %32le[] over buf;
+  let depth_storage = work\depth;
+  view depth_buffer as %32le[] over depth_storage;
+  let rx = focal * 12 / depth;
+  let ry = focal * 5 / depth;
+  rx = doom_view_clamp[rx, 3, 36];
+  ry = doom_view_clamp[ry, 2, 16];
+  let thickness = rx / 5;
+  if (thickness < 1) ( thickness = 1; )
+  let inner_rx = rx - thickness;
+  let inner_ry = ry - thickness;
+  if (inner_rx < 1) ( inner_rx = 1; )
+  if (inner_ry < 1) ( inner_ry = 1; )
+  let centre_y = bottom - ry - focal * 4 / depth;
+  let outer_limit = rx * rx * ry * ry;
+  let inner_limit = inner_rx * inner_rx * inner_ry * inner_ry;
+  let amber = 255 + 154 * 256 + 38 * 65536;
+  let core = 255 + 236 * 256 + 148 * 65536;
+  let glow = 126 + 58 * 256 + 8 * 65536;
+  let painted = 0;
+  let y = 0 - ry - 1;
+  while (y <= ry + 1) (
+    let x = 0 - rx - 1;
+    while (x <= rx + 1) (
+      let outer = x * x * ry * ry + y * y * rx * rx;
+      let inner = x * x * inner_ry * inner_ry +
+        y * y * inner_rx * inner_rx;
+      let ring = (outer <= outer_limit) and (inner >= inner_limit);
+      let gem = (y <= 0 - ry + thickness + 1) and
+        (x >= 0 - thickness) and (x <= thickness);
+      let aura = (outer <= outer_limit + outer_limit / 3) and
+        (inner >= inner_limit - inner_limit / 3);
+      if (ring or gem or aura) (
+        let px = screen_x + x;
+        let py = centre_y + y;
+        if ((px >= 0) and (px < w) and (py >= 0) and (py < h)) (
+          let pixel = py * w + px;
+          if (((work\stamp)@pixel != wall_frame) or
+              (depth_key < depth_buffer@pixel)) (
+            let colour = glow;
+            if (ring) ( colour = amber; )
+            if (gem) ( colour = core; )
+            rgbx@pixel = colour;
+            work\stamp@pixel = wall_frame;
+            depth_buffer@pixel = depth_key;
+            painted = painted + 1;
+          )
+        )
+      )
+      x = x + 1;
+    )
+    y = y + 1;
+  )
+  => painted;
+)
+
+// FPV drones are gameplay-owned synthetic drops, so their pickup art is a
+// compact code-native quadcopter silhouette instead of an unrelated WAD item.
+// Four luminous rotors keep it readable against both bright and dark flats.
+private op doom_view_draw_drone_pickup [
+  buf, w, h, work, wall_frame, screen_x, bottom, depth, depth_key, focal
+] (
+  view rgbx as %32le[] over buf;
+  let depth_storage = work\depth;
+  view depth_buffer as %32le[] over depth_storage;
+  let radius = focal * 10 / depth;
+  radius = doom_view_clamp[radius, 4, 30];
+  let thick = radius / 5;
+  if (thick < 1) ( thick = 1; )
+  let centre_y = bottom - radius - focal * 5 / depth;
+  let metal = 184 + 198 * 256 + 204 * 65536;
+  let dark = 48 + 62 * 256 + 67 * 65536;
+  let lamp = 70 + 255 * 256 + 126 * 65536;
+  let painted = 0;
+  let y = 0 - radius;
+  while (y <= radius) (
+    let x = 0 - radius;
+    while (x <= radius) (
+      let ax = x;
+      let ay = y;
+      if (ax < 0) ( ax = 0 - ax; )
+      if (ay < 0) ( ay = 0 - ay; )
+      let body = (ax <= thick * 2) and (ay <= thick);
+      let diagonal = ax - ay;
+      if (diagonal < 0) ( diagonal = 0 - diagonal; )
+      let arms = (ax <= radius - thick) and
+        (ay <= radius - thick) and
+        (diagonal <= thick / 2 + 1);
+      let rotor_dx = ax - (radius - thick);
+      let rotor_dy = ay - (radius - thick);
+      let rotor = rotor_dx * rotor_dx + rotor_dy * rotor_dy <= thick * thick;
+      if (body or arms or rotor) (
+        let px = screen_x + x;
+        let py = centre_y + y;
+        if ((px >= 0) and (px < w) and (py >= 0) and (py < h)) (
+          let pixel = py * w + px;
+          if (((work\stamp)@pixel != wall_frame) or
+              (depth_key < depth_buffer@pixel)) (
+            let colour = dark;
+            if (arms) ( colour = metal; )
+            if (rotor) ( colour = lamp; )
+            rgbx@pixel = colour;
+            work\stamp@pixel = wall_frame;
+            depth_buffer@pixel = depth_key;
+            painted = painted + 1;
+          )
+        )
+      )
+      x = x + 1;
+    )
+    y = y + 1;
+  )
+  => painted;
+)
+
 private op doom_view_draw_weapon [buf, w, h, bank, work] (
   let slot = doom_texture_weapon_slot[0];
   if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
@@ -1385,17 +1569,16 @@ private op doom_view_draw_weapon [buf, w, h, bank, work] (
   => doom_view_draw_weapon_slot[buf, w, h, bank, work, slot];
 )
 
-private op doom_view_draw_weapon_slot_at [buf, w, h, bank, work, slot,
-                                           left, top,
-                                           drawn_width, drawn_height,
-                                           depth_key] (
+private op doom_view_draw_weapon_slot_palette_at [
+  buf, w, h, bank, work, slot,
+  left, top, drawn_width, drawn_height, depth_key, rgbx_colours
+] (
   if (doom_view_sprite_meta_valid[bank, slot] == 1) () else (
     fall "doom_view_draw_weapon: invalid weapon sprite metadata";
   )
   let sprite_meta = bank\sprite_meta;
   let sprite_pixels = bank\sprite_pixels;
   let sprite_opaque = bank\sprite_opaque;
-  let rgbx_colours = bank\rgbx_colours;
   let mb = slot * 6;
   let width = buf_get[sprite_meta, mb];
   let height = buf_get[sprite_meta, mb + 1];
@@ -1431,6 +1614,16 @@ private op doom_view_draw_weapon_slot_at [buf, w, h, bank, work, slot,
   => raster_masked_indexed_lit_depth_sprite[
     buf, work\stamp, work\depth,
     sprite_pixels, sprite_opaque, rgbx_colours, command
+  ];
+)
+
+private op doom_view_draw_weapon_slot_at [buf, w, h, bank, work, slot,
+                                           left, top,
+                                           drawn_width, drawn_height,
+                                           depth_key] (
+  => doom_view_draw_weapon_slot_palette_at[
+    buf, w, h, bank, work, slot, left, top,
+    drawn_width, drawn_height, depth_key, bank\rgbx_colours
   ];
 )
 
@@ -1470,6 +1663,55 @@ private op doom_view_draw_weapon_slot [buf, w, h, bank, work, slot] (
     buf, w, h, bank, work, slot,
     placement\left, placement\top,
     placement\width, placement\height, 1
+  ];
+)
+
+private op doom_view_draw_weapon_slot_palette [
+  buf, w, h, bank, work, slot, rgbx_colours
+] (
+  let placement = doom_view_weapon_position[w, h, bank, slot];
+  => doom_view_draw_weapon_slot_palette_at[
+    buf, w, h, bank, work, slot,
+    placement\left, placement\top,
+    placement\width, placement\height, 1, rgbx_colours
+  ];
+)
+
+private op doom_view_draw_laser_weapon [buf, w, h, bank, work] (
+  let slot = doom_texture_weapon_slot_for[doom_laser_source_weapon[], 0];
+  let placement = doom_view_weapon_position[w, h, bank, slot];
+  let painted = doom_view_draw_weapon_slot_palette_at[
+    buf, w, h, bank, work, slot,
+    placement\left, placement\top,
+    placement\width, placement\height, 1,
+    work\laser_weapon_rgbx_colours
+  ];
+  let count = work\laser_weapon_width * work\laser_weapon_height;
+  if ((count > 0) and
+      (bytes_len[work\laser_weapon_pixels] == count) and
+      (bytes_len[work\laser_weapon_edge_opaque] == count)) () else (
+    => painted;
+  )
+  let command = work\sprite_command;
+  command@0 = w;
+  command@1 = h;
+  command@2 = 0;
+  command@3 = work\laser_weapon_width;
+  command@4 = work\laser_weapon_height;
+  command@5 = placement\left;
+  command@6 = placement\left + placement\width;
+  command@7 = placement\top;
+  command@8 = placement\top + placement\height;
+  command@9 = 0;
+  command@10 = 0;
+  // The restored boundary is one depth unit nearer than the transformed body,
+  // so equal source coordinates deterministically retain authored edge texels.
+  command@11 = 0;
+  command@12 = work\frame;
+  => painted + raster_masked_indexed_lit_depth_sprite[
+    buf, work\stamp, work\depth,
+    work\laser_weapon_pixels, work\laser_weapon_edge_opaque,
+    bank\rgbx_colours, command
   ];
 )
 
@@ -1689,21 +1931,133 @@ private op doom_view_draw_combat_items [buf, w, h, centre_y, map, combat,
         let sector = doom_map_point_sector[map, drop\x, drop\y];
         let floor = buf_get[map\sectors, sector * 5];
         let bottom = centre_y - (floor - view_z) * focal / depth;
-        let pixels = doom_view_draw_world_sprite_palette[
-          buf, w, h, map\texture_bank, work, wall_frame,
-          // A dropped item shares its dead actor's exact map coordinates.
-          // Preserve true projection depth, but give that intentional tie one
-          // unit of sprite priority so the corpse cannot erase every texel.
-          doom_texture_pickup_slot[drop\kind], screen_x, bottom,
-          depth, depth - 1, focal,
-          buf_get[map\sectors, sector * 5 + 2], rgbx_colours
-        ];
+        let pixels = 0;
+        if (drop\kind == doom_shield_pickup_kind[]) (
+          pixels = doom_view_draw_shield_bracelet_pickup[
+            buf, w, h, work, wall_frame,
+            screen_x, bottom, depth, depth - 1, focal
+          ];
+        ) else if (drop\kind == doom_drone_pickup_kind[]) (
+          pixels = doom_view_draw_drone_pickup[
+            buf, w, h, work, wall_frame,
+            screen_x, bottom, depth, depth - 1, focal
+          ];
+        ) else (
+          let item_colours = rgbx_colours;
+          if (drop\kind == doom_laser_pickup_kind[]) (
+            item_colours = work\laser_effect_rgbx_colours;
+          )
+          pixels = doom_view_draw_world_sprite_palette[
+            buf, w, h, map\texture_bank, work, wall_frame,
+            // A dropped item shares its dead actor's exact map coordinates.
+            // Preserve true projection depth, but give that intentional tie
+            // one unit of sprite priority so the corpse cannot erase it.
+            doom_texture_pickup_slot[drop\kind], screen_x, bottom,
+            depth, depth - 1, focal,
+            buf_get[map\sectors, sector * 5 + 2], item_colours
+          ];
+        )
         if (pixels > 0) ( drawn = drawn + 1; )
       )
     )
     i = i + 1;
   )
   => drawn;
+)
+
+// The laser's WAD-independent live shape is a narrow depth-tested streak with
+// a tapered leading end: a readable green arrow rather than a recoloured
+// plasma ball. Impact becomes one small bounded green diamond.
+private op doom_view_draw_laser_arrow [
+  buf, w, h, work, wall_frame,
+  start_x, start_y, end_x, end_y, depth, state, age
+] (
+  view rgbx as %32le[] over buf;
+  let depth_storage = work\depth;
+  view depth_buffer as %32le[] over depth_storage;
+  let bright = 104 + 255 * 256 + 118 * 65536;
+  let core = 224 + 255 * 256 + 226 * 65536;
+  let aura = 14 + 132 * 256 + 40 * 65536;
+  let painted = 0;
+  if (state == 2) (
+    let radius = 2 + age / 2;
+    radius = doom_view_clamp[radius, 2, 10];
+    let y = 0 - radius;
+    while (y <= radius) (
+      let x = 0 - radius;
+      while (x <= radius) (
+        let ax = x;
+        let ay = y;
+        if (ax < 0) ( ax = 0 - ax; )
+        if (ay < 0) ( ay = 0 - ay; )
+        if (ax + ay <= radius) (
+          let px = end_x + x;
+          let py = end_y + y;
+          if ((px >= 0) and (px < w) and (py >= 0) and (py < h)) (
+            let pixel = py * w + px;
+            if (((work\stamp)@pixel != wall_frame) or
+                (depth < depth_buffer@pixel)) (
+              let colour = aura;
+              if (ax + ay < radius) ( colour = bright; )
+              if (ax + ay <= 1) ( colour = core; )
+              rgbx@pixel = colour;
+              work\stamp@pixel = wall_frame;
+              depth_buffer@pixel = depth;
+              painted = painted + 1;
+            )
+          )
+        )
+        x = x + 1;
+      )
+      y = y + 1;
+    )
+    => painted;
+  )
+
+  let dx = end_x - start_x;
+  let dy = end_y - start_y;
+  let adx = dx;
+  let ady = dy;
+  if (adx < 0) ( adx = 0 - adx; )
+  if (ady < 0) ( ady = 0 - ady; )
+  let steps = adx;
+  if (ady > steps) ( steps = ady; )
+  steps = doom_view_clamp[steps, 4, 32];
+  let i = 0;
+  while (i <= steps) (
+    let cx = start_x + dx * i / steps;
+    let cy = start_y + dy * i / steps;
+    let radius = 1;
+    if (i >= steps - 4) (
+      radius = (steps - i + 2) / 2;
+      if (radius < 1) ( radius = 1; )
+    )
+    let y = 0 - radius;
+    while (y <= radius) (
+      let x = 0 - radius;
+      while (x <= radius) (
+        let px = cx + x;
+        let py = cy + y;
+        if ((px >= 0) and (px < w) and (py >= 0) and (py < h)) (
+          let pixel = py * w + px;
+          if (((work\stamp)@pixel != wall_frame) or
+              (depth < depth_buffer@pixel)) (
+            let colour = aura;
+            if ((x == 0) or (y == 0)) ( colour = bright; )
+            if ((x == 0) and (y == 0)) ( colour = core; )
+            rgbx@pixel = colour;
+            work\stamp@pixel = wall_frame;
+            depth_buffer@pixel = depth;
+            painted = painted + 1;
+          )
+        )
+        x = x + 1;
+      )
+      y = y + 1;
+    )
+    i = i + 1;
+  )
+  => painted;
 )
 
 // Projectiles are explicit combat records, so their projection shares the
@@ -1731,7 +2085,27 @@ private op doom_view_draw_projectiles [buf, w, h, centre_y, map, combat,
       if (depth > 8) (
         let screen_x = centre_x - lateral * focal / depth;
         let screen_y = centre_y - (projectile\z - view_z) * focal / depth;
-        if ((textured == 1) and (map\texture_bank\sprite_ready == 1)) (
+        if (projectile\kind == doom_laser_projectile_kind[]) (
+          let start_x = screen_x;
+          let start_y = screen_y + 8;
+          let tail_dx = projectile\x - projectile\vx - player_x;
+          let tail_dy = projectile\y - projectile\vy - player_y;
+          let tail_depth = (tail_dx * cosine + tail_dy * sine) / q31;
+          if (tail_depth > 8) (
+            let tail_lateral =
+              (tail_dy * cosine - tail_dx * sine) / q31;
+            start_x = centre_x - tail_lateral * focal / tail_depth;
+            start_y = centre_y -
+              (projectile\z - projectile\vz - view_z) * focal / tail_depth;
+          )
+          let pixels = doom_view_draw_laser_arrow[
+            buf, w, h, work, wall_frame,
+            start_x, start_y, screen_x, screen_y, depth,
+            projectile\state, projectile\age
+          ];
+          if (pixels > 0) ( drawn = drawn + 1; )
+        ) else if ((textured == 1) and
+                   (map\texture_bank\sprite_ready == 1)) (
           let slot = 0 - 1;
           if (projectile\state == 1) (
             if ((projectile\kind == 1) or (projectile\kind == 5)) (
@@ -1869,15 +2243,43 @@ op doom_view_muzzle_position [w, h, bank, anchor_slot, flash_slot] (
   => doom_view_psprite_position[w, h, bank, flash_slot];
 )
 
+op doom_view_laser_muzzle_position [w, h, bank, anchor_slot, flash_slot] (
+  let placement = doom_view_muzzle_position[
+    w, h, bank, anchor_slot, flash_slot
+  ];
+  placement\top = placement\top + doom_laser_muzzle_down[] * w / 320;
+  => placement;
+)
+
 private op doom_view_draw_muzzle_flash [buf, w, h, bank, work, combat] (
   let flash_slot = doom_combat_muzzle_slot[combat];
   if (flash_slot < 0) ( => 0; )
+  let anchor_weapon = combat\selected_weapon;
+  if (anchor_weapon == doom_laser_weapon[]) (
+    anchor_weapon = doom_laser_source_weapon[];
+  )
   let anchor_slot = doom_texture_weapon_slot_for[
-    combat\selected_weapon, 0
+    anchor_weapon, 0
   ];
   let placement = doom_view_muzzle_position[
     w, h, bank, anchor_slot, flash_slot
   ];
+  if (combat\selected_weapon == doom_laser_weapon[]) (
+    placement = doom_view_laser_muzzle_position[
+      w, h, bank, anchor_slot, flash_slot
+    ];
+    let scale = doom_laser_muzzle_scale[];
+    let small_width = placement\width / scale;
+    let small_height = placement\height / scale;
+    let left = placement\left + (placement\width - small_width) / 2;
+    let top = placement\top + (placement\height - small_height) / 2;
+    doom_view_draw_weapon_slot_palette_at[
+      buf, w, h, bank, work, flash_slot,
+      left, top, small_width, small_height, 0,
+      work\laser_effect_rgbx_colours
+    ];
+    => 1;
+  )
   doom_view_draw_weapon_slot_at[
     buf, w, h, bank, work, flash_slot,
     placement\left, placement\top, placement\width, placement\height, 0
@@ -2097,7 +2499,7 @@ op doom_view_draw_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     alive, kills, enemies, misses, steps, blocked,
-    1, 0, 0, 2147483647, 0, 0
+    1, 0, 0, 2147483647, 0, 0, 1, doom_view_player_focal[w]
   ];
 )
 
@@ -2110,7 +2512,7 @@ op doom_view_draw_navigation_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     alive, 0, enemies, 0, steps, blocked,
-    1, 0, 0, world\player_z + 41, 0, 0
+    1, 0, 0, world\player_z + 41, 0, 0, 1, doom_view_player_focal[w]
   ];
 )
 
@@ -2120,7 +2522,7 @@ op doom_view_draw_flat_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     alive, kills, enemies, misses, steps, blocked,
-    0, 0, 0, 2147483647, 0, 0
+    0, 0, 0, 2147483647, 0, 0, 1, doom_view_player_focal[w]
   ];
 )
 
@@ -2130,7 +2532,8 @@ op doom_view_draw_combat_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     combat\alive, combat\kills, combat\enemy_count, combat\misses,
-    steps, blocked, 1, 1, combat, 2147483647, 0, 0
+    steps, blocked, 1, 1, combat, 2147483647, 0, 0, 1,
+    doom_view_player_focal[w]
   ];
 )
 
@@ -2140,7 +2543,8 @@ op doom_view_draw_combat_flat_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     combat\alive, combat\kills, combat\enemy_count, combat\misses,
-    steps, blocked, 0, 1, combat, 2147483647, 0, 0
+    steps, blocked, 0, 1, combat, 2147483647, 0, 0, 1,
+    doom_view_player_focal[w]
   ];
 )
 
@@ -2150,7 +2554,8 @@ op doom_view_draw_world_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     combat\alive, combat\kills, combat\enemy_count, combat\misses,
-    steps, blocked, 1, 1, combat, world\player_z + 41, 1, world
+    steps, blocked, 1, 1, combat, world\player_z + 41, 1, world, 1,
+    doom_view_player_focal[w]
   ];
 )
 
@@ -2160,9 +2565,31 @@ op doom_view_draw_world_flat_pitched [buf, w, h, font, map, work,
   => doom_view_draw_mode[
     buf, w, h, font, map, work, player_x, player_y, angle, pitch,
     combat\alive, combat\kills, combat\enemy_count, combat\misses,
-    steps, blocked, 0, 1, combat, world\player_z + 41, 1, world
+    steps, blocked, 0, 1, combat, world\player_z + 41, 1, world, 1,
+    doom_view_player_focal[w]
   ];
 )
+
+// Drone camera view uses the same checked world raster, actors, projectiles and
+// mutable sectors, but supplies its own 3D origin and suppresses the player's
+// weapon/status text. doom-frame overlays the presentation-only FPV HUD.
+op doom_view_draw_drone_world_pitched [buf, w, h, font, map, work,
+                                       drone, combat, world,
+                                       steps, blocked] (
+  => doom_view_draw_mode[
+    buf, w, h, font, map, work,
+    drone\x, drone\y, drone\angle, drone\pitch,
+    combat\alive, combat\kills, combat\enemy_count, combat\misses,
+    steps, blocked, 1, 1, combat, drone\z, 1, world, 0,
+    doom_view_drone_focal[w]
+  ];
+)
+
+// Keep the player's established projection stable while giving the FPV
+// camera a wider 90-degree-class view. The reticle remains the exact forward
+// ray; this changes how much peripheral world is visible, not flight aim.
+op doom_view_player_focal [w] ( => w * 3 / 4; )
+op doom_view_drone_focal [w] ( => w / 2; )
 
 // Keep the full 9-pixel crosshair inside the raster. On Doom's 480x300
 // viewport this maps the symmetric gameplay pitch endpoints -145/+145 to
@@ -2267,12 +2694,15 @@ private op doom_view_draw_scan_reticle [buf, w, h] (
 )
 
 // Held-Tab tactical scan is a second renderer, not a filter over the normal
-// frame. It projects only checked sector edges, then reuses the indexed sprite
-// kernel with a prebuilt phosphor palette. No wall, flat or sky texel is read.
-op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
-                                      player_x, player_y, angle, pitch,
-                                      combat, world, steps, blocked] (
-  if ((w > 0) and (h > 0) and
+// frame. Player and drone wrappers supply their own finite camera origin and
+// projection; this shared core projects only checked sector edges, then reuses
+// the indexed sprite kernel with a prebuilt phosphor palette. No wall, flat or
+// sky texel is read.
+private op doom_view_draw_scan_mode [buf, w, h, font, map, work,
+                                     camera_x, camera_y, angle, pitch,
+                                     view_z, focal,
+                                     combat, world, steps, blocked] (
+  if ((w > 0) and (h > 0) and (focal > 0) and (focal <= w) and
       (bytes_len[buf] >= w * h * 4) and
       (bytes_len[buf] % (w * 4) == 0)) () else (
     fall "doom_view_draw_scan: buffer dimensions disagree";
@@ -2282,7 +2712,9 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
       (bytes_len[work\stamp] == w * h) and
       (buf_len[work\sprite_command] ==
        raster_masked_indexed_lit_depth_sprite_command_words[]) and
-      (buf_len[work\scan_rgbx_colours] == 8192)) () else (
+      (buf_len[work\scan_rgbx_colours] == 8192) and
+      (buf_len[work\laser_effect_rgbx_colours] == 8192) and
+      (buf_len[work\laser_weapon_rgbx_colours] == 8192)) () else (
     fall "doom_view_draw_scan: work buffers disagree with the frame";
   )
   doom_combat_validate[map, combat];
@@ -2304,10 +2736,8 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
   let sine = direction\sin;
   let cosine = direction\cos;
   let q31 = 2147483648;
-  let focal = w * 3 / 4;
   let centre_x = w / 2;
   let centre_y = doom_view_horizon_y[h, pitch];
-  let view_z = world\player_z + 41;
   let bright = gui_rgb[66, 255, 130];
   let medium = gui_rgb[34, 176, 88];
   let dim = gui_rgb[18, 92, 52];
@@ -2323,10 +2753,10 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
     let ay = buf_get[map\vertices, va + 1];
     let bx = buf_get[map\vertices, vb];
     let by = buf_get[map\vertices, vb + 1];
-    let adx = ax - player_x;
-    let ady = ay - player_y;
-    let bdx = bx - player_x;
-    let bdy = by - player_y;
+    let adx = ax - camera_x;
+    let ady = ay - camera_y;
+    let bdx = bx - camera_x;
+    let bdy = by - camera_y;
     let z1 = (adx * cosine + ady * sine) / q31;
     let z2 = (bdx * cosine + bdy * sine) / q31;
     let lateral1 = (ady * cosine - adx * sine) / q31;
@@ -2391,27 +2821,27 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
 
   let palette = work\scan_rgbx_colours;
   let visible_enemies = doom_view_draw_combat_enemies[
-    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, combat, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, 1, palette
   ];
   let visible_combat_items = doom_view_draw_combat_items[
-    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, combat, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, 1, palette
   ];
   doom_view_draw_projectiles[
-    buf, w, h, centre_y, map, combat, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, combat, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, 1, palette
   ];
   let visible_props = doom_view_draw_props[
-    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, world, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, 1, palette
   ];
   let visible_pickups = doom_view_draw_pickups[
-    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, world, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, 1, palette
   ];
   doom_view_draw_teleport_fog[
-    buf, w, h, centre_y, map, world, player_x, player_y, view_z,
+    buf, w, h, centre_y, map, world, camera_x, camera_y, view_z,
     sine, cosine, focal, work, wall_frame, palette
   ];
   doom_view_draw_scan_reticle[buf, w, h];
@@ -2424,7 +2854,7 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
   => {
     subsectors: map\subsector_count, walls: walls, panels: panels,
     columns: columns, visible_enemies: visible_enemies,
-    player_sector: doom_map_point_sector[map, player_x, player_y],
+    player_sector: doom_map_point_sector[map, camera_x, camera_y],
     textured: 0, plane_samples: 0, plane_gaps: 0,
     health: combat\health, ammo: combat\ammo,
     combat: 1, visible_pickups: visible_pickups,
@@ -2432,6 +2862,31 @@ op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
     visible_combat_items: visible_combat_items,
     exited: world\exited
   };
+)
+
+op doom_view_draw_scan_world_pitched [buf, w, h, font, map, work,
+                                      player_x, player_y, angle, pitch,
+                                      combat, world, steps, blocked] (
+  => doom_view_draw_scan_mode[
+    buf, w, h, font, map, work,
+    player_x, player_y, angle, pitch,
+    world\player_z + 41, doom_view_player_focal[w],
+    combat, world, steps, blocked
+  ];
+)
+
+// The drone's scan preserves the wide FPV optic and remote altitude. TAB
+// therefore becomes a reconnaissance capability of the active craft rather
+// than silently falling back to the player's body/camera.
+op doom_view_draw_drone_scan_world_pitched [buf, w, h, font, map, work,
+                                            drone, combat, world,
+                                            steps, blocked] (
+  => doom_view_draw_scan_mode[
+    buf, w, h, font, map, work,
+    drone\x, drone\y, drone\angle, drone\pitch,
+    drone\z, doom_view_drone_focal[w],
+    combat, world, steps, blocked
+  ];
 )
 
 // The shared draw core is a complete software-raster transaction. `work` owns
@@ -2442,7 +2897,8 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
                                 player_x, player_y, angle, pitch,
                                 alive, kills, enemies, misses, steps, blocked,
                                 textured, combat_mode, combat,
-                                view_z_override, world_mode, world] (
+                                view_z_override, world_mode, world,
+                                draw_foreground, focal] (
   // The raster may be the leading viewport rows of a taller GUI buffer. This
   // lets callers reserve a status-bar suffix without drawing world pixels
   // that will immediately be covered. Requiring complete same-width rows
@@ -2452,7 +2908,7 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
   if (expected_masked_wall_capacity > 64) (
     expected_masked_wall_capacity = 64;
   )
-  if ((w > 0) and (h > 0) and
+  if ((w > 0) and (h > 0) and (focal > 0) and (focal <= w) and
       (bytes_len[buf] >= w * h * 4) and
       (bytes_len[buf] % (w * 4) == 0)) () else (
     fall "doom_view_draw: buffer dimensions disagree";
@@ -2494,7 +2950,15 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
       (bytes_len[work\plane_span_start] == h * 4) and
       (buf_len[work\row_recip_q32] == h + 1) and
       (buf_len[work\column_slope_q32] == w) and
-      (bytes_len[work\sky_offsets] == w * 4)) () else (
+      (bytes_len[work\sky_offsets] == w * 4) and
+      (buf_len[work\laser_effect_rgbx_colours] == 8192) and
+      (buf_len[work\laser_weapon_rgbx_colours] == 8192) and
+      (work\laser_weapon_width >= 0) and
+      (work\laser_weapon_height >= 0) and
+      (bytes_len[work\laser_weapon_pixels] ==
+       work\laser_weapon_width * work\laser_weapon_height) and
+      (bytes_len[work\laser_weapon_edge_opaque] ==
+       work\laser_weapon_width * work\laser_weapon_height)) () else (
     fall "doom_view_draw: work buffers disagree with the frame";
   )
   let ceiling_clip_storage = work\ceiling_clip;
@@ -2554,7 +3018,6 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
   let sine = direction\sin;
   let cosine = direction\cos;
   let q31 = 2147483648;
-  let focal = w * 3 / 4;
   let centre_x = w / 2;
   let player_sector = doom_map_point_sector[map, player_x, player_y];
   let view_z = view_z_override;
@@ -2823,12 +3286,21 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
     )
   )
 
-  if ((textured == 1) and (map\texture_bank\sprite_ready == 1)) (
+  if ((draw_foreground == 1) and
+      (textured == 1) and (map\texture_bank\sprite_ready == 1)) (
     if (combat_mode == 1) (
-      doom_view_draw_weapon_slot[
-        buf, w, h, map\texture_bank, work,
-        doom_combat_weapon_slot[combat]
-      ];
+      if (combat\selected_weapon == doom_drone_weapon[]) (
+        doom_drone_draw_weapon[buf, w, h];
+      ) else if (combat\selected_weapon == doom_laser_weapon[]) (
+        doom_view_draw_laser_weapon[
+          buf, w, h, map\texture_bank, work
+        ];
+      ) else (
+        doom_view_draw_weapon_slot[
+          buf, w, h, map\texture_bank, work,
+          doom_combat_weapon_slot[combat]
+        ];
+      )
       // The flash is Doom's second first-person psprite layer.  Paint it
       // after the weapon body so the opaque gun patch cannot cover the fire.
       doom_view_draw_muzzle_flash[
@@ -2837,51 +3309,57 @@ private op doom_view_draw_mode [buf, w, h, font, map, work,
     ) else (
       doom_view_draw_weapon[buf, w, h, map\texture_bank, work];
     )
-  ) else (
+  ) else if (draw_foreground == 1) (
     // The flat oracle deliberately retains its abstract action anchor.
     gui_rect[buf, w, h, w / 2 - 42, h - 72, 84, 72, gui_rgb[34, 35, 39]];
     gui_rect[buf, w, h, w / 2 - 13, h - 112, 26, 76, gui_rgb[78, 80, 86]];
   )
-  doom_view_draw_reticle[buf, w, h];
-
-  let ink = gui_rgb[230, 230, 232];
-  gui_text[buf, w, h, font, 10, 10,
-    "DOOM ^{map\name}  sector ^{player_sector}  BSP ^{order_count}  TEX ^{map\texture_bank\texture_count}/^{map\texture_bank\flat_count}  SPR ^{map\texture_bank\sprite_loaded}", ink];
-  gui_text[buf, w, h, font, 10, h - 18,
-    "WASD move  MOUSE/CTRL fire  SPACE jump  E use  ESC episodes", ink];
   let health = 0 - 1;
   let ammo = 0 - 1;
   if (combat_mode == 1) (
     health = combat\health;
-    ammo = combat\ammo;
-    gui_text[buf, w, h, font, 10, 22,
-      "HP ^{health}  ARM ^{combat\armor}  AMMO ^{ammo}  K ^{kills}/^{enemies}  M ^{misses}", ink];
-    gui_text[buf, w, h, font, 10, h - 30,
-      "moves ^{steps}  blocked ^{blocked}  damage ^{combat\damage_taken}", ink];
-    if (health == 0) (
-      gui_text_scaled[buf, w, h, font, w / 2 - 88, h / 2 - 42,
-        "PLAYER DOWN", gui_rgb[240, 64, 64], 2];
-    )
-  ) else (
-    gui_text[buf, w, h, font, 10, 22,
-      "kills ^{kills}/^{enemies}  misses ^{misses}  moves ^{steps}  blocked ^{blocked}", ink];
-  )
-  if ((enemies > 0) and (kills == enemies)) (
-    gui_text_scaled[buf, w, h, font, w / 2 - 112, h / 2 - 42,
-      "AREA CLEARED", gui_rgb[80, 220, 210], 2];
+    ammo = doom_combat_current_ammo[combat];
   )
   if (world_mode == 1) (
-    gui_text[buf, w, h, font, w - 214, h - 30,
-      "ITEMS ^{world\picked}/^{world\pickup_total}  SEC ^{world\secrets_found}/^{world\secret_total}", ink];
-    if (world\exited == 1) (
-      gui_rect[buf, w, h, w / 2 - 132, h / 2 - 50, 264, 100,
-        gui_rgb[18, 20, 24]];
-      gui_text_scaled[buf, w, h, font, w / 2 - 96, h / 2 - 36,
-        "^{map\name} COMPLETE", gui_rgb[80, 220, 210], 2];
-      gui_text[buf, w, h, font, w / 2 - 102, h / 2,
-        "K ^{kills}/^{enemies}  SHOTS ^{combat\shots}  HP ^{health}", ink];
-      gui_text[buf, w, h, font, w / 2 - 102, h / 2 + 14,
+    exited = world\exited;
+  )
+  if (draw_foreground == 1) (
+    doom_view_draw_reticle[buf, w, h];
+    let ink = gui_rgb[230, 230, 232];
+    gui_text[buf, w, h, font, 10, 10,
+      "DOOM ^{map\name}  sector ^{player_sector}  BSP ^{order_count}  TEX ^{map\texture_bank\texture_count}/^{map\texture_bank\flat_count}  SPR ^{map\texture_bank\sprite_loaded}", ink];
+    gui_text[buf, w, h, font, 10, h - 18,
+      "WASD move  MOUSE/CTRL fire  SPACE jump  E use  ESC episodes", ink];
+    if (combat_mode == 1) (
+      gui_text[buf, w, h, font, 10, 22,
+        "HP ^{health}  ARM ^{combat\armor}  AMMO ^{ammo}  K ^{kills}/^{enemies}  M ^{misses}", ink];
+      gui_text[buf, w, h, font, 10, h - 30,
+        "moves ^{steps}  blocked ^{blocked}  damage ^{combat\damage_taken}", ink];
+      if (health == 0) (
+        gui_text_scaled[buf, w, h, font, w / 2 - 88, h / 2 - 42,
+          "PLAYER DOWN", gui_rgb[240, 64, 64], 2];
+      )
+    ) else (
+      gui_text[buf, w, h, font, 10, 22,
+        "kills ^{kills}/^{enemies}  misses ^{misses}  moves ^{steps}  blocked ^{blocked}", ink];
+    )
+    if ((enemies > 0) and (kills == enemies)) (
+      gui_text_scaled[buf, w, h, font, w / 2 - 112, h / 2 - 42,
+        "AREA CLEARED", gui_rgb[80, 220, 210], 2];
+    )
+    if (world_mode == 1) (
+      gui_text[buf, w, h, font, w - 214, h - 30,
         "ITEMS ^{world\picked}/^{world\pickup_total}  SEC ^{world\secrets_found}/^{world\secret_total}", ink];
+      if (world\exited == 1) (
+        gui_rect[buf, w, h, w / 2 - 132, h / 2 - 50, 264, 100,
+          gui_rgb[18, 20, 24]];
+        gui_text_scaled[buf, w, h, font, w / 2 - 96, h / 2 - 36,
+          "^{map\name} COMPLETE", gui_rgb[80, 220, 210], 2];
+        gui_text[buf, w, h, font, w / 2 - 102, h / 2,
+          "K ^{kills}/^{enemies}  SHOTS ^{combat\shots}  HP ^{health}", ink];
+        gui_text[buf, w, h, font, w / 2 - 102, h / 2 + 14,
+          "ITEMS ^{world\picked}/^{world\pickup_total}  SEC ^{world\secrets_found}/^{world\secret_total}", ink];
+      )
     )
   )
   => {

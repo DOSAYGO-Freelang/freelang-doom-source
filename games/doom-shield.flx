@@ -1,0 +1,25 @@
+// Application-local policy for the permanent exploration shield. The item is
+// a simple bracelet pickup, not ordinary armor and not a timed power: it
+// rejects ranged/energy/charge/explosion damage while real melee and world
+// hazards retain their existing paths.
+
+// Synthetic identities remain outside the unsigned 16-bit WAD THING space.
+op doom_shield_pickup_kind [] ( => 65537; )
+op doom_shield_entrance_distance [] ( => 64; )
+
+op doom_shield_damage_melee [] ( => 1; )
+op doom_shield_damage_hitscan [] ( => 2; )
+op doom_shield_damage_projectile [] ( => 3; )
+op doom_shield_damage_charge [] ( => 4; )
+op doom_shield_damage_explosion [] ( => 5; )
+op doom_shield_damage_environment [] ( => 6; )
+
+op doom_shield_blocks_damage [kind] (
+  => (kind == doom_shield_damage_hitscan[]) or
+     (kind == doom_shield_damage_projectile[]) or
+     (kind == doom_shield_damage_charge[]) or
+     (kind == doom_shield_damage_explosion[]);
+)
+
+// The world renderer owns a small code-native amber ring. The pickup therefore
+// needs no misleading armor-bonus/helmet sprite and no extra WAD asset.

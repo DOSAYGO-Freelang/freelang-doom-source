@@ -221,6 +221,11 @@ private op doom_play_trace_transition [trace, state, events, before] (
     state\move_player_vz, world\player_vz,
     state\move_grounded, world\grounded, move_result
   ];
+  if (state\combat_mode == 1) (
+    trace = doom_input_trace_drone[
+      trace, frame, state\drone, state\combat, state\drone_deploy_ready
+    ];
+  )
   => trace;
 )
 
@@ -247,9 +252,9 @@ private op doom_play_run_session_audio_carry_on [
 ] (
   let buf = gui_buffer[w, h];
   let font = gui_font[];
-  let state = doom_session_new[
+  let state = doom_session_new_seeded[
     map, initial_events, demo_mode, combat_mode,
-    diag_mode, start_menu, menu_maps
+    diag_mode, start_menu, menu_maps, now[] % 2147483647
   ];
   if ((combat_mode == 1) and (carry\active == 1)) (
     state\combat = doom_combat_carry_inventory[
@@ -276,7 +281,8 @@ private op doom_play_run_session_audio_carry_on [
       state\player_x, state\player_y, state\angle, state\pitch,
       state\alive, state\kills, state\enemies, state\misses,
       state\steps, state\blocked,
-      texture_mode, combat_mode, state\combat, state\world, status_cache,
+      texture_mode, combat_mode, state\combat, state\world, state\drone,
+      status_cache,
       diag_mode, demo_mode, state\controls, state\ui
     ];
     let render_done = now[];
