@@ -1,0 +1,28 @@
+// Shared camera-centre ray conversion. The renderer expresses pitch in the
+// established 480x300 reference-pixel domain; combat projectiles and remote
+// vehicles must consume the same slope instead of inventing local lift rules.
+
+op doom_aim_divisor [] ( => 429; )
+
+op doom_aim_delta [pitch, forward] (
+  if ((pitch >= 0 - 145) and (pitch <= 145) and
+      (forward >= 0 - 65536) and (forward <= 65536)) () else (
+    fall "doom_aim_delta: pitch/distance outside bounded camera";
+  )
+  => (0 - pitch) * forward / doom_aim_divisor[];
+)
+
+// Integer world coordinates would otherwise discard shallow vertical thrust
+// forever. Carry the division remainder between frames so repeated thrust
+// follows exactly the same rational ray as `doom_aim_delta` over time.
+op doom_aim_accumulate_delta [pitch, forward, remainder] (
+  let divisor = doom_aim_divisor[];
+  if ((pitch >= 0 - 145) and (pitch <= 145) and
+      (forward >= 0 - 64) and (forward <= 64) and
+      (remainder > 0 - divisor) and (remainder < divisor)) () else (
+    fall "doom_aim_accumulate_delta: aim state outside bounded camera";
+  )
+  let numerator = (0 - pitch) * forward + remainder;
+  let delta = numerator / divisor;
+  => { delta: delta, remainder: numerator - delta * divisor };
+)

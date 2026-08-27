@@ -1251,6 +1251,106 @@ op doom_map_move_blocked_at [map, from_x, from_y, to_x, to_y, feet_z,
   ] != 0;
 )
 
+private op doom_map_sector_ceiling_is_sky [map, sector] (
+  if ((sector >= 0) and (sector < map\sector_count) and
+      (map\texture_bank\sky_flat >= 0)) () else ( => 0; )
+  => buf_get[map\sector_flats, sector * 2 + 1] ==
+    map\texture_bank\sky_flat;
+)
+
+// Projectile-sized flight ignores a two-sided linedef's player/monster
+// blocking flag, but it still respects the real vertical portal and all
+// one-sided walls. This is the Doom missile distinction needed by small FPV
+// craft: barred windows are not invisible full-height walls, while their sill,
+// lintel and closed-door sector geometry remain solid. Result 2 distinguishes
+// an F_SKY1 ceiling contact so the craft can stop climbing without exploding.
+op doom_map_flight_blocker_at [map,
+                               from_x, from_y, from_z,
+                               to_x, to_y, to_z, half_height] (
+  if ((half_height >= 0) and (half_height <= 16)) () else (
+    fall "doom_map_flight_blocker_at: half-height outside bounded domain";
+  )
+  let i = 0;
+  while (i < map\line_count) (
+    let lb = i * 4;
+    let va = buf_get[map\lines, lb] * 2;
+    let vb = buf_get[map\lines, lb + 1] * 2;
+    let ax = buf_get[map\vertices, va];
+    let ay = buf_get[map\vertices, va + 1];
+    let bx = buf_get[map\vertices, vb];
+    let by = buf_get[map\vertices, vb + 1];
+    if (doom_map_move_segments_cross[
+          ax, ay, bx, by, from_x, from_y, to_x, to_y
+        ] == 1) (
+      let right_sector = buf_get[map\line_sides, lb + 2];
+      let left_sector = buf_get[map\line_sides, lb + 3];
+      if ((right_sector >= 0) and (left_sector >= 0)) () else ( => 1; )
+      let opening_floor = buf_get[map\sectors, right_sector * 5];
+      let other_floor = buf_get[map\sectors, left_sector * 5];
+      if (other_floor > opening_floor) ( opening_floor = other_floor; )
+      let opening_ceiling = buf_get[map\sectors, right_sector * 5 + 1];
+      let other_ceiling = buf_get[map\sectors, left_sector * 5 + 1];
+      if (other_ceiling < opening_ceiling) ( opening_ceiling = other_ceiling; )
+      if (opening_ceiling <= opening_floor) ( => 1; )
+
+      let ray_dx = to_x - from_x;
+      let ray_dy = to_y - from_y;
+      let line_dx = bx - ax;
+      let line_dy = by - ay;
+      let denominator = ray_dx * line_dy - ray_dy * line_dx;
+      let centre_z = to_z;
+      if (denominator != 0) (
+        let numerator = (ax - from_x) * line_dy -
+          (ay - from_y) * line_dx;
+        if (denominator < 0) (
+          denominator = 0 - denominator;
+          numerator = 0 - numerator;
+        )
+        let ray_z = from_z * denominator +
+          (to_z - from_z) * numerator;
+        if ((ray_z - half_height * denominator) <
+            opening_floor * denominator) ( => 1; )
+        if ((ray_z + half_height * denominator) >
+            opening_ceiling * denominator) (
+          if ((doom_map_sector_ceiling_is_sky[map, right_sector] == 1) and
+              (doom_map_sector_ceiling_is_sky[map, left_sector] == 1)) (
+            => 2;
+          )
+          => 1;
+        )
+      ) else (
+        if ((centre_z - half_height) < opening_floor) ( => 1; )
+        if ((centre_z + half_height) > opening_ceiling) (
+          if ((doom_map_sector_ceiling_is_sky[map, right_sector] == 1) and
+              (doom_map_sector_ceiling_is_sky[map, left_sector] == 1)) (
+            => 2;
+          )
+          => 1;
+        )
+      )
+    )
+    i = i + 1;
+  )
+  let sector = doom_map_point_sector[map, to_x, to_y];
+  let floor = buf_get[map\sectors, sector * 5];
+  let ceiling = buf_get[map\sectors, sector * 5 + 1];
+  if ((to_z - half_height) < floor) ( => 1; )
+  if ((to_z + half_height) > ceiling) (
+    if (doom_map_sector_ceiling_is_sky[map, sector] == 1) ( => 2; )
+    => 1;
+  )
+  => 0;
+)
+
+op doom_map_flight_blocked_at [map,
+                               from_x, from_y, from_z,
+                               to_x, to_y, to_z, half_height] (
+  => doom_map_flight_blocker_at[
+    map, from_x, from_y, from_z,
+    to_x, to_y, to_z, half_height
+  ] != 0;
+)
+
 // Visibility and hitscan need the mutable portal authority too, but do not
 // inherit player step/height policy. A zero-height two-sided opening is a
 // closed door and blocks the ray exactly like a one-sided wall.

@@ -127,10 +127,12 @@ doom_ui_test_expect[
 ];
 let large_buf = gui_buffer[640, 400];
 let status_combat = {
-  weapons: bytes_new[8], selected_weapon: 2,
+  weapons: bytes_new[doom_combat_weapon_count[] + 1], selected_weapon: 2,
+  drones: doom_drone_level_loadout[],
   ammo: 50, shells: 0, rockets: 0, cells: 0,
   max_ammo: 200, max_shells: 50, max_rockets: 50, max_cells: 300,
   health: 100, armor: 0,
+  shielded: 0, shield_block_tick: 0 - 1000,
   tick: 0, player_pain_tick: 0 - 1000
 };
 bytes_set[status_combat\weapons, 2, 1];
@@ -218,6 +220,41 @@ doom_ui_test_expect[
   "changed status authority reconstructs its cached strip exactly once"
 ];
 status_combat\ammo = status_combat\ammo + 1;
+status_combat\shielded = 1;
+doom_ui_draw_status_cached[
+  cached_large_buf, 640, 400, bank, status_cache,
+  status_combat, status_world
+];
+let shield_icon_byte = ((380 * 640) + 452) * 4;
+doom_ui_test_expect[
+  (status_cache\redraws == stable_redraws + 2) and
+  (bytes_get[cached_large_buf, shield_icon_byte] == 34) and
+  (bytes_get[cached_large_buf, shield_icon_byte + 1] == 188) and
+  (bytes_get[cached_large_buf, shield_icon_byte + 2] == 236),
+  "permanent shield state draws one compact cyan bracelet"
+];
+status_combat\shield_block_tick = status_combat\tick;
+doom_ui_draw_status_cached[
+  cached_large_buf, 640, 400, bank, status_cache,
+  status_combat, status_world
+];
+doom_ui_test_expect[
+  (status_cache\redraws == stable_redraws + 3) and
+  (bytes_get[cached_large_buf, shield_icon_byte] == 176) and
+  (bytes_get[cached_large_buf, shield_icon_byte + 1] == 255) and
+  (bytes_get[cached_large_buf, shield_icon_byte + 2] == 255),
+  "blocked damage briefly brightens the cached bracelet"
+];
+status_combat\tick = 8;
+doom_ui_draw_status_cached[
+  cached_large_buf, 640, 400, bank, status_cache,
+  status_combat, status_world
+];
+doom_ui_test_expect[
+  (status_cache\redraws == stable_redraws + 4) and
+  (bytes_get[cached_large_buf, shield_icon_byte] == 34),
+  "bracelet returns to its persistent state without a durability meter"
+];
 ui = doom_ui_next[ui, [doom_ui_test_event[gui_key_esc[]]]];
 doom_ui_test_expect[
   doom_ui_draw_menu[buf, 320, 200, bank, ui] == 1,

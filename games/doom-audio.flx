@@ -4,7 +4,8 @@
 // and never receives a WAD path, lump name or game-policy decision.
 
 credits: <../games/doom-format.flx> <../games/doom-mus.flx>
-         <../games/doom-opl2.flx>
+         <../games/doom-opl2.flx> <../games/doom-laser.flx>
+         <../games/doom-blaster-audio.flx>
          <f/files-chaos> <f/process> <f/strings>;
 
 private op doom_audio_result [ok, error, track, wav, ticks, samples, events,
@@ -166,13 +167,32 @@ op doom_audio_silence_wav [] (
 // Gameplay emits only weapon/world/actor identities; orchestration never
 // duplicates the numeric clip catalog.
 op doom_audio_weapon_clip [weapon] (
+  => doom_audio_weapon_clip_for[weapon, 1];
+)
+
+// Replays retain exact sound selection while consecutive laser shots walk a
+// shuffled three-variant family instead of repeating one identical sample.
+op doom_audio_weapon_clip_for [weapon, shot_serial] (
   if (weapon == 1) ( => 1; )
   if ((weapon == 2) or (weapon == 4)) ( => 2; )
   if (weapon == 3) ( => 3; )
   if (weapon == 5) ( => 4; )
   if (weapon == 6) ( => 37; )
   if (weapon == 7) ( => 38; )
+  if (weapon == doom_laser_weapon[]) (
+    let variant = (shot_serial * 1664525 + 1013904223) %
+      doom_blaster_sound_count[];
+    => doom_audio_laser_clip[variant];
+  )
   => 2;
+)
+
+op doom_audio_laser_clip [variant] (
+  if ((variant >= 0) and (variant < doom_blaster_sound_count[])) () else (
+    fall "doom_audio_laser_clip: variant outside bounded family";
+  )
+  // Slot zero is the silent score and WAD effects occupy 1..N.
+  => arr_len[doom_audio_effect_names[]] + 1 + variant;
 )
 
 op doom_audio_world_clip [kind] (
@@ -268,6 +288,11 @@ op doom_audio_render_effects [path] (
     wavs = wavs + [effect\wav];
     i = i + 1;
   )
+  i = 0;
+  while (i < doom_blaster_sound_count[]) (
+    wavs = wavs + [doom_blaster_sound_wav[i]];
+    i = i + 1;
+  )
   => { ok: 1, error: "", wavs: wavs };
 )
 
@@ -301,6 +326,11 @@ op doom_audio_render_effects_bytes [wad] (
       => doom_audio_effects_error[effect\error];
     )
     wavs = wavs + [effect\wav];
+    i = i + 1;
+  )
+  i = 0;
+  while (i < doom_blaster_sound_count[]) (
+    wavs = wavs + [doom_blaster_sound_wav[i]];
     i = i + 1;
   )
   => { ok: 1, error: "", wavs: wavs };

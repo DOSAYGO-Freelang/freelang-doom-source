@@ -25,6 +25,7 @@ let app = {
   session: 0, events: [], work: 0, status_cache: 0, last_view: 0,
   audio_ready: 0, audio_clip_count: 0, audio_commands: 0,
   audio_effects: [], music_skip: 0, music_request_id: 0,
+  map_load_serial: 0,
   music_pending: 0, music_load_map: 0, music_selector: "", music_code: 0,
   music_prepared: 0,
   pixels: pixels, font: font
@@ -64,7 +65,7 @@ op doom_web_draw [] (
       game\player_x, game\player_y, game\angle, game\pitch,
       game\alive, game\kills, game\enemies, game\misses,
       game\steps, game\blocked,
-      1, 1, game\combat, game\world, state\status_cache,
+      1, 1, game\combat, game\world, game\drone, state\status_cache,
       0, 0, game\controls, game\ui
     ];
     doom_web_present[];
@@ -136,7 +137,11 @@ op doom_web_load_map [wad, selector, code] (
 
   // Build all reusable renderer work before publishing the new world into the
   // application capsule. A failed proof cannot leave a half-loaded map live.
-  let session = doom_session_new[map, [], 0, 1, 0, 0, [selector]];
+  state\map_load_serial = state\map_load_serial + 1;
+  let session = doom_session_new_seeded[
+    map, [], 0, 1, 0, 0, [selector],
+    code * 65537 + state\map_load_serial
+  ];
   if (state\loaded == 1) (
     session\combat = doom_combat_carry_inventory[
       session\play_map, session\combat,
@@ -485,6 +490,17 @@ op wasm_input [kind, a, b, mods] (
     if (a == 18) ( => state\audio_ready; )
     if (a == 19) ( => state\audio_commands; )
     if (a == 20) ( => state\last_view\textured; )
+    if (a == 24) ( => game\combat\selected_weapon; )
+    if (a == 25) (
+      => doom_combat_weapon_owned[game\combat, doom_laser_weapon[]];
+    )
+    if (a == 26) ( => game\combat\shielded; )
+    if (a == 27) ( => game\drone\active; )
+    if (a == 28) ( => game\drone\armed; )
+    if (a == 29) ( => game\drone\roll; )
+    if (a == 30) ( => doom_view_drone_focal[state\width]; )
+    if (a == 31) ( => game\drone_deploy_ready; )
+    if (a == 32) ( => game\combat\drone_launches; )
   )
   if ((state\loaded == 1) and (kind >= gui_ev_key_down[]) and
       (kind <= gui_ev_key_held[]) and (arr_len[state\events] < 513)) (

@@ -7,6 +7,15 @@ op doom_audio_test_expect [condition, label] (
   )
 )
 
+// Opt-in checkpoints keep the ordinary exact-output fixture unchanged while
+// allowing a native CI runner to localize an otherwise silent early exit.
+op doom_audio_test_trace [label] (
+  if (string_eq[getenv["FREELANG_DOOM_AUDIO_TRACE"], "1"] == 1) (
+    print "doom audio trace: ^{label}";
+  )
+  => 0;
+)
+
 op doom_audio_test_u16 [b, off, value] (
   bytes_set[b, off, value % 256];
   bytes_set[b, off + 1, (value / 256) % 256];
@@ -65,13 +74,50 @@ doom_audio_test_expect[
 ];
 doom_audio_test_expect[
   (doom_audio_weapon_clip[7] == 38) and
+  (doom_audio_weapon_clip[doom_laser_weapon[]] == 40) and
+  (doom_audio_weapon_clip_for[doom_laser_weapon[], 1] == 40) and
+  (doom_audio_weapon_clip_for[doom_laser_weapon[], 2] == 42) and
+  (doom_audio_weapon_clip_for[doom_laser_weapon[], 3] == 41) and
   (doom_audio_world_clip[5] == 11) and
   (doom_audio_monster_alert_clip[3003] == 28) and
   (doom_audio_monster_attack_clip[3006] == 31) and
   (doom_audio_monster_pain_clip[16] == 20) and
   (doom_audio_monster_death_clip[7] == 36),
-  "semantic effect identities address the stable WAD-derived clip bank"
+  "semantic effects and deterministic laser variants address the stable bank"
 ];
+doom_audio_test_trace["classic mapping"];
+let laser_wav = doom_laser_sound_wav[];
+doom_audio_test_expect[
+  (bytes_len[laser_wav] == 44 + doom_laser_sound_samples[]) and
+  (doom_wad_u32le[laser_wav, 0] == 1179011410) and
+  (doom_wad_u32le[laser_wav, 24] == doom_laser_sound_rate[]) and
+  (doom_wad_u32le[laser_wav, 40] == doom_laser_sound_samples[]) and
+  (bytes_get[laser_wav, 200] != 128),
+  "laser owns one bounded non-silent metallic blaster WAV"
+];
+let roster_distinct = 1;
+let previous_roster_checksum = 0 - 1;
+let roster_variant = 0;
+while (roster_variant < doom_laser_sound_variant_count[]) (
+  let candidate = doom_laser_sound_variant_wav[roster_variant];
+  let checksum = 0;
+  let sample_i = 44;
+  while (sample_i < 1068) (
+    checksum = (checksum * 31 + bytes_get[candidate, sample_i]) % 1000000007;
+    sample_i = sample_i + 1;
+  )
+  if ((bytes_len[candidate] != 44 + doom_laser_sound_samples[]) or
+      (checksum == previous_roster_checksum)) (
+    roster_distinct = 0;
+  )
+  previous_roster_checksum = checksum;
+  roster_variant = roster_variant + 1;
+)
+doom_audio_test_expect[
+  (doom_laser_sound_variant_count[] == 4) and (roster_distinct == 1),
+  "four bounded original blaster candidates remain distinct for audition"
+];
+doom_audio_test_trace["laser roster"];
 doom_audio_test_expect[missing_bank\ok == 0, "missing GENMIDI rejection"];
 
 // The OPL2 integration fixture retains the same MUS and adds the minimum
@@ -131,12 +177,15 @@ doom_audio_test_expect[
   (doom_audio_cache_wav_valid[rendered_bytes\wav, 315] == 1),
   "prepared in-memory OPL2 inputs render canonical WAV"
 ];
+doom_audio_test_trace["prepared OPL2"];
 let get_frame = derived_cache_get_frame[7, prepared_bytes\key];
+doom_audio_test_trace["cache GET frame"];
 let miss_frame = bytes_new[12];
 doom_audio_test_u32[miss_frame, 0, 12];
 doom_audio_test_u32[miss_frame, 4, 32770];
 doom_audio_test_u32[miss_frame, 8, 7];
 let miss = derived_cache_inspect_response[miss_frame];
+doom_audio_test_trace["cache MISS frame"];
 doom_audio_test_expect[
   (bytes_len[get_frame] == 80) and (doom_wad_u32le[get_frame, 4] == 1) and
   (miss\ok == 1) and (miss\hit == 0) and (miss\request_id == 7),
@@ -145,6 +194,7 @@ doom_audio_test_expect[
 doom_audio_test_expect[
   write_bytes_raw[opl_path, opl_wad] == 0, "OPL2 fixture write"
 ];
+doom_audio_test_trace["OPL2 fixture write"];
 let stress = string_eq[getenv["FREELANG_GC_STRESS"], "1"];
 let windows_stress = (os[] == 2) and stress;
 let cache_dir = "";
@@ -152,6 +202,7 @@ let cache = doom_audio_cache_disabled[];
 if (windows_stress == 0) (
   cache_dir = "doom-audio-cache-fixture-^{pid[]}";
   cache = doom_audio_cache_at[cache_dir];
+  doom_audio_test_trace["cache directory"];
   doom_audio_test_expect[cache\enabled == 1, "cache directory creation"];
 )
 let cache_entry = "";
@@ -168,6 +219,7 @@ let opl_rendered = {
 // make the hosted sweep either exceed its process bound or exit early.
 if (windows_stress == 0) (
   let small_key = doom_audio_cache_key[%[1, 2], %[3, 4]];
+  doom_audio_test_trace["small cache key"];
   let stale_entry = doom_audio_cache_entry_path[
     cache, "E1M1",
     "0000000000000000000000000000000000000000000000000000000000000000"
@@ -176,9 +228,11 @@ if (windows_stress == 0) (
     write_bytes_raw[stale_entry, %[1, 2, 3]] == 0,
     "stale map cache fixture write"
   ];
+  doom_audio_test_trace["cache fixture"];
   opl_rendered = doom_audio_render_map_opl2_cached[
     opl_path, "E1M1", cache
   ];
+  doom_audio_test_trace["cache miss render"];
   doom_audio_test_expect[
     opl_rendered\cache_status == 2, "OPL2 cache miss stored"
   ];
@@ -250,6 +304,7 @@ if (windows_stress == 0) (
   ];
   rmdir_raw[cache_dir];
 )
+doom_audio_test_trace["cache lifecycle"];
 let sound = bytes_new[12];
 doom_audio_test_u16[sound, 0, 3];
 doom_audio_test_u16[sound, 2, 8000];
@@ -270,6 +325,7 @@ doom_audio_test_expect[
   invalid_effect\ok == 0,
   "non-format-3 sound is rejected"
 ];
+doom_audio_test_trace["PCM lump"];
 
 // The gameplay bank is WAD policy, not mixer policy. Prove the stable bank
 // order with independently directory-addressed Doom sound lumps.
@@ -318,12 +374,23 @@ doom_audio_test_expect[
   "effects fixture write"
 ];
 let effects = doom_audio_render_effects[effects_path];
+doom_audio_test_trace["effect bank render"];
 remove_raw[effects_path];
 doom_audio_test_expect[
-  (effects\ok == 1) and (arr_len[effects\wavs] == 39) and
+  (effects\ok == 1) and (arr_len[effects\wavs] == 42) and
   (bytes_len[effects\wavs\@0] == 48) and
   (bytes_len[effects\wavs\@38] == 48) and
-  (doom_wad_u32le[effects\wavs\@38, 24] == 8038),
-  "gameplay effect bank renders in stable independent-rate order"
+  (doom_wad_u32le[effects\wavs\@38, 24] == 8038) and
+  (bytes_len[effects\wavs\@39] == 3351) and
+  (bytes_len[effects\wavs\@40] == 3351) and
+  (bytes_len[effects\wavs\@41] == 3351) and
+  (doom_wad_u32le[effects\wavs\@39, 40] == 3307) and
+  (doom_wad_u32le[effects\wavs\@40, 40] == 3307) and
+  (doom_wad_u32le[effects\wavs\@41, 40] == 3307) and
+  (string_eq[rainbow256[effects\wavs\@39],
+             rainbow256[effects\wavs\@40]] == 0) and
+  (string_eq[rainbow256[effects\wavs\@40],
+             rainbow256[effects\wavs\@41]] == 0),
+  "gameplay bank appends three distinct 150ms G-derived blaster bolts"
 ];
 print "doom audio integration ok";

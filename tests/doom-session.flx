@@ -41,7 +41,7 @@ let map = {
   sector_flats: %32[0, 0, 0, 0, 0, 0],
   texture_bank: {
     ready: 0, texture_count: 0,
-    texture_names: bytes_new[0], texture_meta: %32[]
+    texture_names: bytes_new[0], texture_meta: %32[], sky_flat: 0 - 1
   },
   sectors: %32[
     0, 128, 160, 0, 0,
@@ -55,6 +55,150 @@ let map = {
   bsp_ready: 1, node_count: 0, nodes: %32[],
   subsector_count: 1, subsectors: %32[0, 0, 0]
 };
+
+// A two-sided window may deliberately carry Doom's player-blocking flag.
+// Player movement honors it, while the small drone uses the measured portal
+// opening and still collides with the sill/lintel.
+let window_map = map + {
+  lines: %32[
+    0, 1, 1, 4,
+    2, 3, 1, 4,
+    4, 5, 0, 4
+  ],
+  sectors: %32[
+    0, 128, 160, 0, 0,
+    16, 96, 160, 0, 0,
+    0, 96, 160, 0, 0
+  ]
+};
+expect[
+  (doom_map_move_blocked_at[
+     window_map, 0, 50, 48, 50, 0, 56, 24
+   ] == 1) and
+  (doom_map_flight_blocked_at[
+     window_map, 0, 50, 36, 48, 50, 36, 2
+   ] == 0) and
+  (doom_map_flight_blocked_at[
+     window_map, 0, 50, 10, 48, 50, 10, 2
+   ] == 1),
+  "FPV flight crosses a flagged window opening but not its sill"
+];
+let sky_map = map + {
+  sectors: %32[
+    0, 96, 160, 0, 0,
+    0, 96, 160, 0, 0,
+    0, 96, 160, 0, 0
+  ],
+  sector_flats: %32[0, 7, 0, 7, 0, 7],
+  texture_bank: map\texture_bank + { sky_flat: 7 }
+};
+expect[
+  doom_map_flight_blocker_at[
+    sky_map, 0, 50, 90, 0, 50, 100, 2
+  ] == 2,
+  "F_SKY1 ceiling contact is a soft flight blocker"
+];
+let placement_map = map + {
+  lines: %32[], line_count: 0,
+  line_sides: %32[],
+  things: %32[
+    0, 0, 3001, 7, 80, 0, 3001, 7,
+    160, 0, 3001, 7, 240, 0, 3001, 7,
+    0, 160, 3001, 7, 80, 160, 3001, 7,
+    160, 160, 3001, 7, 240, 160, 3001, 7
+  ],
+  thing_angles: %32[0, 0, 0, 0, 0, 0, 0, 0], thing_count: 8,
+  min_x: 0 - 256, max_x: 512, min_y: 0 - 256, max_y: 512
+};
+let placed_a = doom_drone_drops_seeded[placement_map, 101];
+let placed_b = doom_drone_drops_seeded[placement_map, 202];
+expect[
+  (arr_len[placed_a] == 1) and (arr_len[placed_b] == 1) and
+  ((placed_a\0\x != placed_b\0\x) or
+   (placed_a\0\y != placed_b\0\y)),
+  "explicit load seeds produce different reproducible drone placement"
+];
+let aimed_drone = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0 - 96
+];
+aimed_drone = doom_drone_step[
+  map, aimed_drone, [], 0, 0, 1, 0, 0, 0, 0
+];
+aimed_drone = doom_drone_step[
+  map, aimed_drone, [], 0, 0, 1, 0, 0, 0, 0
+];
+aimed_drone = doom_drone_step[
+  map, aimed_drone, [], 0, 0, 1, 0, 0, 0, 0
+];
+expect[
+  (aimed_drone\vx == 6) and (aimed_drone\vz == 1) and
+  (aimed_drone\x == 12) and (aimed_drone\z == 37) and
+  (aimed_drone\aim_remainder == 147),
+  "forward thrust preserves the projectile centreline ray in three dimensions"
+];
+let banked_drone = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0
+];
+banked_drone = doom_drone_step[
+  map, banked_drone, [], 2, 0, 0, 0, 0, 0, 0
+];
+expect[
+  banked_drone\roll == 2,
+  "turn input banks the rigid FPV camera into the turn"
+];
+let sky_drone = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0
+];
+sky_drone\z = 94;
+sky_drone = doom_drone_step[
+  sky_map, sky_drone, [], 0, 0, 0, 0, 1, 0, 0
+];
+expect[
+  (sky_drone\active == 1) and (sky_drone\z == 94) and
+  (sky_drone\vz == 0) and (sky_drone\detonations == 0),
+  "sky contact cancels climb without consuming the drone"
+];
+let bump_actor = { health: 100, x: 2, y: 50 };
+let slow_bump = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0
+];
+slow_bump = doom_drone_step[
+  map, slow_bump, [bump_actor], 0, 0, 1, 0, 0, 0, 0
+];
+expect[
+  (slow_bump\active == 1) and (slow_bump\pending_explosion == 0) and
+  (slow_bump\x == 0) and (slow_bump\y == 50) and
+  (slow_bump\speed == 0) and (slow_bump\vx == 0),
+  "low-speed actor contact stops at the safe point without detonating"
+];
+let ram_actor = { health: 100, x: 13, y: 50 };
+let fast_ram = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0
+];
+fast_ram\vx = 14;
+fast_ram\speed = 14;
+fast_ram = doom_drone_step[
+  map, fast_ram, [ram_actor], 0, 0, 0, 0, 0, 0, 0
+];
+expect[
+  (fast_ram\active == 1) and (fast_ram\pending_explosion == 0) and
+  (fast_ram\speed == 0) and (fast_ram\detonations == 0),
+  "an unarmed high-speed actor crash is recoverable"
+];
+let armed_ram = doom_drone_launch[
+  doom_drone_new[], 0, 50, 0, trig_from_degrees[0], 0
+];
+armed_ram\vx = 14;
+armed_ram\speed = 14;
+armed_ram = doom_drone_step[
+  map, armed_ram, [ram_actor], 0, 0, 0, 0, 0, 0, 1
+];
+expect[
+  (armed_ram\active == 0) and (armed_ram\pending_explosion == 1) and
+  (armed_ram\armed == 1) and
+  (armed_ram\reason == 2) and (armed_ram\target == 0),
+  "X-arm intent gives actor contact authority to trigger the payload"
+];
 
 let state = doom_session_new[map, [], 0, 0, 0, 0, ["WORLD"]];
 expect[
@@ -102,6 +246,172 @@ state = doom_session_step[state, idle, 1];
 expect[
   state\world\player_z > jump_z,
   "an idle presenter frame still advances the same world tick"
+];
+
+let laser_state = doom_session_new[map, [], 0, 1, 0, 0, ["WORLD"]];
+doom_combat_take_drop[laser_state\combat, doom_laser_pickup_kind[]];
+laser_state\combat = doom_combat_select_weapon[laser_state\combat, 2];
+let select_laser = [
+  { kind: gui_ev_key_down[], a: 56, b: 0, mods: 0 }
+];
+laser_state = doom_session_step[laser_state, select_laser, 1];
+expect[
+  laser_state\combat\selected_weapon == doom_laser_weapon[],
+  "the shared input transaction admits key 8 for the owned laser"
+];
+laser_state\combat = doom_combat_select_weapon[laser_state\combat, 2];
+let select_laser_minus = [
+  { kind: gui_ev_key_down[], a: 45, b: 0, mods: 0 }
+];
+laser_state = doom_session_step[laser_state, select_laser_minus, 1];
+expect[
+  laser_state\combat\selected_weapon == doom_laser_weapon[],
+  "the shared input transaction admits minus as a laser mnemonic"
+];
+laser_state\combat = doom_combat_cycle_weapon[laser_state\combat, 1];
+expect[
+  laser_state\combat\selected_weapon == doom_drone_weapon[],
+  "ordinary weapon cycling reaches the baked-in drone after the laser"
+];
+laser_state\combat = doom_combat_cycle_weapon[laser_state\combat, 0 - 1];
+expect[
+  laser_state\combat\selected_weapon == doom_laser_weapon[],
+  "reverse weapon cycling reaches the owned laser"
+];
+
+let drone_state = doom_session_new[map, [], 0, 1, 0, 0, ["WORLD"]];
+// Isolate pickup behavior from the temporary ten-drone level loadout.
+drone_state\combat\drones = 0;
+bytes_set[drone_state\combat\weapons, doom_drone_weapon[], 0];
+drone_state\combat\drone_drop_count = 1;
+drone_state\combat\drops = drone_state\combat\drops + [{
+  x: drone_state\player_x, y: drone_state\player_y,
+  kind: doom_drone_pickup_kind[], alive: 1
+}];
+drone_state = doom_session_step[drone_state, idle, 1];
+expect[
+  (drone_state\drone\active == 0) and
+  (drone_state\drone_deploy_ready == 1) and
+  (drone_state\combat\drones == 1) and
+  (doom_combat_weapon_owned[
+     drone_state\combat, doom_drone_weapon[]
+   ] == 1) and
+  (drone_state\combat\selected_weapon == doom_drone_weapon[]) and
+  (drone_state\combat\drone_launches == 0) and
+  (drone_state\player_x == 0) and (drone_state\player_y == 50),
+  "collecting a drone adds one selectable weapon without launching it"
+];
+// Carry a second craft so the held detonation-click regression is observable:
+// the selected slot remains 9 after the first launch.
+drone_state\combat\drones = 2;
+let drone_launch = [
+  { kind: gui_ev_input_state[], a: 19, b: 3, mods: 1 }
+];
+drone_state = doom_session_step[drone_state, drone_launch, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone\fire_ready == 0) and
+  (drone_state\drone\armed == 0) and
+  (drone_state\drone_deploy_ready == 0) and
+  (drone_state\combat\drones == 1) and
+  (drone_state\combat\selected_weapon == doom_drone_weapon[]) and
+  (drone_state\combat\drone_launches == 1),
+  "first fire consumes the selected drone and transfers camera authority"
+];
+drone_state\drone\tick = doom_drone_clock_period[] - 1;
+drone_state = doom_session_step[drone_state, drone_launch, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone\tick == 0) and
+  (drone_state\drone\fire_ready == 0) and
+  (drone_state\drone\detonations == 0),
+  "flight clock wraps without a timeout and launch fire cannot detonate"
+];
+let drone_forward = [
+  { kind: gui_ev_input_state[], a: 20, b: 3, mods: 0 },
+  { kind: gui_ev_key_held[], a: 119, b: 0, mods: 0 }
+];
+drone_state = doom_session_step[drone_state, drone_forward, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone\x == 2) and
+  (drone_state\drone\vx == 2) and (drone_state\drone\speed == 2) and
+  (drone_state\player_x == 0) and (drone_state\steps == 0),
+  "drone thrust accelerates the remote camera while the player stays put"
+];
+let drone_coast = [
+  { kind: gui_ev_input_state[], a: 21, b: 3, mods: 0 }
+];
+drone_state = doom_session_step[drone_state, drone_coast, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone\x == 4) and (drone_state\drone\vx == 2),
+  "released thrust keeps useful inertia between periodic drag samples"
+];
+let drone_use = [
+  { kind: gui_ev_key_down[], a: 101, b: 0, mods: 0 }
+];
+drone_state = doom_session_step[drone_state, drone_use, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (arr_len[drone_state\world\doors] == 1),
+  "E opens a door using the active drone position and heading"
+];
+let drone_arm = [
+  { kind: gui_ev_key_down[], a: 120, b: 0, mods: 0 }
+];
+drone_state = doom_session_step[drone_state, drone_arm, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone\armed == 1) and
+  (drone_state\drone\detonations == 0),
+  "X explicitly and permanently arms contact detonation for this flight"
+];
+let drone_fire = [
+  { kind: gui_ev_input_state[], a: 22, b: 3, mods: 1 }
+];
+drone_state = doom_session_step[drone_state, drone_fire, 1];
+expect[
+  (drone_state\drone\active == 0) and
+  (drone_state\drone\pending_explosion == 0) and
+  (drone_state\drone\detonations == 1) and
+  (drone_state\drone_deploy_ready == 0) and
+  (drone_state\combat\drones == 1) and
+  (drone_state\combat\drone_launches == 1) and
+  (drone_state\combat\explosion_serial == 1) and
+  (arr_len[drone_state\sounds] == 1) and
+  (drone_state\sounds\0\clip == 12),
+  "armed fire detonates once, returns control and emits the explosion sound"
+];
+
+drone_state = doom_session_step[drone_state, drone_fire, 1];
+expect[
+  (drone_state\drone\active == 0) and
+  (drone_state\drone_deploy_ready == 0) and
+  (drone_state\combat\drones == 1) and
+  (drone_state\combat\drone_launches == 1),
+  "held detonation click cannot deploy or consume the next drone"
+];
+let drone_fire_release = [
+  { kind: gui_ev_input_state[], a: 23, b: 3, mods: 0 }
+];
+drone_state = doom_session_step[drone_state, drone_fire_release, 1];
+expect[
+  (drone_state\drone\active == 0) and
+  (drone_state\drone_deploy_ready == 1) and
+  (drone_state\combat\drones == 1),
+  "a real fire release rearms deployment without consuming inventory"
+];
+let drone_second_launch = [
+  { kind: gui_ev_input_state[], a: 24, b: 3, mods: 1 }
+];
+drone_state = doom_session_step[drone_state, drone_second_launch, 1];
+expect[
+  (drone_state\drone\active == 1) and
+  (drone_state\drone_deploy_ready == 0) and
+  (drone_state\combat\drones == 0) and
+  (drone_state\combat\drone_launches == 2),
+  "a fresh click deliberately deploys the next drone"
 ];
 
 let close = [{ kind: gui_ev_close[], a: 0, b: 0, mods: 0 }];

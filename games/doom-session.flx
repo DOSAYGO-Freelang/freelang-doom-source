@@ -7,7 +7,8 @@
 credits: <../games/doom-input.flx> <../games/doom-view.flx>
          <../games/doom-world.flx>
          <../games/doom-ui.flx> <../games/doom-demo.flx>
-         <../games/doom-audio.flx> <f/arrays> <f/bytes> <f/trig>;
+         <../games/doom-audio.flx> <../games/doom-drone.flx>
+         <f/arrays> <f/bytes> <f/trig>;
 
 private op doom_session_note_compatibility [map_name, world, combat] (
   let actions = world\unsupported_actions;
@@ -111,6 +112,14 @@ private op doom_session_empty_move [x, y] (
 
 op doom_session_new [map, initial_events, demo_mode, combat_mode,
                      diag_mode, start_menu, menu_maps] (
+  => doom_session_new_seeded[
+    map, initial_events, demo_mode, combat_mode,
+    diag_mode, start_menu, menu_maps, 0
+  ];
+)
+
+op doom_session_new_seeded [map, initial_events, demo_mode, combat_mode,
+                            diag_mode, start_menu, menu_maps, drone_seed] (
   let world = doom_world_new[map];
   let play_map = doom_world_map[map, world];
   let controls = doom_input_next[doom_input_new[], initial_events];
@@ -129,7 +138,8 @@ op doom_session_new [map, initial_events, demo_mode, combat_mode,
     )
     i = i + 1;
   )
-  let combat = doom_combat_new[play_map];
+  let combat = doom_combat_new_seeded[play_map, drone_seed];
+  let drone = doom_drone_new[];
   if (combat_mode == 1) (
     alive = combat\alive;
     enemies = combat\enemy_count;
@@ -139,7 +149,12 @@ op doom_session_new [map, initial_events, demo_mode, combat_mode,
     map: map, play_map: play_map,
     demo_mode: demo_mode, combat_mode: combat_mode, diag_mode: diag_mode,
     controls: controls, ui: ui, demo: demo, demo_phase_seen: 0 - 1,
-    world: world, combat: combat, alive: alive,
+    world: world, combat: combat, drone: drone, drone_seed: drone_seed,
+    // One mouse press owns at most one craft transition. Detonation leaves
+    // this closed until the presenter reports a real button release, so a
+    // held click cannot silently consume the next inventory unit.
+    drone_deploy_ready: 1,
+    alive: alive,
     sound_state: doom_session_sound_state[world, combat], sounds: [],
     player_x: map\player_x, player_y: map\player_y,
     angle: trig_from_degrees[map\player_angle], pitch: 0,
@@ -176,11 +191,14 @@ private op doom_session_reset [st] (
   )
   st\world = doom_world_new[map];
   st\play_map = doom_world_map[map, st\world];
+  st\drone_seed = doom_drone_seed_next[st\drone_seed, st\frame_index + 1];
   if (st\combat_mode == 1) (
-    st\combat = doom_combat_new[st\play_map];
+    st\combat = doom_combat_new_seeded[st\play_map, st\drone_seed];
     st\alive = st\combat\alive;
     st\enemies = st\combat\enemy_count;
   )
+  st\drone = doom_drone_new[];
+  st\drone_deploy_ready = 1;
   st\world = doom_session_note_compatibility[
     map\name, st\world, st\combat
   ];
@@ -208,6 +226,8 @@ op doom_session_step [st, events, retain_evidence] (
   let demo_phase_seen = st\demo_phase_seen;
   let world = st\world;
   let combat = st\combat;
+  let drone = st\drone;
+  let drone_deploy_ready = st\drone_deploy_ready;
   let alive = st\alive;
   let sound_state = st\sound_state;
   let player_x = st\player_x;
@@ -237,6 +257,7 @@ op doom_session_step [st, events, retain_evidence] (
   st\play_map = play_map;
   st\world = world;
   st\combat = combat;
+  st\drone = drone;
   st\alive = alive;
   st\player_x = player_x;
   st\player_y = player_y;
@@ -254,6 +275,8 @@ op doom_session_step [st, events, retain_evidence] (
     play_map = st\play_map;
     world = st\world;
     combat = st\combat;
+    drone = st\drone;
+    drone_deploy_ready = st\drone_deploy_ready;
     alive = st\alive;
     sound_state = st\sound_state;
     player_x = st\player_x;
@@ -273,8 +296,12 @@ op doom_session_step [st, events, retain_evidence] (
   let forward = 0;
   let strafe = 0;
   let fire = doom_input_fire_held[controls];
+  if ((drone\active == 0) and (fire == 0)) (
+    drone_deploy_ready = 1;
+  )
   let jump_requested = 0;
   let jump_result = 0 - 1;
+  let drone_finished = 0;
   if (demo_mode == 1) (
     if (demo\phase != demo_phase_seen) (
       if (demo\phase == 2) (
@@ -302,7 +329,7 @@ op doom_session_step [st, events, retain_evidence] (
     forward = command\forward;
     if (command\fire == 1) ( fire = 1; )
     if (command\finished == 1) ( running = 0; )
-  ) else if (ui\open == 0) (
+  ) else if ((ui\open == 0) and (drone\active == 0)) (
     if (doom_input_held[controls, gui_key_left[]] == 1) ( turn = turn + 2; )
     if (doom_input_held[controls, gui_key_right[]] == 1) ( turn = turn - 2; )
     if (turn != 0) ( angle = angle + trig_from_degrees[turn]; )
@@ -324,11 +351,16 @@ op doom_session_step [st, events, retain_evidence] (
     )
     if (combat_mode == 1) (
       let weapon_key = 1;
-      while (weapon_key <= 7) (
+      while (weapon_key <= doom_combat_weapon_count[]) (
         if (gui_key_pressed[events, 48 + weapon_key] == 1) (
           combat = doom_combat_select_weapon[combat, weapon_key];
         )
         weapon_key = weapon_key + 1;
+      )
+      // '-' echoes the bolt silhouette and remains an explicit second route
+      // on keyboards where the final number-row slot is awkward to reach.
+      if (gui_key_pressed[events, 45] == 1) (
+        combat = doom_combat_select_weapon[combat, doom_laser_weapon[]];
       )
       if (controls\scroll_y > 0) (
         combat = doom_combat_cycle_weapon[combat, 0 - 1];
@@ -344,9 +376,82 @@ op doom_session_step [st, events, retain_evidence] (
       )
     )
   )
+  if ((demo_mode == 0) and (ui\open == 0) and
+      (combat_mode == 1) and (drone\active == 1)) (
+    let drone_turn = 0;
+    if (doom_input_held[controls, gui_key_left[]] == 1) (
+      drone_turn = drone_turn + 2;
+    )
+    if (doom_input_held[controls, gui_key_right[]] == 1) (
+      drone_turn = drone_turn - 2;
+    )
+    if (controls\mouse_dx != 0) (
+      drone_turn = drone_turn - controls\mouse_dx * ui\look_speed;
+    )
+    let next_drone_pitch = doom_input_pitch[
+      drone\pitch, controls\mouse_dy * ui\look_speed
+    ];
+    let drone_look = next_drone_pitch - drone\pitch;
+    // The drone carries the same finite use capability as the player. Door,
+    // switch and key checks are resolved by the ordinary world transaction,
+    // but the ray now originates at the remote camera.
+    if ((gui_key_pressed[events, 101] == 1) or
+        (gui_key_pressed[events, 69] == 1)) (
+      doom_world_use[
+        play_map, world, drone\x, drone\y, drone\angle
+      ];
+    )
+    let drone_lift = doom_input_held[controls, 32] -
+      doom_input_held[controls, gui_key_control[]];
+    let drone_fire = doom_input_mouse_held[controls, 0];
+    if (doom_input_held[controls, 102] == 1) ( drone_fire = 1; )
+    let drone_arm = gui_key_pressed[events, 120];
+    if (gui_key_pressed[events, 88] == 1) ( drone_arm = 1; )
+    drone = doom_drone_step[
+      play_map, drone, combat\actors,
+      drone_turn, drone_look,
+      doom_input_forward_axis[controls],
+      doom_input_strafe_axis[controls], drone_lift, drone_fire, drone_arm
+    ];
+    if (drone\pending_explosion == 1) (
+      let drone_hits = doom_combat_explode_at[
+        play_map, combat, drone\x, drone\y, drone\z,
+        doom_drone_damage[], doom_drone_blast_radius[]
+      ];
+      drone = doom_drone_acknowledge_explosion[drone];
+      drone_finished = 1;
+      world\pickup_message = "FPV IMPACT  ^{drone_hits} TARGETS";
+      world\pickup_tick = 90;
+    )
+    // The player's body remains in the world and may still be attacked, but
+    // no weapon, movement, jump or use command crosses the camera takeover.
+    fire = 0;
+    forward = 0;
+    strafe = 0;
+  )
   if (ui\open == 1) ( fire = 0; forward = 0; strafe = 0; )
   if ((combat_mode == 1) and
       ((combat\health == 0) or (world\exited == 1))) (
+    fire = 0;
+    forward = 0;
+    strafe = 0;
+  )
+  // A collected drone is an explicit single-use weapon. The first fire
+  // transfers camera authority and consumes one inventory unit; the active
+  // drone path above owns the later, post-release detonation command.
+  if ((fire == 1) and (drone\active == 0) and
+      (combat_mode == 1) and
+      (combat\selected_weapon == doom_drone_weapon[])) (
+    if (drone_deploy_ready == 1) (
+      if (doom_combat_begin_drone[play_map, combat] == 1) (
+        drone_deploy_ready = 0;
+        drone = doom_drone_launch[
+          drone, player_x, player_y, world\player_z, angle, pitch
+        ];
+      )
+    )
+    // Slot 9 owns this input even while its release gate is closed. Never let
+    // a held detonation press fall through to ordinary weapon fire.
     fire = 0;
     forward = 0;
     strafe = 0;
@@ -362,19 +467,24 @@ op doom_session_step [st, events, retain_evidence] (
       if ((diag_mode == 1) and (combat\shot_cooldown == 0) and
           (doom_combat_current_ammo[combat] > 0) and
           (combat\selected_weapon <= 4)) (
-        let shot_target = doom_combat_hitscan_at[
-          play_map, combat, player_x, player_y, world\player_z, angle, 1024
+        let shot_target = doom_combat_hitscan_pitched_at[
+          play_map, combat, player_x, player_y, world\player_z,
+          angle, pitch, 1024
         ];
         shot_target_kind = shot_target\kind;
         shot_target_index = shot_target\index;
         shot_target_distance = shot_target\distance;
       )
-      combat = doom_combat_fire_at[
-        play_map, combat, player_x, player_y, world\player_z, angle
+      combat = doom_combat_fire_pitched_at[
+        play_map, combat, player_x, player_y, world\player_z, angle, pitch
       ];
       if (combat\shots > shots_before) (
         sounds = doom_session_sound_add[
-          sounds, 1, doom_audio_weapon_clip[combat\selected_weapon], 256
+          sounds, 1,
+          doom_audio_weapon_clip_for[
+            combat\selected_weapon, combat\shots
+          ],
+          256
         ];
         doom_world_shoot[play_map, world, player_x, player_y, angle];
         if (diag_mode == 1) (
@@ -465,9 +575,12 @@ op doom_session_step [st, events, retain_evidence] (
 
   if ((demo_mode == 1) or (ui\open == 0)) (
     if (combat_mode == 1) (
-      let collected = doom_world_collect[
-        play_map, world, combat, player_x, player_y
-      ];
+      let collected = 0;
+      if ((drone\active == 0) and (drone_finished == 0)) (
+        collected = doom_world_collect[
+          play_map, world, combat, player_x, player_y
+        ];
+      )
       if (collected > 0) (
         let pickup_clip = 5;
         if (doom_world_pickup_is_weapon[world\pickup_kind] == 1) (
@@ -533,6 +646,8 @@ op doom_session_step [st, events, retain_evidence] (
   st\demo_phase_seen = demo_phase_seen;
   st\world = world;
   st\combat = combat;
+  st\drone = drone;
+  st\drone_deploy_ready = drone_deploy_ready;
   st\alive = alive;
   st\sound_state = sound_state;
   st\sounds = sounds;

@@ -1,0 +1,145 @@
+// Presentation-only FPV overlay. Keeping f/gui here leaves drone placement,
+// flight and collision available to simulation tests without presenter
+// authority or GUI code in their native reachability set.
+
+credits: <../games/doom-drone.flx> <f/gui> <f/buffers> <f/bytes>;
+
+// A small in-place column shear approximates the rigid FPV camera's roll.
+// World pixels bank; the HUD is composed afterwards and remains level. The
+// bounded ten-degree state keeps uncovered edge strips small.
+op doom_drone_apply_bank [buf, w, h, roll] (
+  if ((roll >= 0 - 10) and (roll <= 10)) () else (
+    fall "doom_drone_apply_bank: roll outside bounded domain";
+  )
+  if (roll == 0) ( => 0; )
+  if ((bytes_len[buf] >= w * h * 4) and
+      (bytes_len[buf] % 4 == 0)) () else (
+    fall "doom_drone_apply_bank: RGBX buffer dimensions disagree";
+  )
+  // The GUI framebuffer is bytes, but banking is a pixel transaction. The
+  // old code used buf_get/set with pixel indices and therefore sheared only
+  // the first quarter of the byte owner, one colour byte at a time. A packed
+  // RGBX view makes the intended ownership and four-byte stride explicit.
+  view rgbx as %32le[] over buf;
+  let clear = 6 + (10 *< 8) + (14 *< 16);
+  let cx = w / 2;
+  let x = 0;
+  while (x < w) (
+    let shift = (x - cx) * roll / 180;
+    if (shift > 0) (
+      let y = h - 1;
+      while (y >= shift) (
+        rgbx@(y * w + x) = rgbx@((y - shift) * w + x);
+        y = y - 1;
+      )
+      y = 0;
+      while (y < shift) (
+        rgbx@(y * w + x) = clear;
+        y = y + 1;
+      )
+    ) else if (shift < 0) (
+      let rise = 0 - shift;
+      let y = 0;
+      while (y + rise < h) (
+        rgbx@(y * w + x) = rgbx@((y + rise) * w + x);
+        y = y + 1;
+      )
+      while (y < h) (
+        rgbx@(y * w + x) = clear;
+        y = y + 1;
+      )
+    )
+    x = x + 1;
+  )
+  => 1;
+)
+
+// Code-native first-person deployment controller. The drone itself is the
+// consumable weapon; this small commodity transmitter makes selection visible
+// without pretending that a WAD firearm patch owns the interaction.
+op doom_drone_draw_weapon [buf, w, h] (
+  let scale = w / 320;
+  if (scale < 1) ( scale = 1; )
+  let body_w = 92 * scale;
+  let body_h = 48 * scale;
+  let left = w / 2 - body_w / 2;
+  let top = h - body_h;
+  let shell = gui_rgb[42, 46, 45];
+  let edge = gui_rgb[126, 138, 132];
+  let glass = gui_rgb[8, 36, 23];
+  let green = gui_rgb[75, 255, 136];
+  let hand = gui_rgb[176, 118, 82];
+  gui_rect[buf, w, h, left, top, body_w, body_h, edge];
+  gui_rect[
+    buf, w, h, left + 3 * scale, top + 3 * scale,
+    body_w - 6 * scale, body_h - 3 * scale, shell
+  ];
+  gui_rect[
+    buf, w, h, left + 22 * scale, top + 7 * scale,
+    48 * scale, 22 * scale, glass
+  ];
+  gui_rect[
+    buf, w, h, left + 43 * scale, top + 10 * scale,
+    6 * scale, 16 * scale, green
+  ];
+  gui_rect[
+    buf, w, h, left + 38 * scale, top + 15 * scale,
+    16 * scale, 6 * scale, green
+  ];
+  gui_rect[
+    buf, w, h, left + 8 * scale, top + 33 * scale,
+    18 * scale, 8 * scale, hand
+  ];
+  gui_rect[
+    buf, w, h, left + body_w - 26 * scale, top + 33 * scale,
+    18 * scale, 8 * scale, hand
+  ];
+  => 1;
+)
+
+op doom_drone_draw_hud [buf, w, h, font, drone] (
+  if (drone\active == 1) () else ( => 0; )
+  let green = gui_rgb[86, 255, 142];
+  let dim = gui_rgb[34, 132, 78];
+  let amber = gui_rgb[255, 188, 72];
+  let dark = gui_rgb[7, 24, 15];
+  let corner = 18 * w / 320;
+  if (corner < 10) ( corner = 10; )
+  let inset = 8 * w / 320;
+  if (inset < 5) ( inset = 5; )
+  let thick = w / 320;
+  if (thick < 1) ( thick = 1; )
+  // The native status-bar suffix is outside the world viewport. Replace it so
+  // no stale player instrument panel remains beneath the drone feed.
+  let viewport_h = h - 32 * h / 200;
+  gui_rect[buf, w, h, 0, viewport_h, w, h - viewport_h, dark];
+  gui_rect[buf, w, h, inset, inset, corner, thick, green];
+  gui_rect[buf, w, h, inset, inset, thick, corner, green];
+  gui_rect[buf, w, h, w - inset - corner, inset, corner, thick, green];
+  gui_rect[buf, w, h, w - inset - thick, inset, thick, corner, green];
+  gui_rect[buf, w, h, inset, h - inset - thick, corner, thick, green];
+  gui_rect[buf, w, h, inset, h - inset - corner, thick, corner, green];
+  gui_rect[
+    buf, w, h, w - inset - corner, h - inset - thick, corner, thick, green
+  ];
+  gui_rect[
+    buf, w, h, w - inset - thick, h - inset - corner, thick, corner, green
+  ];
+  let cx = w / 2;
+  let cy = viewport_h / 2;
+  gui_rect[buf, w, h, cx - 16, cy, 12, thick, dim];
+  gui_rect[buf, w, h, cx + 5, cy, 12, thick, dim];
+  gui_rect[buf, w, h, cx, cy - 16, thick, 12, dim];
+  gui_rect[buf, w, h, cx, cy + 5, thick, 12, dim];
+  let fuse = "SAFE";
+  let fuse_colour = dim;
+  if (drone\armed == 1) (
+    fuse = "ARMED";
+    fuse_colour = amber;
+  )
+  gui_text[buf, w, h, font, inset + 4, inset + 5,
+    "FPV ^{fuse}  V ^{drone\vx},^{drone\vy},^{drone\vz}  R ^{drone\roll}", fuse_colour];
+  gui_text[buf, w, h, font, inset + 4, h - inset - 14,
+    "WASD THRUST  SPACE/CTRL ALT  TAB SCAN  E USE  X ARM  CLICK/F BOOM", green];
+  => 1;
+)

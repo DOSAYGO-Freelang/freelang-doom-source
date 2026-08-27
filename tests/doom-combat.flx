@@ -82,6 +82,13 @@ doom_combat_test_expect[
   (combat\enemy_count == 1) and (combat\health == 100) and
   (combat\unsupported_enemies == 1) and
   (arr_len[combat\barrels] == 1) and
+  (arr_len[combat\drops] == 2) and
+  (combat\drops\0\kind == doom_laser_pickup_kind[]) and
+  (combat\drops\0\x == 50) and (combat\drops\0\y == 10) and
+  (combat\drops\1\kind == doom_shield_pickup_kind[]) and
+  (combat\shielded == 0) and
+  (combat\drones == doom_drone_level_loadout[]) and
+  (doom_combat_weapon_owned[combat, doom_drone_weapon[]] == 1) and
   (combat\ammo == 50) and (combat\armor == 0) and
   (combat\max_ammo == 200) and (combat\kills == 0),
   "explicit player resources"
@@ -102,7 +109,9 @@ prior_inventory\cells = 407;
 bytes_set[prior_inventory\weapons, 3, 1];
 bytes_set[prior_inventory\weapons, 5, 1];
 bytes_set[prior_inventory\weapons, 7, 1];
+bytes_set[prior_inventory\weapons, doom_laser_weapon[], 1];
 prior_inventory\selected_weapon = 5;
+prior_inventory\shielded = 1;
 prior_inventory\berserk = 1;
 prior_inventory\invulnerability_tick = 90;
 prior_inventory\invisibility_tick = 120;
@@ -128,7 +137,10 @@ doom_combat_test_expect[
   (doom_combat_weapon_owned[carried, 3] == 1) and
   (doom_combat_weapon_owned[carried, 5] == 1) and
   (doom_combat_weapon_owned[carried, 7] == 1) and
-  (carried\selected_weapon == 5),
+  (doom_combat_weapon_owned[carried, doom_laser_weapon[]] == 1) and
+  (carried\drones == doom_drone_level_loadout[]) and
+  (doom_combat_weapon_owned[carried, doom_drone_weapon[]] == 1) and
+  (carried\selected_weapon == 5) and (carried\shielded == 1),
   "session map change carries durable player inventory"
 ];
 doom_combat_test_expect[
@@ -405,8 +417,8 @@ doom_combat_test_expect[
   (combat\monster_death_serial == 1) and
   (combat\monster_death_kind == 3004) and
   (combat\kills == 1) and (combat\ammo == 48) and
-  (arr_len[combat\drops] == 1) and
-  (combat\drops\0\kind == 2007) and (combat\drops\0\alive == 1) and
+  (arr_len[combat\drops] == 3) and
+  (combat\drops\2\kind == 2007) and (combat\drops\2\alive == 1) and
   (bytes_get[combat\alive, actor\thing] == 0) and
   (doom_combat_actor_sprite_slot[actor, 5] == 64),
   "second shot enters death and retires target authority"
@@ -575,6 +587,135 @@ doom_combat_test_expect[
   (bfg_combat\kills == 1) and
   (bfg_combat\projectile_impacts == 1),
   "BFG projectile resolves a bounded visible-area impact"
+];
+
+let laser_combat = doom_combat_new[map];
+doom_combat_test_expect[
+  (doom_combat_take_drop[laser_combat, doom_laser_pickup_kind[]] == 1) and
+  (doom_combat_weapon_owned[laser_combat, doom_laser_weapon[]] == 1) and
+  (laser_combat\selected_weapon == doom_laser_weapon[]) and
+  (doom_combat_current_ammo[laser_combat] == doom_laser_ammo_display[]) and
+  (doom_combat_can_fire[laser_combat] == 1),
+  "entrance pickup owns and equips the unlimited laser weapon"
+];
+doom_combat_test_expect[
+  (doom_combat_take_pickup[laser_combat, 2001] == 1) and
+  (doom_combat_weapon_owned[laser_combat, 3] == 1) and
+  (laser_combat\shells == 8) and
+  (laser_combat\selected_weapon == doom_laser_weapon[]),
+  "ordinary weapon pickups cannot displace the equipped top-gun laser"
+];
+let laser_ammo = laser_combat\ammo;
+let laser_shells = laser_combat\shells;
+let laser_rockets = laser_combat\rockets;
+let laser_cells = laser_combat\cells;
+laser_combat = doom_combat_fire[
+  map, laser_combat, 50, 50, trig_from_degrees[0]
+];
+doom_combat_test_expect[
+  (laser_combat\shot_cooldown == doom_laser_cooldown[]) and
+  (laser_combat\projectiles\0\kind == doom_laser_projectile_kind[]) and
+  (laser_combat\projectiles\0\damage == doom_laser_damage[]) and
+  (laser_combat\projectiles\0\vx == doom_laser_speed[]) and
+  (laser_combat\ammo == laser_ammo) and
+  (laser_combat\shells == laser_shells) and
+  (laser_combat\rockets == laser_rockets) and
+  (laser_combat\cells == laser_cells) and
+  (doom_combat_weapon_slot[laser_combat] ==
+   doom_texture_weapon_slot_for[doom_laser_source_weapon[], 0]) and
+  (doom_combat_muzzle_slot[laser_combat] ==
+   doom_texture_muzzle_slot_for[doom_laser_source_weapon[], 0]),
+  "laser fire keeps the white pistol still and spends no ammunition"
+];
+i = 0;
+while (i < 2) (
+  laser_combat = doom_combat_tick[map, laser_combat, 50, 50];
+  i = i + 1;
+)
+doom_combat_test_expect[
+  (laser_combat\projectiles\0\state == 2) and
+  (laser_combat\projectiles\0\hits == 1) and
+  (laser_combat\kills == 1) and
+  (doom_combat_weapon_slot[laser_combat] ==
+   doom_texture_weapon_slot_for[doom_laser_source_weapon[], 0]),
+  "railgun-level laser bolt kills its target without a recoil frame"
+];
+
+let pitched_laser = doom_combat_new[map];
+doom_combat_take_drop[pitched_laser, doom_laser_pickup_kind[]];
+pitched_laser = doom_combat_fire_pitched_at[
+  map, pitched_laser, 50, 50, 0, trig_from_degrees[0], 0 - 120
+];
+doom_combat_test_expect[
+  (pitched_laser\projectiles\0\vz == 8) and
+  (pitched_laser\projectiles\0\z == 32) and
+  (doom_combat_aim_delta[0 - 120, 32] == 8),
+  "looking up gives the laser a bounded upward world-space trajectory"
+];
+pitched_laser = doom_combat_tick_at[map, pitched_laser, 50, 50, 0];
+doom_combat_test_expect[
+  pitched_laser\projectiles\0\z == 40,
+  "the live laser bolt advances vertically instead of only moving its camera"
+];
+let pitched_hitscan = doom_combat_new[map];
+let level_target = doom_combat_hitscan_pitched_at[
+  map, pitched_hitscan, 50, 50, 0, trig_from_degrees[0], 0, 1024
+];
+let high_target = doom_combat_hitscan_pitched_at[
+  map, pitched_hitscan, 50, 50, 0,
+  trig_from_degrees[0], 0 - 145, 1024
+];
+doom_combat_test_expect[
+  (level_target\kind == 1) and (high_target\kind == 0),
+  "hitscan selection follows the same vertical reticle ray"
+];
+
+let shield_combat = doom_combat_new[map];
+doom_combat_test_expect[
+  (doom_combat_take_drop[shield_combat, doom_shield_pickup_kind[]] == 1) and
+  (shield_combat\shielded == 1),
+  "bracelet pickup grants the permanent independent shield"
+];
+doom_combat_hurt_player_kind[
+  map, shield_combat, 20, doom_shield_damage_hitscan[]
+];
+doom_combat_hurt_player_kind[
+  map, shield_combat, 20, doom_shield_damage_projectile[]
+];
+doom_combat_hurt_player_kind[
+  map, shield_combat, 20, doom_shield_damage_charge[]
+];
+doom_combat_hurt_player_explosion[map, shield_combat, 20];
+doom_combat_test_expect[
+  (shield_combat\health == 100) and
+  (shield_combat\shield_blocks == 4) and
+  (shield_combat\shield_block_tick == shield_combat\tick),
+  "shield rejects hitscan, projectile, Lost Soul and explosion damage"
+];
+doom_combat_hurt_player_kind[
+  map, shield_combat, 12, doom_shield_damage_melee[]
+];
+doom_combat_hurt_player[map, shield_combat, 8];
+doom_combat_test_expect[
+  (shield_combat\health == 80) and (shield_combat\shielded == 1),
+  "melee and environmental damage pass through the permanent shield"
+];
+
+let drone_blast = doom_combat_new[map];
+doom_combat_test_expect[
+  (doom_drone_damage[] == 768) and (doom_drone_blast_radius[] == 240),
+  "FPV drone owns a heavy cluster-clearing payload"
+];
+let drone_hits = doom_combat_explode_at[
+  map, drone_blast, 150, 50, 28,
+  doom_drone_damage[], doom_drone_blast_radius[]
+];
+doom_combat_test_expect[
+  (drone_hits >= 1) and (drone_blast\actors\0\health == 0) and
+  (drone_blast\kills == 1) and
+  (drone_blast\barrels\0\state == 2) and
+  (drone_blast\explosion_serial >= 2),
+  "FPV blast applies bounded 3D actor damage and chains visible barrels"
 ];
 
 buf_set[map\things, 6, 3003];

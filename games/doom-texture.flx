@@ -7,6 +7,7 @@
 // image-decoder boundary.
 
 credits: <../games/doom-format.flx> <../games/doom-stock.flx>
+         <../games/doom-laser.flx> <../games/doom-shield.flx>
          <f/buffers> <f/bytes>
          <f/files-chaos> <f/strings>;
 
@@ -441,6 +442,9 @@ op doom_texture_sprite_family [kind] (
 // Static E1M1 resource and weapon sprites. Animation remains deliberately
 // outside this slice; frame A is the canonical, validated pickup witness.
 op doom_texture_pickup_family [kind] (
+  if (kind == doom_laser_pickup_kind[]) (
+    => doom_stock_pickup_family[doom_laser_source_pickup_kind[]];
+  )
   => doom_stock_pickup_family[kind];
 )
 
@@ -1475,6 +1479,13 @@ private op doom_texture_load_sprites [path, directory, lump_count,
     if (prop >= 0) ( bytes_set[needed_props, prop, 1]; )
     ti = ti + 1;
   )
+  // Every combat map adds a synthetic laser entrance pickup. Admit its reused
+  // WAD witness even though no caller WAD THING can carry the out-of-band
+  // synthetic kind. The shield is a code-native bracelet and needs no lump.
+  bytes_set[
+    needed_pickups,
+    doom_texture_pickup_family[doom_laser_pickup_kind[]], 1
+  ];
   let li = 0;
   while (li < map\line_count) (
     let special = buf_get[map\line_actions, li * 2];
@@ -1517,6 +1528,8 @@ private op doom_texture_load_sprites [path, directory, lump_count,
     )
     family = family + 1;
   )
+  // Only load the seven WAD-native weapon families. Modular weapons reuse a
+  // declared source family (the laser uses the plasma-rifle slots).
   let weapon = 1;
   while (weapon <= 7) (
     let frame = 0;
@@ -1556,6 +1569,7 @@ private op doom_texture_load_sprites [path, directory, lump_count,
       frame = frame + 1;
     )
   )
+  // Muzzle art follows the same source-family rule as weapon body art.
   weapon = 2;
   while (weapon <= 7) (
     let frame = 0;

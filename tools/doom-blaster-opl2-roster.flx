@@ -1,0 +1,207 @@
+// Offline OPL2 blaster audition generator. These three candidates are close
+// relatives of the original rail-resonator (candidate G): a compact MUS
+// gesture drives four pitch layers through a two-operator GENMIDI patch, then
+// bounded saturation, short reflections, and a quadratic fly-away envelope
+// give each bolt a charged-air crack without a lingering musical tail.
+
+credits: <../games/doom-opl2.flx> <f/bytes> <f/files>;
+
+private op doom_blaster_put_u16 [b, offset, value] (
+  let stored = value;
+  if (stored < 0) ( stored = stored + 65536; )
+  bytes_set[b, offset, stored % 256];
+  bytes_set[b, offset + 1, (stored / 256) % 256];
+  => 0;
+)
+
+private op doom_blaster_voice [bank, base,
+                               mod_control, mod_ad, mod_sr, mod_wave, mod_level,
+                               feedback,
+                               car_control, car_ad, car_sr, car_wave, car_level,
+                               base_note] (
+  bytes_set[bank, base, mod_control];
+  bytes_set[bank, base + 1, mod_ad];
+  bytes_set[bank, base + 2, mod_sr];
+  bytes_set[bank, base + 3, mod_wave];
+  bytes_set[bank, base + 4, 0];
+  bytes_set[bank, base + 5, mod_level];
+  bytes_set[bank, base + 6, feedback];
+  bytes_set[bank, base + 7, car_control];
+  bytes_set[bank, base + 8, car_ad];
+  bytes_set[bank, base + 9, car_sr];
+  bytes_set[bank, base + 10, car_wave];
+  bytes_set[bank, base + 11, 0];
+  bytes_set[bank, base + 12, car_level];
+  bytes_set[bank, base + 13, 0];
+  doom_blaster_put_u16[bank, base + 14, base_note];
+  => 0;
+)
+
+private op doom_blaster_bank [variant] (
+  let bank = bytes_new[6308];
+  let signature = [35, 79, 80, 76, 95, 73, 73, 35];
+  let i = 0;
+  while (i < 8) (
+    bytes_set[bank, i, signature\@i];
+    i = i + 1;
+  )
+  // Bit two admits a second detuned OPL voice from the same instrument.
+  doom_blaster_put_u16[bank, 8, 4];
+  bytes_set[bank, 10, 148];
+  if (variant == 0) (
+    // The tight default: old G's rail/cable patch with a faster release.
+    bytes_set[bank, 10, 132];
+    doom_blaster_voice[
+      bank, 12, 68, 246, 42, 2, 0, 14,
+      34, 245, 58, 0, 0, 0 - 24
+    ];
+    doom_blaster_voice[
+      bank, 28, 70, 246, 58, 3, 2, 14,
+      35, 245, 74, 1, 0, 0 - 12
+    ];
+  ) else if (variant == 1) (
+    // A brighter arc from the same mechanism, not a different gun.
+    bytes_set[bank, 10, 138];
+    doom_blaster_voice[
+      bank, 12, 76, 247, 38, 3, 0, 14,
+      38, 246, 54, 1, 0, 0 - 18
+    ];
+    doom_blaster_voice[
+      bank, 28, 78, 246, 54, 2, 2, 14,
+      39, 245, 70, 1, 0, 0 - 6
+    ];
+  ) else (
+    // A heavier low-mode resonance, still sharing the same transient.
+    bytes_set[bank, 10, 128];
+    doom_blaster_voice[
+      bank, 12, 68, 245, 46, 2, 0, 14,
+      34, 244, 62, 0, 0, 0 - 30
+    ];
+    doom_blaster_voice[
+      bank, 28, 70, 245, 62, 3, 2, 14,
+      35, 244, 78, 1, 0, 0 - 18
+    ];
+  )
+  => bank;
+)
+
+private op doom_blaster_mus [variant] (
+  let mus = bytes_new[64];
+  bytes_set[mus, 0, 77]; bytes_set[mus, 1, 85];
+  bytes_set[mus, 2, 83]; bytes_set[mus, 3, 26];
+  doom_blaster_put_u16[mus, 6, 16];
+  doom_blaster_put_u16[mus, 8, 4];
+  let low = 36;
+  let high = 55;
+  let spark = 67;
+  let glint = 79;
+  if (variant == 1) ( low = 39; high = 58; spark = 70; glint = 84; )
+  if (variant == 2) ( low = 33; high = 52; spark = 64; glint = 76; )
+  let c = 16;
+  // Four simultaneous note-ons include a quiet high-frequency corona. Rapid
+  // opposed bends make the layers separate as the bolt leaves the muzzle.
+  // The high bit marks the last event in each MUS group.
+  bytes_set[mus, c, 16]; c = c + 1;
+  bytes_set[mus, c, low + 128]; c = c + 1;
+  bytes_set[mus, c, 127]; c = c + 1;
+  bytes_set[mus, c, 17]; c = c + 1;
+  bytes_set[mus, c, high + 128]; c = c + 1;
+  bytes_set[mus, c, 116]; c = c + 1;
+  bytes_set[mus, c, 18]; c = c + 1;
+  bytes_set[mus, c, spark + 128]; c = c + 1;
+  bytes_set[mus, c, 96]; c = c + 1;
+  bytes_set[mus, c, 147]; c = c + 1;
+  bytes_set[mus, c, glint + 128]; c = c + 1;
+  bytes_set[mus, c, 78]; c = c + 1;
+  bytes_set[mus, c, 2]; c = c + 1;
+
+  bytes_set[mus, c, 32]; c = c + 1;
+  bytes_set[mus, c, 220]; c = c + 1;
+  bytes_set[mus, c, 33]; c = c + 1;
+  bytes_set[mus, c, 24]; c = c + 1;
+  bytes_set[mus, c, 34]; c = c + 1;
+  bytes_set[mus, c, 184]; c = c + 1;
+  bytes_set[mus, c, 163]; c = c + 1;
+  bytes_set[mus, c, 232]; c = c + 1;
+  bytes_set[mus, c, 3]; c = c + 1;
+
+  bytes_set[mus, c, 34]; c = c + 1;
+  bytes_set[mus, c, 205]; c = c + 1;
+  bytes_set[mus, c, 163]; c = c + 1;
+  bytes_set[mus, c, 245]; c = c + 1;
+  bytes_set[mus, c, 3]; c = c + 1;
+
+  bytes_set[mus, c, 32]; c = c + 1;
+  bytes_set[mus, c, 20]; c = c + 1;
+  bytes_set[mus, c, 161]; c = c + 1;
+  bytes_set[mus, c, 238]; c = c + 1;
+  bytes_set[mus, c, 4]; c = c + 1;
+
+  bytes_set[mus, c, 0]; c = c + 1;
+  bytes_set[mus, c, low]; c = c + 1;
+  bytes_set[mus, c, 1]; c = c + 1;
+  bytes_set[mus, c, high]; c = c + 1;
+  bytes_set[mus, c, 2]; c = c + 1;
+  bytes_set[mus, c, spark]; c = c + 1;
+  bytes_set[mus, c, 131]; c = c + 1;
+  bytes_set[mus, c, glint]; c = c + 1;
+  bytes_set[mus, c, 9]; c = c + 1;
+
+  bytes_set[mus, c, 96]; c = c + 1;
+  doom_blaster_put_u16[mus, 4, c - 16];
+  => bytes_slice[mus, 0, c];
+)
+
+private op doom_blaster_charge_master [wav, drive, echo_a, echo_b] (
+  let samples = bytes_len[wav] - 44;
+  let fade_start = samples / 5;
+  let fade_span = samples - fade_start;
+  let i = 0;
+  while (i < samples) (
+    let mixed = (bytes_get[wav, 44 + i] - 128) * drive;
+    if (i >= echo_a) (
+      mixed = mixed + (bytes_get[wav, 44 + i - echo_a] - 128) * 3 / 5;
+    )
+    if (i >= echo_b) (
+      mixed = mixed + (bytes_get[wav, 44 + i - echo_b] - 128) * 2 / 5;
+    )
+    // Symmetric hard saturation is deliberate here: the audition request is
+    // for air-charging electrical distortion, not a clean music patch.
+    if (mixed > 112) ( mixed = 112; )
+    if (mixed < 0 - 112) ( mixed = 0 - 112; )
+    // Keep the initial electrical crack, then shed energy quadratically. This
+    // is the audible counterpart of a bolt accelerating away from the player.
+    if (i > fade_start) (
+      let remaining = samples - i;
+      mixed = mixed * remaining * remaining / fade_span / fade_span;
+    )
+    bytes_set[wav, 44 + i, 128 + mixed];
+    i = i + 1;
+  )
+  => wav;
+)
+
+private op doom_blaster_render [variant, drive, echo_a, echo_b] (
+  let rendered = doom_mus_render_opl2_wav[
+    doom_blaster_mus[variant], doom_blaster_bank[variant]
+  ];
+  if (rendered\ok == 1) () else (
+    fall "doom blaster OPL2 audition render failed";
+  )
+  => doom_blaster_charge_master[rendered\wav, drive, echo_a, echo_b];
+)
+
+write_bytes[
+  "/tmp/wasm-doom/blaster-h-opl2-tight-rail.wav",
+  doom_blaster_render[0, 9, 97, 211]
+];
+write_bytes[
+  "/tmp/wasm-doom/blaster-i-opl2-bright-arc.wav",
+  doom_blaster_render[1, 9, 83, 193]
+];
+write_bytes[
+  "/tmp/wasm-doom/blaster-j-opl2-heavy-rail.wav",
+  doom_blaster_render[2, 10, 109, 239]
+];
+
+print "wrote three short G-derived OPL2 blaster candidates under /tmp/wasm-doom";

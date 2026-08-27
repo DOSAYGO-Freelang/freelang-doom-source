@@ -1,0 +1,335 @@
+// Application-local policy for the synthetic laser blaster. Its ordinary
+// pistol ergonomics, entrance placement, combat tuning, palette treatment and
+// original sound stay explicit here instead of becoming numeric folklore
+// across simulation and presentation modules.
+
+credits: <f/buffers> <f/bytes>;
+
+op doom_laser_weapon [] ( => 8; )
+op doom_laser_weapon_count [] ( => doom_laser_weapon[]; )
+op doom_laser_projectile_kind [] ( => 8; )
+
+// WAD THING kinds are unsigned 16-bit values. This synthetic identity sits
+// one value beyond that space, so no caller-owned map thing can collide with
+// the entrance pickup.
+op doom_laser_pickup_kind [] ( => 65536; )
+
+// A blaster is a commodity sidearm whose exceptional part is the bolt. Reuse
+// the caller's checked pistol silhouette and keep its authored hand/pose.
+op doom_laser_source_weapon [] ( => 2; )
+op doom_laser_source_pickup_kind [] ( => 2004; )
+op doom_laser_damage [] ( => 200; )
+op doom_laser_speed [] ( => 32; )
+op doom_laser_cooldown [] ( => 6; )
+op doom_laser_ammo_display [] ( => 999; )
+op doom_laser_entrance_distance [] ( => 40; )
+op doom_laser_muzzle_scale [] ( => 2; )
+// The stock pistol flash patch was authored for Doom's original psprite
+// state. Once reduced to a small blaster flare its visual mass sits above the
+// barrel, so reconnect it in the same logical 320-wide coordinate system.
+op doom_laser_muzzle_down [] ( => 20; )
+
+// PLAYPAL/COLORMAP colours arrive as 0xRRGGBB. Produce the little-endian RGBX
+// words consumed by the sprite raster. The effect palette keeps authored
+// luminance while making green the dominant channel.
+op doom_laser_effect_colours [colours] (
+  let tinted = buf_new[32, 8192];
+  if (buf_len[colours] == 8192) () else ( => tinted; )
+  let i = 0;
+  while (i < 8192) (
+    let packed = buf_get[colours, i];
+    let red = (packed / 65536) % 256;
+    let green = (packed / 256) % 256;
+    let blue = packed % 256;
+    let luminance = (red * 3 + green * 6 + blue) / 10;
+    let laser_green = 24 + luminance * 231 / 255;
+    if (laser_green > 255) ( laser_green = 255; )
+    buf_set[
+      tinted, i,
+      luminance / 10 + laser_green * 256 + luminance / 8 * 65536
+    ];
+    i = i + 1;
+  )
+  => tinted;
+)
+
+// Recolour only neutral pistol texels as an off-white shell. A literal
+// inversion makes the authored dark silhouette pixels the brightest values,
+// exaggerating Doom's jagged sprite boundary. Preserving shade order keeps the
+// original edge treatment while lifting the black body to pearl white. The
+// separately authored chromatic hand/skin pixels pass through exactly;
+// transparent texels are governed by the atlas mask and are never painted.
+op doom_laser_weapon_colours [colours] (
+  let tinted = buf_new[32, 8192];
+  if (buf_len[colours] == 8192) () else ( => tinted; )
+  let i = 0;
+  while (i < 8192) (
+    let packed = buf_get[colours, i];
+    let red = (packed / 65536) % 256;
+    let green = (packed / 256) % 256;
+    let blue = packed % 256;
+    let high = red;
+    if (green > high) ( high = green; )
+    if (blue > high) ( high = blue; )
+    let low = red;
+    if (green < low) ( low = green; )
+    if (blue < low) ( low = blue; )
+    if ((high - low) <= 28) (
+      let luminance = (red * 3 + green * 6 + blue) / 10;
+      let shell = 168 + luminance * 87 / 255;
+      red = shell;
+      green = shell;
+      blue = shell;
+    )
+    buf_set[tinted, i, red + green * 256 + blue * 65536];
+    i = i + 1;
+  )
+  => tinted;
+)
+
+// Compatibility name retained for the projectile/pickup green effect ramp.
+op doom_laser_tint_colours [colours] (
+  => doom_laser_effect_colours[colours];
+)
+
+op doom_laser_sound_rate [] ( => 48000; )
+op doom_laser_sound_samples [] ( => 12000; )
+
+private op doom_laser_put_u16 [bytes, offset, value] (
+  bytes_set[bytes, offset, value % 256];
+  bytes_set[bytes, offset + 1, (value / 256) % 256];
+  => 0;
+)
+
+private op doom_laser_put_u32 [bytes, offset, value] (
+  bytes_set[bytes, offset, value % 256];
+  bytes_set[bytes, offset + 1, (value / 256) % 256];
+  bytes_set[bytes, offset + 2, (value / 65536) % 256];
+  bytes_set[bytes, offset + 3, (value / 16777216) % 256];
+  => 0;
+)
+
+private op doom_laser_put_magic [bytes, offset, a, b, c, d] (
+  bytes_set[bytes, offset, a]; bytes_set[bytes, offset + 1, b];
+  bytes_set[bytes, offset + 2, c]; bytes_set[bytes, offset + 3, d];
+  => 0;
+)
+
+private op doom_laser_triangle [phase, rate] (
+  let folded = phase * 512 / rate;
+  if (folded > 255) ( folded = 511 - folded; )
+  => folded - 128;
+)
+
+// Original compact blaster synthesis based on the physical idea behind a
+// struck guy wire: two short damped delay lines act as detuned taut cables.
+// Their dispersive tail carries the sound; a quiet descending triangle only
+// supplies the science-fiction pitch gesture. A soft 2.7 ms attack prevents
+// the excitation from collapsing into a click. No film recording or
+// caller-owned WAD sample enters this generated asset.
+op doom_laser_sound_wav [] (
+  let rate = doom_laser_sound_rate[];
+  let samples = doom_laser_sound_samples[];
+  let wav = bytes_new[44 + samples];
+  doom_laser_put_magic[wav, 0, 82, 73, 70, 70];
+  doom_laser_put_u32[wav, 4, 36 + samples];
+  doom_laser_put_magic[wav, 8, 87, 65, 86, 69];
+  doom_laser_put_magic[wav, 12, 102, 109, 116, 32];
+  doom_laser_put_u32[wav, 16, 16];
+  doom_laser_put_u16[wav, 20, 1];
+  doom_laser_put_u16[wav, 22, 1];
+  doom_laser_put_u32[wav, 24, rate];
+  doom_laser_put_u32[wav, 28, rate];
+  doom_laser_put_u16[wav, 32, 1];
+  doom_laser_put_u16[wav, 34, 8];
+  doom_laser_put_magic[wav, 36, 100, 97, 116, 97];
+  doom_laser_put_u32[wav, 40, samples];
+
+  let wire_a = buf_new[32, 29];
+  let wire_b = buf_new[32, 43];
+  let wire_i = 0;
+  while (wire_i < 43) (
+    if (wire_i < 29) (
+      let phase_a = wire_i * rate / 29;
+      let shape_a = doom_laser_triangle[phase_a, rate];
+      buf_set[wire_a, wire_i, shape_a + ((wire_i * 37) % 11) - 5];
+    )
+    let phase_b = wire_i * rate / 43;
+    let shape_b = doom_laser_triangle[phase_b, rate];
+    buf_set[wire_b, wire_i, shape_b + ((wire_i * 53) % 9) - 4];
+    wire_i = wire_i + 1;
+  )
+
+  let wire_a_pos = 0;
+  let wire_b_pos = 0;
+  let sweep_phase = 0;
+  let i = 0;
+  while (i < samples) (
+    let wire_a_next = (wire_a_pos + 1) % 29;
+    let wire_b_next = (wire_b_pos + 1) % 43;
+    let a = buf_get[wire_a, wire_a_pos];
+    let b = buf_get[wire_b, wire_b_pos];
+    let a_filtered =
+      (a + buf_get[wire_a, wire_a_next]) * 253 / 512;
+    let b_filtered =
+      (b + buf_get[wire_b, wire_b_next]) * 255 / 512;
+    buf_set[wire_a, wire_a_pos, a_filtered];
+    buf_set[wire_b, wire_b_pos, b_filtered];
+    wire_a_pos = wire_a_next;
+    wire_b_pos = wire_b_next;
+
+    let sweep_hz = 2250 - i * 1200 / samples;
+    sweep_phase = (sweep_phase + sweep_hz) % rate;
+    let sweep = doom_laser_triangle[sweep_phase, rate];
+    let mixed = (a * 5 + b * 3 + sweep * 2) / 10;
+    let envelope = (samples - i) * 256 / samples;
+    if (i < 128) ( envelope = envelope * i / 128; )
+    if (i > 9000) (
+      envelope = envelope * (samples - i) / (samples - 9000);
+    )
+    let sample = 128 + mixed * envelope / 256;
+    if (sample < 0) ( sample = 0; )
+    if (sample > 255) ( sample = 255; )
+    bytes_set[wav, 44 + i, sample];
+    i = i + 1;
+  )
+  => wav;
+)
+
+// Audition-only siblings of the in-game sound. Variant zero is the current
+// accepted clip; the others remain inert until live listening selects one.
+// All are original deterministic synthesis and have the same bounded WAV
+// envelope, so choosing a winner cannot alter combat timing or authority.
+op doom_laser_sound_variant_count [] ( => 4; )
+
+op doom_laser_sound_variant_wav [variant] (
+  if ((variant >= 0) and
+      (variant < doom_laser_sound_variant_count[])) () else (
+    fall "doom_laser_sound_variant_wav: variant outside audition roster";
+  )
+  if (variant == 0) ( => doom_laser_sound_wav[]; )
+
+  // Reuse the canonical header and replace only its sample payload. This path
+  // is an offline audition helper; the live audio bank calls variant zero.
+  let wav = doom_laser_sound_wav[];
+  let rate = doom_laser_sound_rate[];
+  let samples = doom_laser_sound_samples[];
+
+  if (variant == 1) (
+    // Traction-line discharge: a high-current crack excites two long,
+    // differently tensioned conductors, followed by a low energized hum.
+    let line_a = buf_new[32, 91];
+    let line_b = buf_new[32, 137];
+    let j = 0;
+    while (j < 137) (
+      if (j < 91) (
+        buf_set[line_a, j, ((j * 73 + j * j * 19) % 255) - 127];
+      )
+      buf_set[line_b, j, ((j * 109 + j * j * 11) % 255) - 127];
+      j = j + 1;
+    )
+    let pa = 0;
+    let pb = 0;
+    let hum_phase = 0;
+    let i = 0;
+    while (i < samples) (
+      let na = (pa + 1) % 91;
+      let nb = (pb + 1) % 137;
+      let a = buf_get[line_a, pa];
+      let b = buf_get[line_b, pb];
+      buf_set[line_a, pa, (a * 500 + buf_get[line_a, na] * 8) / 512];
+      buf_set[line_b, pb, (b * 496 + buf_get[line_b, nb] * 10) / 512];
+      pa = na;
+      pb = nb;
+      hum_phase = (hum_phase + 96) % rate;
+      let hum = doom_laser_triangle[hum_phase, rate] / 3;
+      let arc = 0;
+      if (i < 800) (
+        arc = (((i * 197 + (i % 17) * 83) % 255) - 127) *
+          (800 - i) / 800;
+      )
+      let mixed = (a * 4 + b * 3 + arc * 4 + hum) / 12;
+      let envelope = (samples - i) * 256 / samples;
+      if (i < 48) ( envelope = envelope * i / 48; )
+      let sample = 128 + mixed * envelope / 256;
+      if (sample < 0) ( sample = 0; )
+      if (sample > 255) ( sample = 255; )
+      bytes_set[wav, 44 + i, sample];
+      i = i + 1;
+    )
+    => wav;
+  )
+
+  if (variant == 2) (
+    // Short metallic lance: two compact cables plus a descending excitation
+    // emphasize the recognisable bright science-fiction twang.
+    let line_a = buf_new[32, 23];
+    let line_b = buf_new[32, 37];
+    let j = 0;
+    while (j < 37) (
+      if (j < 23) (
+        let p = j * rate / 23;
+        buf_set[line_a, j, doom_laser_triangle[p, rate]];
+      )
+      let p = j * rate / 37;
+      buf_set[line_b, j, doom_laser_triangle[p, rate]];
+      j = j + 1;
+    )
+    let pa = 0;
+    let pb = 0;
+    let chirp_phase = 0;
+    let i = 0;
+    while (i < samples) (
+      let na = (pa + 1) % 23;
+      let nb = (pb + 1) % 37;
+      let a = buf_get[line_a, pa];
+      let b = buf_get[line_b, pb];
+      buf_set[line_a, pa, (a * 492 + buf_get[line_a, na] * 12) / 512];
+      buf_set[line_b, pb, (b * 488 + buf_get[line_b, nb] * 14) / 512];
+      pa = na;
+      pb = nb;
+      let chirp_hz = 3300 - i * 2300 / samples;
+      chirp_phase = (chirp_phase + chirp_hz) % rate;
+      let chirp = doom_laser_triangle[chirp_phase, rate];
+      let mixed = (a * 4 + b * 3 + chirp * 3) / 10;
+      let envelope = (samples - i) * 256 / samples;
+      if (i < 96) ( envelope = envelope * i / 96; )
+      if (i > 7800) (
+        envelope = envelope * (samples - i) / (samples - 7800);
+      )
+      let sample = 128 + mixed * envelope / 256;
+      if (sample < 0) ( sample = 0; )
+      if (sample > 255) ( sample = 255; )
+      bytes_set[wav, 44 + i, sample];
+      i = i + 1;
+    )
+    => wav;
+  )
+
+  // Vintage phase pulse: opposed chirps and ring modulation create a smoother
+  // tonal beam without the cable strike of the other candidates.
+  let phase_a = 0;
+  let phase_b = 0;
+  let i = 0;
+  while (i < samples) (
+    let hz_a = 720 + i * 1480 / samples;
+    let hz_b = 2860 - i * 1660 / samples;
+    phase_a = (phase_a + hz_a) % rate;
+    phase_b = (phase_b + hz_b) % rate;
+    let a = doom_laser_triangle[phase_a, rate];
+    let b = doom_laser_triangle[phase_b, rate];
+    let ring = a * b / 128;
+    let mixed = (a * 4 + b * 2 + ring * 3) / 9;
+    let envelope = (samples - i) * 256 / samples;
+    if (i < 160) ( envelope = envelope * i / 160; )
+    if (i > 7200) (
+      envelope = envelope * (samples - i) / (samples - 7200);
+    )
+    let sample = 128 + mixed * envelope / 256;
+    if (sample < 0) ( sample = 0; )
+    if (sample > 255) ( sample = 255; )
+    bytes_set[wav, 44 + i, sample];
+    i = i + 1;
+  )
+  => wav;
+)

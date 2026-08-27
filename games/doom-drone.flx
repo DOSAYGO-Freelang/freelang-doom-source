@@ -1,0 +1,425 @@
+// Application-local FPV attack-drone policy. Placement pressure, one-use
+// flight state and collision stay here; combat exposes one explicit explosion
+// seam and the session owns the temporary player-camera authority switch. HUD
+// presentation lives in doom-drone-view so simulation-only binaries do not
+// acquire f/gui authority.
+
+credits: <../games/doom-map.flx> <../games/doom-aim.flx>
+         <f/arrays> <f/buffers> <f/trig>;
+
+op doom_drone_pickup_kind [] ( => 65538; )
+op doom_drone_weapon [] ( => 9; )
+op doom_drone_weapon_count [] ( => doom_drone_weapon[]; )
+op doom_drone_drop_limit [] ( => 8; )
+op doom_drone_inventory_limit [] ( => 32; )
+// Temporary playtest loadout: every map starts with at least ten deployable
+// drones without requiring the player to visit its randomized map pickups.
+op doom_drone_level_loadout [] ( => 10; )
+// A one-way attack drone carries a substantially larger shaped payload than
+// the stock rocket. The broad radius clears clusters; sight checks and radial
+// falloff still let real map geometry provide cover.
+op doom_drone_damage [] ( => 768; )
+op doom_drone_blast_radius [] ( => 240; )
+// The flight clock wraps only to keep the state finite; it has no gameplay
+// deadline and never terminates a drone.
+op doom_drone_clock_period [] ( => 1048576; )
+op doom_drone_min_speed [] ( => 0; )
+op doom_drone_max_speed [] ( => 22; )
+op doom_drone_horizontal_velocity_limit [] ( => 14; )
+op doom_drone_vertical_velocity_limit [] ( => 8; )
+// Integer velocity retains a light but legible airframe drag. Applying it on
+// every frame made key release feel like braking; this period preserves coast
+// and still lets an abandoned craft settle back toward hover.
+op doom_drone_drag_period [] ( => 6; )
+
+// Pure bounded placement randomness. Callers own the seed, so live loads may
+// vary while tests, traces and replays can reproduce one exact distribution.
+op doom_drone_seed_next [seed, salt] (
+  let modulus = 2147483647;
+  let normalized = seed % modulus;
+  if (normalized < 0) ( normalized = normalized + modulus; )
+  let seasoning = salt % 65537;
+  if (seasoning < 0) ( seasoning = seasoning + 65537; )
+  => (normalized * 1103515245 + seasoning * 12345 + 12345) % modulus;
+)
+
+op doom_drone_big_monster [kind] (
+  => (kind == 3005) or (kind == 3003) or
+    (kind == 16) or (kind == 7);
+)
+
+op doom_drone_drop_target [map] (
+  let enemies = 0;
+  let big = 0;
+  let i = 0;
+  while (i < map\thing_count) (
+    let kind = buf_get[map\things, i * 4 + 2];
+    if (doom_map_thing_is_enemy[kind] == 1) (
+      enemies = enemies + 1;
+      if (doom_drone_big_monster[kind] == 1) ( big = big + 1; )
+    )
+    i = i + 1;
+  )
+  let target = (big + 1) / 2 + enemies / 8;
+  if ((enemies >= 4) and (target == 0)) ( target = 1; )
+  if (target > doom_drone_drop_limit[]) (
+    target = doom_drone_drop_limit[];
+  )
+  => target;
+)
+
+private op doom_drone_drop_near [map, anchor_x, anchor_y, slot, seed] (
+  let feet_z = buf_get[
+    map\sectors, doom_map_point_sector[map, anchor_x, anchor_y] * 5
+  ];
+  let x = anchor_x;
+  let y = anchor_y;
+  let found = 0;
+  let option = 0;
+  while ((option < 8) and (found == 0)) (
+    let choice = doom_drone_seed_next[seed, slot * 17 + option];
+    let distance = 40 + (choice % 5) * 8;
+    let candidate_x = anchor_x;
+    let candidate_y = anchor_y;
+    let direction = (choice / 8) % 8;
+    if (direction == 0) ( candidate_x = anchor_x + distance; )
+    if (direction == 1) ( candidate_y = anchor_y + distance; )
+    if (direction == 2) ( candidate_x = anchor_x - distance; )
+    if (direction == 3) ( candidate_y = anchor_y - distance; )
+    if (direction == 4) (
+      candidate_x = anchor_x + distance;
+      candidate_y = anchor_y + distance;
+    )
+    if (direction == 5) (
+      candidate_x = anchor_x - distance;
+      candidate_y = anchor_y + distance;
+    )
+    if (direction == 6) (
+      candidate_x = anchor_x - distance;
+      candidate_y = anchor_y - distance;
+    )
+    if (direction == 7) (
+      candidate_x = anchor_x + distance;
+      candidate_y = anchor_y - distance;
+    )
+    if ((candidate_x >= map\min_x) and (candidate_x <= map\max_x) and
+        (candidate_y >= map\min_y) and (candidate_y <= map\max_y) and
+        (doom_map_move_blocked_at[
+          map, anchor_x, anchor_y, candidate_x, candidate_y,
+          feet_z, 8, 8
+        ] == 0)) (
+      x = candidate_x;
+      y = candidate_y;
+      found = 1;
+    )
+    option = option + 1;
+  )
+  => { x: x, y: y, kind: doom_drone_pickup_kind[], alive: 1 };
+)
+
+// Big monsters seed the first half of the distribution. Any remaining
+// cluster allowance samples the enemy population evenly, which makes dense
+// rooms publish more drones without tying placement to one stock map.
+op doom_drone_drops_seeded [map, seed] (
+  let target = doom_drone_drop_target[map];
+  let drops = [];
+  let big_seen = 0;
+  let start = 0;
+  if (map\thing_count > 0) (
+    start = doom_drone_seed_next[seed, 1] % map\thing_count;
+  )
+  let scan = 0;
+  let i = 0;
+  while ((scan < map\thing_count) and (arr_len[drops] < target)) (
+    i = (start + scan) % map\thing_count;
+    let tb = i * 4;
+    let kind = buf_get[map\things, tb + 2];
+    if (doom_drone_big_monster[kind] == 1) (
+      if (big_seen % 2 == 0) (
+        drops = drops + [doom_drone_drop_near[
+          map, buf_get[map\things, tb], buf_get[map\things, tb + 1],
+          arr_len[drops], doom_drone_seed_next[seed, i + arr_len[drops] * 31]
+        ]];
+      )
+      big_seen = big_seen + 1;
+    )
+    scan = scan + 1;
+  )
+
+  let fill = 0;
+  while ((arr_len[drops] < target) and (fill < map\thing_count)) (
+    i = (start + fill) % map\thing_count;
+    let found = 0;
+    let probe = 0;
+    while ((probe < map\thing_count) and (found == 0)) (
+      i = (start + fill + probe) % map\thing_count;
+      let tb = i * 4;
+      let kind = buf_get[map\things, tb + 2];
+      if (doom_map_thing_is_enemy[kind] == 1) (
+        drops = drops + [doom_drone_drop_near[
+          map, buf_get[map\things, tb], buf_get[map\things, tb + 1],
+          arr_len[drops], doom_drone_seed_next[seed, i + arr_len[drops] * 47]
+        ]];
+        found = 1;
+      )
+      probe = probe + 1;
+    )
+    fill = fill + 1;
+  )
+  => drops;
+)
+
+op doom_drone_drops [map] ( => doom_drone_drops_seeded[map, 0]; )
+
+private op doom_drone_abs [value] (
+  if (value < 0) ( => 0 - value; )
+  => value;
+)
+
+private op doom_drone_clamp [value, low, high] (
+  if (value < low) ( => low; )
+  if (value > high) ( => high; )
+  => value;
+)
+
+private op doom_drone_damp [value] (
+  if (value > 0) ( => value - 1; )
+  if (value < 0) ( => value + 1; )
+  => 0;
+)
+
+op doom_drone_new [] (
+  => {
+    active: 0, pending_explosion: 0,
+    x: 0, y: 0, z: 0, angle: 0, pitch: 0, roll: 0,
+    vx: 0, vy: 0, vz: 0, aim_remainder: 0,
+    speed: 0, tick: 0, fire_ready: 0, armed: 0,
+    reason: 0, target: 0 - 1,
+    detonations: 0
+  };
+)
+
+op doom_drone_validate [drone] (
+  if (((drone\active == 0) or (drone\active == 1)) and
+      ((drone\pending_explosion == 0) or
+       (drone\pending_explosion == 1)) and
+      (drone\pitch >= 0 - 145) and (drone\pitch <= 145) and
+      (drone\roll >= 0 - 10) and (drone\roll <= 10) and
+      (drone\speed >= doom_drone_min_speed[]) and
+      (drone\speed <= doom_drone_max_speed[]) and
+      (drone\vx >= 0 - doom_drone_horizontal_velocity_limit[]) and
+      (drone\vx <= doom_drone_horizontal_velocity_limit[]) and
+      (drone\vy >= 0 - doom_drone_horizontal_velocity_limit[]) and
+      (drone\vy <= doom_drone_horizontal_velocity_limit[]) and
+      (drone\vz >= 0 - doom_drone_vertical_velocity_limit[]) and
+      (drone\vz <= doom_drone_vertical_velocity_limit[]) and
+      (drone\aim_remainder > 0 - doom_aim_divisor[]) and
+      (drone\aim_remainder < doom_aim_divisor[]) and
+      (drone\tick >= 0) and (drone\tick < doom_drone_clock_period[]) and
+      ((drone\fire_ready == 0) or (drone\fire_ready == 1)) and
+      ((drone\armed == 0) or (drone\armed == 1)) and
+      (drone\reason >= 0) and (drone\reason <= 3) and
+      (drone\target >= 0 - 1) and (drone\detonations >= 0)) () else (
+    fall "doom_drone_validate: flight state invariant violated";
+  )
+  => 1;
+)
+
+op doom_drone_launch [drone, player_x, player_y, player_z, angle, pitch] (
+  if ((drone\active == 0) and (drone\pending_explosion == 0)) () else (
+    => drone;
+  )
+  drone\active = 1;
+  drone\x = player_x;
+  drone\y = player_y;
+  drone\z = player_z + 36;
+  drone\angle = angle;
+  drone\pitch = doom_drone_clamp[pitch, 0 - 145, 145];
+  drone\roll = 0;
+  // Deployment begins as a stable hover. Forward motion is always an
+  // operator command, never an implicit fuse toward the nearest wall.
+  drone\speed = 0;
+  drone\vx = 0;
+  drone\vy = 0;
+  drone\vz = 0;
+  drone\aim_remainder = 0;
+  drone\tick = 0;
+  // A fire button already held while collecting the pickup is not an
+  // intentional detonation command. Require one observed release first.
+  drone\fire_ready = 0;
+  // Contact detonation is an explicit, one-way operator decision. A newly
+  // deployed craft is always safe, regardless of inherited weapon input.
+  drone\armed = 0;
+  drone\reason = 0;
+  drone\target = 0 - 1;
+  doom_drone_validate[drone];
+  => drone;
+)
+
+private op doom_drone_detonate [drone, reason, target] (
+  drone\active = 0;
+  drone\pending_explosion = 1;
+  drone\reason = reason;
+  drone\target = target;
+  drone\detonations = drone\detonations + 1;
+  => drone;
+)
+
+private op doom_drone_stop_on_contact [drone] (
+  drone\vx = 0;
+  drone\vy = 0;
+  drone\vz = 0;
+  drone\speed = 0;
+  drone\aim_remainder = 0;
+  => drone;
+)
+
+op doom_drone_acknowledge_explosion [drone] (
+  drone\pending_explosion = 0;
+  doom_drone_validate[drone];
+  => drone;
+)
+
+// `turn` and `look` rotate the camera. Forward/strafe/lift are bounded
+// -1/0/+1 thrust axes over persistent velocity. Counter-thrust, not key
+// release, is what returns a moving craft to hover. `arm` permanently enables
+// the contact fuse for this flight; unarmed collision is recoverable at every
+// speed. F_SKY1 ceilings only cancel upward velocity. Fire requests manual
+// detonation only after the launch click was released.
+op doom_drone_step [map, drone, actors, turn, look,
+                    forward, strafe, lift, fire, arm] (
+  doom_drone_validate[drone];
+  if (drone\active == 1) () else ( => drone; )
+  if ((forward >= 0 - 1) and (forward <= 1) and
+      (strafe >= 0 - 1) and (strafe <= 1) and
+      (lift >= 0 - 1) and (lift <= 1) and
+      ((arm == 0) or (arm == 1))) () else (
+    fall "doom_drone_step: flight axis outside bounded domain";
+  )
+  drone\angle = drone\angle + trig_from_degrees[turn];
+  drone\pitch = doom_drone_clamp[
+    drone\pitch + look, 0 - 145, 145
+  ];
+  let target_roll = doom_drone_clamp[turn * 2, 0 - 10, 10];
+  if (target_roll > drone\roll) (
+    drone\roll = drone\roll + 2;
+    if (drone\roll > target_roll) ( drone\roll = target_roll; )
+  ) else if (target_roll < drone\roll) (
+    drone\roll = drone\roll - 2;
+    if (drone\roll < target_roll) ( drone\roll = target_roll; )
+  ) else if (turn == 0) (
+    drone\roll = doom_drone_damp[drone\roll];
+  )
+  drone\tick = (drone\tick + 1) % doom_drone_clock_period[];
+  if (arm == 1) ( drone\armed = 1; )
+  if (fire == 0) ( drone\fire_ready = 1; )
+  if ((fire == 1) and (drone\fire_ready == 1)) (
+    => doom_drone_detonate[drone, 3, 0 - 1];
+  )
+
+  let direction = trig_sincos[drone\angle];
+  let q31 = 2147483648;
+  let ax = (direction\cos * forward - direction\sin * strafe) * 2 / q31;
+  let ay = (direction\sin * forward + direction\cos * strafe) * 2 / q31;
+  if ((forward == 0) and (strafe == 0) and
+      (drone\tick % doom_drone_drag_period[] == 0)) (
+    drone\vx = doom_drone_damp[drone\vx];
+    drone\vy = doom_drone_damp[drone\vy];
+  )
+  drone\vx = doom_drone_clamp[
+    drone\vx + ax,
+    0 - doom_drone_horizontal_velocity_limit[],
+    doom_drone_horizontal_velocity_limit[]
+  ];
+  drone\vy = doom_drone_clamp[
+    drone\vy + ay,
+    0 - doom_drone_horizontal_velocity_limit[],
+    doom_drone_horizontal_velocity_limit[]
+  ];
+  // Feed forward thrust through the same centreline ray as a projectile.
+  // The carried remainder preserves shallow pitch components that are below
+  // one integer map unit on any individual frame. Space/Ctrl remains an
+  // independent vertical trim rather than changing the reticle ray.
+  let aimed_thrust = doom_aim_accumulate_delta[
+    drone\pitch, forward * 2, drone\aim_remainder
+  ];
+  drone\aim_remainder = aimed_thrust\remainder;
+  let vertical_thrust = doom_drone_clamp[
+    aimed_thrust\delta + lift, 0 - 4, 4
+  ];
+  if ((vertical_thrust == 0) and
+      (drone\tick % doom_drone_drag_period[] == 0)) (
+    drone\vz = doom_drone_damp[drone\vz];
+  )
+  drone\vz = doom_drone_clamp[
+    drone\vz + vertical_thrust,
+    0 - doom_drone_vertical_velocity_limit[],
+    doom_drone_vertical_velocity_limit[]
+  ];
+  drone\speed = doom_drone_abs[drone\vx];
+  if (doom_drone_abs[drone\vy] > drone\speed) (
+    drone\speed = doom_drone_abs[drone\vy];
+  )
+  if (doom_drone_abs[drone\vz] > drone\speed) (
+    drone\speed = doom_drone_abs[drone\vz];
+  )
+  let next_x = drone\x + drone\vx;
+  let next_y = drone\y + drone\vy;
+  let next_z = drone\z + drone\vz;
+  let blocker = doom_map_flight_blocker_at[
+        map, drone\x, drone\y, drone\z,
+        next_x, next_y, next_z, 2
+      ];
+  if (blocker == 2) (
+    // Doom skies are visual portals, not a surface on which an FPV warhead
+    // should burst. Hold the last valid position and cancel only the upward
+    // component; horizontal inertia resumes on the following frame.
+    if (drone\vz > 0) ( drone\vz = 0; )
+    next_x = drone\x;
+    next_y = drone\y;
+    next_z = drone\z;
+  ) else if (blocker == 1) (
+    if (drone\armed == 1) (
+      => doom_drone_detonate[drone, 1, 0 - 1];
+    )
+    // A safe craft holds the last valid point and returns to hover, even if
+    // it arrived quickly. Only X gives collision authority to the payload.
+    drone = doom_drone_stop_on_contact[drone];
+    next_x = drone\x;
+    next_y = drone\y;
+    next_z = drone\z;
+  )
+
+  let target = 0 - 1;
+  let i = 0;
+  while ((i < arr_len[actors]) and (target < 0)) (
+    let actor = actors\@i;
+    if ((actor\health > 0) and
+        (doom_drone_abs[actor\x - next_x] <= 24) and
+        (doom_drone_abs[actor\y - next_y] <= 24)) (
+      let floor = buf_get[
+        map\sectors, doom_map_point_sector[map, actor\x, actor\y] * 5
+      ];
+      if ((next_z >= floor) and (next_z <= floor + 56)) ( target = i; )
+    )
+    i = i + 1;
+  )
+  if (target >= 0) (
+    if (drone\armed == 1) (
+      drone\x = next_x;
+      drone\y = next_y;
+      drone\z = next_z;
+      => doom_drone_detonate[drone, 2, target];
+    )
+    // Do not enter the actor volume on a survivable bump.
+    drone = doom_drone_stop_on_contact[drone];
+    next_x = drone\x;
+    next_y = drone\y;
+    next_z = drone\z;
+  )
+  drone\x = next_x;
+  drone\y = next_y;
+  drone\z = next_z;
+  doom_drone_validate[drone];
+  => drone;
+)
